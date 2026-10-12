@@ -1,0 +1,3 @@
+audio_debug: solo=-1 muted=none
+[auto] Synthetic fixture: frame time exceeded the threshold
+frame: 12

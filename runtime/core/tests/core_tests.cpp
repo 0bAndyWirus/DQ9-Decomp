@@ -1,0 +1,1254 @@
+#include "core_internal.h"
+#include "dsr/machine.h"
+#include "dsr/mem.h"
+#include "dsr/spu.h"
+#include "dsr/rt.h"
+
+#include <array>
+#include <chrono>
+#include <cfenv>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+#include <system_error>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+namespace dsr::tests {
+void run_thread_tests();
+void run_abi_config_tests();
+namespace {
+// Guest locations, code, and payloads below are invented fixtures unless a
+// comment identifies a fixed DS hardware or BIOS memory-map location.
+int failures = 0;
+int irq_calls = 0;
+int nested_irq_calls = 0;
+bool nested_started = false;
+
+void check(bool condition, const char* message) {
+    if (condition) return;
+    std::fprintf(stderr, "[core-test] FAIL: %s\n", message);
+    ++failures;
+}
+
+void irq_entry(Cpu* cpu) {
+    ++irq_calls;
+    if (!nested_started) {
+        nested_started = true;
+        wr32(cpu, 0x04000214, 1u << 5);
+        cpu->m->raise_irq(CpuId::Arm9, 6);
+        const std::uint32_t cpsr = dsr_mrs_cpsr(cpu);
+        dsr_msr_cpsr(cpu, cpsr & ~kCpsrI, 1);
+        dsr_checkpoint(cpu, 0x02002000);
+    } else {
+        wr32(cpu, 0x04000214, 1u << 6);
+        ++nested_irq_calls;
+    }
+}
+
+void guest_entry(Cpu* cpu) {
+    dsr_checkpoint(cpu, 0x02001000);
+}
+
+std::array<std::uint16_t, 2> frame_key_samples{};
+unsigned frame_key_sample_count = 0;
+
+void frame_key_irq_entry(Cpu* cpu) {
+    if (frame_key_sample_count < frame_key_samples.size())
+        frame_key_samples[frame_key_sample_count++] =
+            cpu->m->read16(cpu->id, 0x04000130);
+    cpu->m->write32(cpu->id, 0x04000214, 1u);
+}
+
+void frame_key_waiter(Cpu* cpu) {
+    for (;;) {
+        cpu->budget = 0;
+        dsr_checkpoint(cpu, 0x02001000);
+    }
+}
+
+
+int overlay_choice = 0;
+bool call_overlay = false;
+
+void overlay_main(Cpu* cpu) {
+    if (call_overlay) dsr_call(cpu, 0x02003000);
+}
+
+void overlay_a(Cpu*) { overlay_choice = 1; }
+void overlay_b(Cpu*) { overlay_choice = 2; }
+void overlay_replacement(Cpu*) { overlay_choice = 3; }
+
+bool thumb_entry_observed = false;
+
+void region_overlay_a(Cpu* cpu, std::uint32_t entry_address) {
+    cpu->r[0] = entry_address;
+    cpu->r[1] = 1;
+    cpu->r[2] = (cpu->cpsr_ctrl & kCpsrT) != 0;
+}
+
+void region_overlay_b(Cpu* cpu, std::uint32_t entry_address) {
+    cpu->r[0] = entry_address;
+    cpu->r[1] = 2;
+    cpu->r[2] = (cpu->cpsr_ctrl & kCpsrT) != 0;
+}
+
+void region_thumb(Cpu* cpu, std::uint32_t entry_address) {
+    cpu->r[0] = entry_address;
+    cpu->r[1] = (cpu->cpsr_ctrl & kCpsrT) != 0;
+}
+
+void test_shared_region_fallback_dispatch() {
+    constexpr std::uint32_t arm_begin = 0x02008000;
+    constexpr std::uint32_t thumb_begin = 0x02009000;
+    constexpr std::array<std::uint8_t, 8> image = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    };
+    const std::uint64_t hash = fnv1a64(image.data(), image.size());
+    const std::uint64_t arm_hash = fnv1a64(image.data(), image.size() - 2);
+    const GuestAddressRange literal_pool[] = {{arm_begin + 6, 2}};
+    const DispatchRegionEntry regions[] = {
+        {arm_begin, image.size(), kModuleArm9Main, 0, arm_hash ^ 1u, literal_pool, 1, region_overlay_a},
+        {arm_begin, image.size(), 0, 0, arm_hash, literal_pool, 1, region_overlay_b},
+        {thumb_begin, image.size(), kModuleArm9Main, 1, hash, nullptr, 0, region_thumb},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_regions = {regions, 3};
+    Machine machine(config);
+    for (std::size_t i = 0; i < image.size(); ++i) {
+        machine.write8(CpuId::Arm9, arm_begin + static_cast<std::uint32_t>(i), image[i]);
+        machine.write8(CpuId::Arm9, thumb_begin + static_cast<std::uint32_t>(i), image[i]);
+    }
+    machine.write16(CpuId::Arm9, arm_begin + 6, 0xbeefu);
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    cpu.cpsr_ctrl = kModeSvc;
+    dsr_call(&cpu, arm_begin + 4);
+    check(cpu.r[0] == arm_begin + 4 && cpu.r[1] == 2 && cpu.r[2] == 0,
+          "unregistered ARM interior entry uses the loaded shared-region hash and seeded address");
+    check((cpu.cpsr_ctrl & kCpsrT) == 0,
+          "shared-region ARM fallback restores caller instruction state");
+
+    cpu.r[1] = 0;
+    dsr_call(&cpu, thumb_begin + 5);
+    check(cpu.r[0] == thumb_begin + 4 && cpu.r[1] == 1,
+          "shared-region Thumb fallback receives a normalized interior address in Thumb state");
+    check((cpu.cpsr_ctrl & kCpsrT) == 0,
+          "shared-region Thumb fallback restores caller instruction state");
+}
+void thumb_entry(Cpu* cpu) {
+    thumb_entry_observed = (cpu->cpsr_ctrl & kCpsrT) != 0;
+}
+
+void test_interworking_return_state() {
+    GuestFn slot = thumb_entry;
+    FnEntry entries[] = {
+        {0x02006000, 4, kModuleArm9Main, 1, 0, &slot, "thumb_interworking_test"},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {entries, 1};
+    Machine machine(config);
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    cpu.cpsr_ctrl = kModeSvc;
+    cpu.r[14] = 0x02007000;
+    thumb_entry_observed = false;
+    dsr_call(&cpu, 0x02006001);
+    check(thumb_entry_observed, "dynamic interworking call enters Thumb state");
+    check((cpu.cpsr_ctrl & kCpsrT) == 0,
+          "dynamic interworking return restores the caller instruction state");
+    // Return verification: the callee notes its return target, the caller
+    // checks it against the address it expects.
+    dsr_note_return(&cpu, cpu.r[14]);
+    dsr_check_return(&cpu, 0x02007000);
+}
+
+void test_main_ram_write_watch_expands_mirrors() {
+    using dsr::detail::GuestWriteWatchRange;
+    const std::vector<GuestWriteWatchRange> requested = {
+        {0x02901000, 0x02901001},
+        {0x04000000, 0x04000004},
+    };
+    const auto expanded = dsr::detail::expand_main_ram_write_watch_aliases(requested);
+    const auto contains = [&](std::uint32_t address) {
+        for (const auto& range : expanded)
+            if (address >= range.first && static_cast<std::uint64_t>(address) < range.end)
+                return true;
+        return false;
+    };
+    check(contains(0x02101000) && contains(0x02501000) &&
+          contains(0x02901000) && contains(0x02d01000),
+          "main-RAM write watches expand from any mirror to every mirror");
+    check(!contains(0x02100fff) && !contains(0x02101001) &&
+          contains(0x04000000) && contains(0x04000003) && !contains(0x04000004),
+          "write-watch expansion preserves the requested byte range and non-RAM watches");
+}
+
+void test_memory_map() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write32(CpuId::Arm9, 0x02000000, 0x12345678);
+    check(machine.read32(CpuId::Arm7, 0x02400000) == 0x12345678,
+          "main RAM mirrors at +4 MiB");
+    machine.write8(CpuId::Arm7, 0x02ffffff, 0x9a);
+    check(machine.read8(CpuId::Arm9, 0x023fffff) == 0x9a,
+          "main RAM mirrors at the top of the 16 MiB aperture");
+
+    dsr_mcr(&machine.cpu(CpuId::Arm9), 15, 0, 9, 1, 0, 0x0080000c, 0);
+    machine.write32(CpuId::Arm9, 0x00800004, 0xaabbccdd);
+    check(machine.read32(CpuId::Arm9, 0x00804004) == 0xaabbccdd,
+          "DTCM region larger than backing memory mirrors physically");
+    dsr_mcr(&machine.cpu(CpuId::Arm9), 15, 0, 9, 1, 1, 0x0000000e, 0);
+    machine.write32(CpuId::Arm9, 0x00000100, 0x87654321);
+    check(machine.read32(CpuId::Arm9, 0x00008100) == 0x87654321,
+          "ITCM mirrors according to its CP15 region size");
+
+    machine.write8(CpuId::Arm9, 0x04000247, 0);
+    machine.write8(CpuId::Arm9, 0x03000000, 0x51);
+    check(machine.read8(CpuId::Arm7, 0x03000000) == 0,
+          "WRAM mode 0 assigns shared WRAM only to ARM9");
+    check(machine.read8(CpuId::Arm7, 0x04000241) == 0,
+          "WRAMSTAT reports the mode-0 bank assignment");
+    machine.write8(CpuId::Arm9, 0x04000247, 1);
+    check(machine.read8(CpuId::Arm7, 0x04000241) == 1,
+          "WRAMSTAT follows ARM9 WRAMCNT writes");
+    machine.write8(CpuId::Arm7, 0x03000000, 0x42);
+    check(machine.read8(CpuId::Arm9, 0x03000000) == 0,
+          "WRAM mode 1 separates the two 16 KiB banks");
+    machine.write8(CpuId::Arm9, 0x04000247, 2);
+    check(machine.read8(CpuId::Arm9, 0x03000000) == 0x42,
+          "WRAMCNT swaps ARM9 onto the other bank");
+    machine.write8(CpuId::Arm9, 0x04000247, 3);
+    machine.write8(CpuId::Arm7, 0x03000000, 0x77);
+    check(machine.read8(CpuId::Arm7, 0x03007fff) == 0,
+          "WRAM mode 3 exposes a 32 KiB ARM7 window");
+    check(machine.read8(CpuId::Arm9, 0x03000000) == 0,
+          "WRAM mode 3 removes the shared window from ARM9");
+}
+
+void test_irq_and_nested_return() {
+    GuestFn main_slot = guest_entry;
+    GuestFn irq_slot = irq_entry;
+    FnEntry entries[] = {
+        {0x02001000, 4, kModuleArm9Main, 0, 0, &main_slot, "guest_entry"},
+        {0x02002000, 4, kModuleArm9Main, 0, 0, &irq_slot, "irq_entry"},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {entries, 2};
+    Machine machine(config);
+    irq_calls = 0;
+    nested_irq_calls = 0;
+    nested_started = false;
+
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    cpu.cpsr_ctrl = kModeIrq; // permit IRQ entry and give its banked stack a valid region
+    cpu.r[13] = 0x00803fa0;
+    cpu.r[0] = 0x13579bdf;
+    machine.write32(CpuId::Arm9, 0x04000208, 1); // IME
+    machine.write32(CpuId::Arm9, 0x04000210, (1u << 5) | (1u << 6));
+    machine.write32(CpuId::Arm9, 0x00803ffc, 0x02002000);
+    machine.raise_irq(CpuId::Arm9, 5);
+    machine.start_cpu(CpuId::Arm9, 0x02001000);
+    machine.run_ticks(1);
+
+    check(irq_calls == 2, "IRQ handler is entered for outer and nested IRQs");
+    check(nested_irq_calls == 1, "nested IRQ dispatch completes once");
+    check(cpu.r[0] == 0x13579bdf, "BIOS IRQ wrapper restores guest registers");
+    check(cpu.cpsr_ctrl == kModeIrq, "BIOS IRQ wrapper restores the interrupted mode");
+    check((machine.read32(CpuId::Arm9, 0x04000214) & ((1u << 5) | (1u << 6))) == 0,
+          "nested IRQ handler acknowledges both IF bits");
+}
+
+void test_timers_dma_and_ipc() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write16(CpuId::Arm9, 0x04000100, 0xffff);
+    machine.write16(CpuId::Arm9, 0x04000102, 0x00c0); // enable + overflow IRQ, prescale 1
+    machine.run_ticks(1);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 3)) != 0,
+          "timer 0 overflow raises its IRQ flag");
+
+    machine.write32(CpuId::Arm9, 0x02000000, 0xdecafbad);
+
+    machine.write32(CpuId::Arm9, 0x040000d4, 0x02000000); // DMA3 source
+    machine.write32(CpuId::Arm9, 0x040000d8, 0x02001000); // DMA3 destination
+    machine.write32(CpuId::Arm9, 0x040000dc, (0xc400u << 16) | 1u); // immediate, 32-bit, IRQ
+    check(machine.read32(CpuId::Arm9, 0x02001000) == 0xdecafbad,
+          "immediate DMA copies one word");
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 11)) != 0,
+          "DMA3 completion raises its IRQ flag");
+
+    machine.write16(CpuId::Arm9, 0x04000184, 0x8000); // FIFO enable
+    machine.write16(CpuId::Arm7, 0x04000184, 0x8000);
+    machine.write32(CpuId::Arm9, 0x04000188, 0x1234abcd);
+    check((machine.read16(CpuId::Arm7, 0x04000184) & 0x0100u) == 0,
+          "IPC FIFO receiver is non-empty after a send");
+    check(machine.read32(CpuId::Arm7, 0x04100000) == 0x1234abcd,
+          "IPC FIFO delivers the word at IPCFIFORECV on the other CPU");
+    check((machine.read16(CpuId::Arm7, 0x04000184) & 0x0100u) != 0,
+          "IPC FIFO reports receive-empty after draining");
+
+    machine.write16(CpuId::Arm9, 0x04000180, 0x0500); // ARM9 output = 5
+    check((machine.read16(CpuId::Arm7, 0x04000180) & 0x000fu) == 5,
+          "IPCSYNC output bits 8-11 appear in the remote input bits 0-3");
+    check((machine.read16(CpuId::Arm9, 0x04000180) & 0x0f00u) == 0x0500,
+          "IPCSYNC keeps the writer's own output bits");
+}
+
+void test_core_register_contracts() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    // MMU_IPCSync and registers.h: send=bit13, receive-enable=bit14.
+    machine.write16(CpuId::Arm7, 0x04000180, 0x4000);
+    machine.write16(CpuId::Arm9, 0x04000180, 0x2500);
+    check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 16)) != 0,
+          "IPCSYNC bit13 sends an IRQ to a bit14-enabled receiver");
+    check(machine.read16(CpuId::Arm9, 0x04000180) == 0x0500 &&
+          machine.read16(CpuId::Arm7, 0x04000180) == 0x4005,
+          "IPCSYNC send strobe is not retained and receive enable is readable");
+    machine.write32(CpuId::Arm7, 0x04000214, 1u << 16);
+    machine.write16(CpuId::Arm7, 0x04000180, 0);
+    machine.write16(CpuId::Arm9, 0x04000180, 0x2000);
+    check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 16)) == 0,
+          "IPCSYNC does not interrupt a receiver with bit14 disabled");
+
+    machine.write16(CpuId::Arm9, 0x04000184, 0x8004);
+    machine.write32(CpuId::Arm9, 0x04000188, 0x12345678);
+    machine.write32(CpuId::Arm9, 0x04000214, 1u << 17);
+    machine.write16(CpuId::Arm9, 0x04000184, 0x800c);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 17)) != 0,
+          "clearing IPC send FIFO raises its already-enabled empty IRQ");
+
+    // The two 16-KiB halves are selected oppositely for ARM9 and ARM7.
+    machine.write8(CpuId::Arm9, 0x04000247, 0);
+    machine.write8(CpuId::Arm9, 0x03000000, 0x11);
+    machine.write8(CpuId::Arm9, 0x03004000, 0x22);
+    machine.write8(CpuId::Arm9, 0x04000247, 1);
+    check(machine.read8(CpuId::Arm9, 0x03000000) == 0x22 &&
+          machine.read8(CpuId::Arm7, 0x03000000) == 0x11,
+          "WRAM mode1 maps upper shared half to ARM9, lower to ARM7");
+    machine.write8(CpuId::Arm9, 0x04000247, 2);
+    check(machine.read8(CpuId::Arm9, 0x03000000) == 0x11 &&
+          machine.read8(CpuId::Arm7, 0x03000000) == 0x22,
+          "WRAM mode2 maps lower shared half to ARM9, upper to ARM7");
+    machine.write8(CpuId::Arm7, 0x04000247, 3);
+    check(machine.read8(CpuId::Arm9, 0x04000247) == 2,
+          "ARM7 cannot program ARM9 WRAMCNT");
+    machine.write8(CpuId::Arm7, 0x03800000, 0x33);
+    check(machine.read8(CpuId::Arm7, 0x03810000) == 0x33 &&
+          machine.read8(CpuId::Arm7, 0x03ff0000) == 0x33,
+          "ARM7 private WRAM mirrors across the high 8-MiB region");
+    machine.write8(CpuId::Arm9, 0x04000247, 0);
+    check(machine.read8(CpuId::Arm7, 0x03000000) == 0x33,
+          "ARM7 low WRAM window aliases private RAM when shared RAM belongs to ARM9");
+
+    machine.write16(CpuId::Arm9, 0x04000004, 0x00a0); // compare=256, IRQ enabled
+    check((machine.read16(CpuId::Arm9, 0x04000004) & 0x0080) != 0,
+          "DISPSTAT retains VCOUNT compare bit8 in register bit7");
+    machine.run_ticks(255u * detail::kLineTicks);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 2)) == 0,
+          "VCOUNT compare256 does not alias compare0");
+    machine.run_ticks(detail::kLineTicks);
+    check((machine.read16(CpuId::Arm9, 0x04000004) & 4u) != 0 &&
+          (machine.read32(CpuId::Arm9, 0x04000214) & (1u << 2)) != 0,
+          "nine-bit VCOUNT comparison raises its IRQ at line256");
+
+    InputState keys;
+    keys.buttons = kBtnA;
+    machine.set_input(keys);
+    machine.write16(CpuId::Arm9, 0x04000132, 0x4003);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 12)) != 0,
+          "KEYCNT bit14 enables OR-mode keypad IRQ for any selected key");
+    machine.write32(CpuId::Arm9, 0x04000214, 1u << 12);
+    machine.write16(CpuId::Arm9, 0x04000132, 0xc003);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 12)) == 0,
+          "KEYCNT bit15 selects AND-mode rather than IRQ enable");
+    keys.buttons |= kBtnB;
+    machine.set_input(keys);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 12)) != 0,
+          "AND-mode keypad IRQ asserts when every selected key is pressed");
+}
+
+void test_rtc_core_io_contract() {
+    MachineConfig config;
+    config.direct_boot = false;
+    config.deterministic_rtc = true;
+    config.rtc_epoch_seconds = 1704067200; // Monday, 2024-01-01 00:00:00 UTC.
+    Machine machine(config);
+    const auto gpio = [&](std::uint8_t value) {
+        machine.write8(CpuId::Arm7, 0x04000138, value);
+    };
+    const auto send = [&](std::uint8_t value) {
+        for (unsigned bit = 0; bit < 8; ++bit) {
+            const auto low = static_cast<std::uint8_t>(0x74u | ((value >> bit) & 1u));
+            gpio(low);
+            gpio(low | 2u);
+        }
+    };
+    const auto receive = [&] {
+        std::uint8_t value = 0;
+        for (unsigned bit = 0; bit < 8; ++bit) {
+            gpio(0x64);
+            gpio(0x66);
+            value |= (machine.read8(CpuId::Arm7, 0x04000138) & 1u) << bit;
+        }
+        return value;
+    };
+    const auto begin = [&](std::uint8_t command) {
+        gpio(0x72);
+        gpio(0x74);
+        send(command);
+    };
+    begin(0xa6); // Date/time read.
+    std::array<std::uint8_t, 7> date{};
+    for (auto& byte : date) byte = receive();
+    gpio(0x62);
+    check(date[3] == 1, "RTC weekday agrees with oracle Sunday=0, Monday=1 convention");
+    begin(0x16); // Status2 write.
+    send(0x04);
+    gpio(0x62);
+    begin(0x96); // Status2 read.
+    check(receive() == 0x04, "RTC status2 write completes after one parameter byte");
+    gpio(0x62);
+}
+
+void test_gx_fifo_dma_starts_on_empty_fifo() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    constexpr std::uint32_t kWords = 300; // more than two 112-word bursts
+    for (std::uint32_t i = 0; i < kWords; ++i) {
+        machine.write32(CpuId::Arm9, 0x02000000 + i * 4, 0); // packed NOP commands
+    }
+    machine.write32(CpuId::Arm9, 0x040000b0, 0x02000000); // DMA0 source
+    machine.write32(CpuId::Arm9, 0x040000b4, 0x04000400); // GXFIFO
+    // Enable, 32-bit, start mode 7 (geometry FIFO), with an empty FIFO.
+    machine.write32(CpuId::Arm9, 0x040000b8, (0xbc00u << 16) | kWords);
+    check((machine.read32(CpuId::Arm9, 0x04000600) & (1u << 25)) == 0,
+          "GX DMA fills an empty FIFO past half on enable");
+    machine.write32(CpuId::Arm9, 0x04000600, 1u << 30); // IRQ when FIFO drops below half
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 21)) == 0,
+          "GX FIFO IRQ stays inactive while the queue is at least half full");
+    machine.run_ticks(2'000'000);
+    check((machine.read16(CpuId::Arm9, 0x040000ba) & 0x8000u) == 0,
+          "GX DMA delivers every word as the FIFO drains below half");
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 21)) != 0,
+          "GX FIFO IRQ asserts when draining crosses below half");
+}
+
+void test_gx_fifo_irq_is_level_triggered() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    constexpr std::uint32_t kGxFifoIrq = 1u << 21;
+
+    machine.write32(CpuId::Arm9, 0x04000600, 2u << 30); // IRQ when FIFO is empty
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) != 0,
+          "GX FIFO IRQ asserts while the empty-FIFO condition is active");
+    machine.write32(CpuId::Arm9, 0x04000214, kGxFifoIrq); // acknowledge IF
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) != 0,
+          "empty-FIFO GX IRQ relatches when IF is acknowledged");
+    machine.write32(CpuId::Arm9, 0x04000600, 1u << 30); // switch to IRQ when below half
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) != 0,
+          "GX FIFO IRQ remains asserted across an active-condition mode change");
+    machine.write32(CpuId::Arm9, 0x04000214, kGxFifoIrq);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) != 0,
+          "below-half GX IRQ relatches when IF is acknowledged while its condition remains active");
+
+    machine.write32(CpuId::Arm9, 0x04000600, 0); // disable GX FIFO IRQ
+    machine.write32(CpuId::Arm9, 0x04000214, kGxFifoIrq);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) == 0,
+          "disabled GX FIFO IRQ remains cleared after IF acknowledgement");
+    machine.write32(CpuId::Arm9, 0x04000600, 3u << 30); // reserved IRQ mode
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) == 0,
+          "reserved GX FIFO IRQ mode does not request an interrupt");
+
+    machine.write32(CpuId::Arm9, 0x04000600, 0);
+    for (unsigned i = 0; i < 128; ++i)
+        machine.write32(CpuId::Arm9, 0x04000400, 0); // queue NOPs without advancing the GPU
+    machine.write32(CpuId::Arm9, 0x04000600, 1u << 30);
+    check((machine.read32(CpuId::Arm9, 0x04000214) & kGxFifoIrq) == 0,
+          "GX FIFO IRQ stays inactive at the half-full threshold");
+}
+
+void test_slot1_read_ready_latency() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path rom_path =
+        std::filesystem::temp_directory_path() / ("dsr-core-slot1-" + std::to_string(stamp) + ".nds");
+    std::filesystem::path save_path = rom_path;
+    save_path.replace_extension(".sav");
+    {
+        std::ofstream output(rom_path, std::ios::binary);
+        std::array<std::uint8_t, 0x20000> rom{};
+        rom[0x15e] = 0x34;
+        rom[0x15f] = 0x12;
+        output.write(reinterpret_cast<const char*>(rom.data()),
+                     static_cast<std::streamsize>(rom.size()));
+        check(output.good(), "slot-1 timing ROM fixture is written");
+    }
+    struct DelayCase {
+        std::uint32_t gap;
+        bool fast_clock;
+    };
+    constexpr std::array<DelayCase, 4> cases{{
+        {0u, false},
+        {0x1fffu, false},
+        {0u, true},
+        {0x1fffu, true},
+    }};
+    constexpr std::uint32_t kDataReady = 1u << 23;
+    for (const DelayCase scenario : cases) {
+        MachineConfig config;
+        config.rom_path = rom_path;
+        config.save_path = save_path;
+        config.direct_boot = false;
+        Machine machine(config);
+        machine.write32(CpuId::Arm9, 0x04000204, 1u << 11); // give slot-1 to ARM7
+        const std::array<std::uint8_t, 8> command = {0xb7, 0, 0, 0x80, 0, 0, 0, 0};
+        for (std::size_t i = 0; i < command.size(); ++i)
+            machine.write8(CpuId::Arm7, 0x040001a8u + i, command[i]);
+        const std::uint32_t clocks = scenario.fast_clock ? 8u : 5u;
+        const std::uint32_t clock_select = scenario.fast_clock ? 1u << 27 : 0u;
+        const std::uint32_t rom_control = 0x81000000u | clock_select | scenario.gap;
+        machine.write32(CpuId::Arm7, 0x040001a4, rom_control); // nonzero 0x100-byte block
+
+        // NDS_RescheduleReadSlot1 doubles the 33-MHz transfer clocks because
+        // DeSmuME's nds_timer is 66 MHz. Machine ticks use the same 33-MHz
+        // unit as GameCard::run, so the equivalent delay is (8+gap)*clocks+4.
+        const std::uint64_t native_delay =
+            (8u + scenario.gap) * clocks + 4u;
+        machine.run_ticks(native_delay - 1);
+        check((machine.read32(CpuId::Arm7, 0x040001a4) & kDataReady) == 0,
+              "slot-1 data-ready remains clear before the Oracle ROMCTRL delay");
+        machine.run_ticks(1);
+        check((machine.read32(CpuId::Arm7, 0x040001a4) & kDataReady) != 0,
+              "slot-1 data-ready asserts at the Oracle ROMCTRL delay");
+    }
+
+    MachineConfig config;
+    config.rom_path = rom_path;
+    config.save_path = save_path;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write32(CpuId::Arm9, 0x04000204, 1u << 11);
+    const std::array<std::uint8_t, 8> no_data_command = {0x3c, 0, 0, 0, 0, 0, 0, 0};
+    for (std::size_t i = 0; i < no_data_command.size(); ++i)
+        machine.write8(CpuId::Arm7, 0x040001a8u + i, no_data_command[i]);
+    machine.write32(CpuId::Arm7, 0x040001a4, 0x80001fffu);
+    check((machine.read32(CpuId::Arm7, 0x040001a4) & (1u << 31)) == 0,
+          "zero-length slot-1 commands complete without a data-ready delay");
+    config.direct_boot = true;
+    Machine booted(config);
+    check(booted.read32(CpuId::Arm9, 0x027ff804) ==
+          booted.read32(CpuId::Arm9, 0x027ff800),
+          "direct boot publishes the secure chip ID at shared header offset4");
+    check(booted.read16(CpuId::Arm9, 0x027ff808) == 0x1234,
+          "direct boot publishes the ROM header CRC rather than boot flag1");
+}
+
+void test_dma_latches_and_timing() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path rom_path =
+        std::filesystem::temp_directory_path() / ("dsr-core-dma-" + std::to_string(stamp) + ".nds");
+    std::filesystem::path save_path = rom_path;
+    save_path.replace_extension(".sav");
+    std::vector<std::uint8_t> rom(0x20000, 0);
+    for (std::size_t i = 0; i < rom.size(); ++i)
+        rom[i] = static_cast<std::uint8_t>((i * 13u + 7u) & 0xffu);
+    for (unsigned i = 0; i < 16; ++i)
+        rom[0x8000u + i] = static_cast<std::uint8_t>(0x30u + i);
+    {
+        std::ofstream output(rom_path, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(rom.data()),
+                     static_cast<std::streamsize>(rom.size()));
+        check(output.good(), "DMA card-test ROM fixture is written");
+        output.close();
+
+        MachineConfig config;
+        config.rom_path = rom_path;
+        config.save_path = save_path;
+        config.direct_boot = false;
+        Machine machine(config);
+
+        constexpr std::uint32_t card_data = 0x04100010;
+        constexpr std::uint32_t arm7_dst = 0x02001000;
+        constexpr std::uint32_t arm9_nonowner_dst = 0x02002000;
+        constexpr std::uint32_t sentinel = 0xa5a5a5a5;
+        const auto word_at = [&rom](unsigned index) {
+            const std::size_t offset = 0x8000u + index * 4u;
+            return static_cast<std::uint32_t>(rom[offset]) |
+                   (static_cast<std::uint32_t>(rom[offset + 1]) << 8) |
+                   (static_cast<std::uint32_t>(rom[offset + 2]) << 16) |
+                   (static_cast<std::uint32_t>(rom[offset + 3]) << 24);
+        };
+
+        machine.write32(CpuId::Arm9, 0x04000204, 1u << 11); // give slot-1 to ARM7
+        machine.write32(CpuId::Arm7, 0x02001000, sentinel);
+        machine.write32(CpuId::Arm7, 0x02001004, sentinel);
+        machine.write32(CpuId::Arm7, 0x02001008, sentinel);
+        machine.write32(CpuId::Arm9, arm9_nonowner_dst, sentinel);
+
+        // A non-owner ARM9 channel must not consume a ready callback; ARM7
+        // channel 2's mode 2 is the cartridge event (not HBlank).
+        machine.write32(CpuId::Arm9, 0x040000b0, card_data);
+        machine.write32(CpuId::Arm9, 0x040000b4, arm9_nonowner_dst);
+        machine.write32(CpuId::Arm9, 0x040000b8, (0xac00u << 16) | 1u);
+        machine.write32(CpuId::Arm7, 0x040000c8, card_data);
+        machine.write32(CpuId::Arm7, 0x040000cc, arm7_dst);
+        machine.write32(CpuId::Arm7, 0x040000d0, (0xe760u << 16) | 2u); // fixed card source, repeat/reload + IRQ
+        machine.write16(CpuId::Arm7, 0x040000d0, 1u); // count is already latched as 2
+
+        const std::array<std::uint8_t, 8> command = {0xb7, 0, 0, 0x80, 0, 0, 0, 0};
+        for (std::size_t i = 0; i < command.size(); ++i)
+            machine.write8(CpuId::Arm7, 0x040001a8u + i, command[i]);
+        machine.write32(CpuId::Arm7, 0x040001a4, 0x81000000u); // 256-byte ROM block
+
+        machine.run_ticks(44); // ((8 + 0) * 5 + 4) native ticks
+        check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(0),
+              "one cartridge data-ready callback transfers one DMA word");
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == sentinel,
+              "cartridge DMA leaves the next destination untouched until its next callback");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
+              "cartridge DMA does not raise its IRQ before the latched count completes");
+        check(machine.read32(CpuId::Arm9, arm9_nonowner_dst) == sentinel,
+              "cartridge DMA callback is routed only to the slot owner");
+        check(machine.read32(CpuId::Arm7, 0x040000d0) == ((0xe760u << 16) | 1u),
+              "DMA count register readback remains distinct from its latched remaining count");
+
+        machine.run_ticks(2);
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(1),
+              "cartridge DMA transfers the second distinct word");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) != 0,
+              "cartridge DMA raises its IRQ at block completion");
+        machine.write32(CpuId::Arm7, 0x04000214, 1u << 10); // acknowledge first block IRQ
+
+        machine.run_ticks(2);
+        check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(2),
+              "repeated cartridge DMA reloads the destination after a full block");
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(1),
+              "repeated cartridge DMA advances within its reloaded destination block");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
+              "repeated cartridge DMA waits for the next complete block before IRQ");
+        machine.run_ticks(2);
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(3),
+              "second repeated block transfers its final distinct word");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) != 0,
+              "second repeated block raises DMA IRQ only on completion");
+        check(machine.read32(CpuId::Arm7, 0x040000c8) == card_data &&
+                  machine.read32(CpuId::Arm7, 0x040000cc) == arm7_dst,
+              "DMA source and destination registers retain their programmed readback values");
+        check(machine.read32(CpuId::Arm7, arm7_dst + 8) == sentinel,
+              "destination reload keeps repeated cartridge blocks within the programmed range");
+
+        machine.write32(CpuId::Arm9, 0x040000c4, 0x00054321u);
+        check(machine.read32(CpuId::Arm9, 0x040000c4) == 0x00054321u,
+              "ARM9 DMA count readback retains all 21 count bits");
+        machine.write16(CpuId::Arm9, 0x040000c4, 0xbeefu);
+        check(machine.read32(CpuId::Arm9, 0x040000c4) == 0x0005beefu,
+              "partial ARM9 count writes preserve the upper five count bits");
+        machine.write8(CpuId::Arm9, 0x040000c7, 0x12u);
+        check(machine.read32(CpuId::Arm9, 0x040000c4) == 0x1205beefu,
+              "partial ARM9 control writes preserve upper count bits in readback");
+
+        machine.write16(CpuId::Arm7, 0x040000b8, 0xffffu);
+        machine.write16(CpuId::Arm7, 0x040000dc, 0xffffu);
+        check(machine.read16(CpuId::Arm7, 0x040000b8) == 0x3fffu,
+              "ARM7 DMA channels 0-2 mask count registers to 14 bits");
+        check(machine.read16(CpuId::Arm7, 0x040000dc) == 0xffffu,
+              "ARM7 DMA channel 3 retains its 16-bit count register");
+    }
+    std::error_code error;
+    std::filesystem::remove(rom_path, error);
+    std::filesystem::remove(save_path, error);
+}
+
+void test_video_timing() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    check(machine.read16(CpuId::Arm9, 0x04000006) == 0 &&
+          machine.read16(CpuId::Arm7, 0x04000006) == 0,
+          "both CPUs observe initial HStart0 before the first guest instruction");
+    check((machine.read16(CpuId::Arm9, 0x04000004) & 4u) != 0,
+          "initial HStart evaluates the default VCOUNT0 comparison");
+    machine.write16(CpuId::Arm9, 0x04000004, 1u << 4);
+    machine.write32(CpuId::Arm9, 0x04000208, 1);
+    machine.write32(CpuId::Arm9, 0x04000210, (1u << 1) | (1u << 2));
+    machine.run_ticks(1606);
+    check((machine.read16(CpuId::Arm9, 0x04000004) & (1u << 1)) != 0,
+          "HBlank status asserts at the programmed line boundary");
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 1)) != 0,
+          "enabled HBlank interrupt raises IF");
+    machine.write16(CpuId::Arm9, 0x04000004, (1u << 8) | (1u << 5));
+    machine.run_ticks(524);
+    check((machine.read16(CpuId::Arm9, 0x04000004) & (1u << 2)) != 0,
+          "VCOUNT match status updates at the next scanline");
+    check((machine.read32(CpuId::Arm9, 0x04000214) & (1u << 2)) != 0,
+          "enabled VCOUNT match interrupt raises IF");
+}
+void test_frame_boundary_services_key_poll() {
+    GuestFn main_slot = frame_key_waiter;
+    GuestFn irq_slot = frame_key_irq_entry;
+    FnEntry entries[] = {
+        {0x02001000, 4, kModuleArm9Main, 0, 0, &main_slot, "frame_key_waiter"},
+        {0x02002000, 4, kModuleArm9Main, 0, 0, &irq_slot, "frame_key_irq"},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {entries, 2};
+    Machine machine(config);
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    cpu.cpsr_ctrl = kModeIrq;
+    cpu.r[13] = 0x00803fa0;
+    machine.write32(CpuId::Arm9, 0x00803ffc, 0x02002000);
+    machine.write32(CpuId::Arm9, 0x04000208, 1); // IME
+    machine.write32(CpuId::Arm9, 0x04000210, 1); // VBlank IRQ
+    machine.write16(CpuId::Arm9, 0x04000004, 1u << 3); // VBlank IRQ enable
+    frame_key_samples.fill(0xffffu);
+    frame_key_sample_count = 0;
+    InputState pressed;
+    pressed.buttons = kBtnA;
+    machine.set_input(pressed);
+    machine.start_cpu(CpuId::Arm9, 0x02001000);
+
+    machine.run_frame();
+    check(frame_key_sample_count == 1,
+          "run_frame services the current frame's VBlank key poll");
+    check(frame_key_samples[0] == 0x03feu,
+          "VBlank key poll sees an A press in the same frame");
+    check(machine.ticks() == (detail::kLinesPerFrame - 1) * detail::kLineTicks,
+          "first run_frame advances from initial HStart0 to HStart262");
+    check((machine.read32(CpuId::Arm9, 0x04000004) >> 16) ==
+              detail::kLinesPerFrame - 1,
+          "run_frame ends at the oracle's VCOUNT=262 boundary");
+    check((machine.read16(CpuId::Arm9, 0x04000004) & 1u) == 0,
+          "VBlank status clears at the frame boundary");
+
+    machine.set_input(InputState{});
+    machine.run_frame();
+    check(frame_key_sample_count == 2,
+          "the next run_frame services the next VBlank key poll");
+    check(frame_key_samples[1] == 0x03ffu,
+          "VBlank key poll sees a release in the same frame");
+    check(machine.ticks() == (2 * detail::kLinesPerFrame - 1) * detail::kLineTicks,
+          "subsequent run_frame advances a full 263-line frame");
+}
+
+
+void test_extended_keypad_bits() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    for (unsigned state = 0; state < 16; ++state) {
+        InputState input;
+        if (state & 1u) input.buttons |= kBtnX;
+        if (state & 2u) input.buttons |= kBtnY;
+        input.pen_down = (state & 4u) != 0;
+        input.lid_closed = (state & 8u) != 0;
+        machine.set_input(input);
+        const std::uint16_t expected = 0x3cu |
+            ((state & 1u) ? 0u : 1u) |
+            ((state & 2u) ? 0u : 2u) |
+            ((state & 4u) ? 0u : 0x40u) |
+            ((state & 8u) ? 0x80u : 0u);
+        check(machine.read16(CpuId::Arm7, 0x04000136) == expected,
+              "EXTKEYIN uses active-low X/Y/pen and active-high closed lid");
+    }
+    machine.set_input(InputState{});
+    check(machine.read16(CpuId::Arm7, 0x04000136) == 0x007fu,
+          "released inputs restore open-lid state after all transitions");
+}
+
+void test_math_and_fibers() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write32(CpuId::Arm9, 0x04000290, 100);
+    machine.write32(CpuId::Arm9, 0x04000298, 9);
+    check((machine.read16(CpuId::Arm9, 0x04000280) & (1u << 15)) != 0,
+          "divider reports busy immediately after a parameter write");
+    machine.run_ticks(18);
+    check(machine.read32(CpuId::Arm9, 0x040002a0) == 11,
+          "32-bit division completes after its hardware latency");
+    check(machine.read32(CpuId::Arm9, 0x040002a8) == 1,
+          "32-bit divider reports the completed remainder");
+    check((machine.read16(CpuId::Arm9, 0x04000280) & (1u << 15)) == 0,
+          "divider clears its busy bit when the result completes");
+    machine.write32(CpuId::Arm9, 0x04000290, 3);
+    machine.write32(CpuId::Arm9, 0x04000294, 1);
+    machine.write32(CpuId::Arm9, 0x04000298, 3);
+    machine.write32(CpuId::Arm9, 0x0400029c, 1);
+    machine.write16(CpuId::Arm9, 0x04000280, 3);
+    machine.run_ticks(34);
+    check(machine.read32(CpuId::Arm9, 0x040002a0) == 0x55555556,
+          "divider mode 3 uses a 64-bit numerator and signed 32-bit denominator");
+    check(machine.read32(CpuId::Arm9, 0x040002a8) == 1,
+          "divider mode 3 reports the 32-bit denominator remainder");
+    machine.write32(CpuId::Arm9, 0x04000290, 5);
+    machine.write32(CpuId::Arm9, 0x04000298, 0);
+    machine.write32(CpuId::Arm9, 0x0400029c, 1);
+    machine.write16(CpuId::Arm9, 0x04000280, 0);
+    check((machine.read16(CpuId::Arm9, 0x04000280) & (1u << 14)) == 0,
+          "divider zero flag tests the complete 64-bit denominator");
+    machine.write32(CpuId::Arm9, 0x0400029c, 0);
+    check((machine.read16(CpuId::Arm9, 0x04000280) & (1u << 14)) != 0,
+          "divider zero flag asserts when all denominator bits are zero");
+    machine.write32(CpuId::Arm9, 0x040002b8, 81);
+    check((machine.read16(CpuId::Arm9, 0x040002b0) & (1u << 15)) != 0,
+          "square root reports busy immediately after a parameter write");
+    machine.run_ticks(13);
+    check(machine.read32(CpuId::Arm9, 0x040002b4) == 9,
+          "square root result becomes available after its hardware latency");
+
+    std::vector<int> sequence;
+    Fiber fiber([&] {
+        sequence.push_back(1);
+        Fiber::yield();
+        sequence.push_back(2);
+    });
+    Fiber::switch_to(fiber);
+    check(sequence == std::vector<int>{1}, "fiber yields to the host context");
+    Fiber::switch_to(fiber);
+    check(sequence == (std::vector<int>{1, 2}) && fiber.finished(),
+          "fiber resumes and reports completion");
+    Fiber::switch_to(fiber);
+    check(sequence == (std::vector<int>{1, 2}),
+          "switching to a completed fiber is a no-op");
+    check(Fiber::current() == nullptr, "fiber completion restores the host identity");
+
+    // Switching directly between guest continuations still yields to the host,
+    // not to the most recent caller. This is the scheduler's thread-switch seam.
+    sequence.clear();
+    Fiber second([&] {
+        sequence.push_back(3);
+        Fiber::switch_to(*Fiber::current());
+        Fiber::yield();
+        sequence.push_back(4);
+    });
+    Fiber first([&] {
+        sequence.push_back(1);
+        Fiber::switch_to(second);
+        sequence.push_back(2);
+    });
+    Fiber::switch_to(first);
+    check(sequence == (std::vector<int>{1, 3}) && Fiber::current() == nullptr,
+          "a nested fiber switch yields to the implicit host");
+    Fiber::switch_to(second);
+    Fiber::switch_to(first);
+    check(sequence == (std::vector<int>{1, 3, 4, 2}) && first.finished() && second.finished(),
+          "parked callers resume with their original continuation");
+
+    const int original_rounding = std::fegetround();
+    Fiber floating_point([&] {
+        std::fesetround(FE_DOWNWARD);
+        Fiber::yield();
+        check(std::fegetround() == FE_DOWNWARD, "fiber resumes with its own floating-point control");
+    });
+    Fiber::switch_to(floating_point);
+    check(std::fegetround() == original_rounding, "yield restores the host floating-point control");
+    Fiber::switch_to(floating_point);
+    check(std::fegetround() == original_rounding, "completion restores the host floating-point control");
+
+    std::fesetround(FE_UPWARD);
+    Fiber inherited_floating_point([&] {
+        check(std::fegetround() == FE_UPWARD, "a new fiber inherits its creator's floating-point control");
+        std::fesetround(FE_TOWARDZERO);
+        Fiber::yield();
+        check(std::fegetround() == FE_TOWARDZERO, "an inherited fiber retains its changed control on resume");
+    });
+    Fiber::switch_to(inherited_floating_point);
+    check(std::fegetround() == FE_UPWARD, "yield restores a non-default host floating-point control");
+    Fiber::switch_to(inherited_floating_point);
+    check(std::fegetround() == FE_UPWARD, "completion restores a non-default host floating-point control");
+    std::fesetround(original_rounding);
+
+    bool rejected = false;
+    std::thread wrong_thread([&] {
+        try { Fiber::switch_to(first); }
+        catch (const std::logic_error&) { rejected = true; }
+    });
+    wrong_thread.join();
+    check(rejected, "fibers cannot migrate to another host thread");
+
+    std::thread worker([&] {
+        for (int session = 0; session < 2; ++session) {
+            Fiber large_stack([&] {
+                volatile std::uint8_t stack[192 * 1024]{};
+                stack[0] = 1;
+                stack[sizeof(stack) - 1] = 2;
+                Fiber::yield();
+                check(stack[0] == 1 && stack[sizeof(stack) - 1] == 2,
+                      "the minimum host stack survives a yield");
+            });
+            Fiber::switch_to(large_stack);
+            Fiber::switch_to(large_stack);
+            check(large_stack.finished() && Fiber::current() == nullptr,
+                  "successive worker sessions release and recreate their fiber host");
+        }
+    });
+    worker.join();
+}
+
+void test_overlay_hash_dispatch() {
+    constexpr std::array<std::uint8_t, 4> image = {0xd4, 0xc3, 0xb2, 0xa1};
+    const std::uint64_t hash = fnv1a64(image.data(), image.size());
+    GuestFn main_slot = overlay_main;
+    GuestFn wrong_slot = overlay_a;
+    GuestFn matching_slot = overlay_b;
+    FnEntry entries[] = {
+        {0x02004000, 4, kModuleArm9Main, 0, 0, &main_slot, "overlay_test_main"},
+        {0x02003000, 4, 0, 0, hash ^ 1u, &wrong_slot, "overlay_0"},
+        {0x02003000, 4, 1, 0, hash, &matching_slot, "overlay_1"},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {entries, 3};
+    Machine machine(config);
+    machine.write32(CpuId::Arm9, 0x02003000, 0xa1b2c3d4);
+    overlay_choice = 0;
+    call_overlay = true;
+    machine.start_cpu(CpuId::Arm9, 0x02004000);
+    machine.run_ticks(1);
+    check(overlay_choice == 2, "ambiguous overlay dispatch selects matching image hash");
+    check(machine.replace_function(CpuId::Arm9, 1, 0x02003000, hash, overlay_replacement),
+          "native override accepts a matching guest function hash");
+    dsr_call(&machine.cpu(CpuId::Arm9), 0x02003000);
+    check(overlay_choice == 3, "override replaces the selected overlay slot");
+    call_overlay = false;
+}
+
+const FnEntry* reference_overlay_entry(Cpu* cpu, const FnEntry* entries, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& entry = entries[i];
+        if (!entry.slot || entry.size == 0) continue;
+        std::uint64_t hash = 0xcbf29ce484222325ull;
+        for (std::uint32_t j = 0; j < entry.size; ++j)
+            hash = (hash ^ rd8(cpu, entry.addr + j)) * 0x100000001b3ull;
+        if (hash == entry.hash) return &entry;
+    }
+    return nullptr;
+}
+
+void test_overlay_snapshot_dispatch() {
+    // Halfword-aligned entry and odd-sized bodies straddle a 16 KiB page.
+    constexpr std::uint32_t address = 0x02007fde;
+    constexpr std::array<std::uint32_t, 8> sizes = {0, 257, 7, 19, 67, 131, 67, 17};
+    std::array<std::array<std::uint8_t, 257>, sizes.size()> images{};
+    std::mt19937 random(0x9d15a7cu);
+    for (auto& image : images)
+        for (auto& byte : image) byte = static_cast<std::uint8_t>(random());
+    images[6] = images[4]; // Two matching candidates must still choose the first.
+    // Candidate 1 is longer than candidate 2 but has the same short prefix.
+    // Rejected bytes beyond the selected body's end must also be validated.
+    for (std::size_t i = 0; i < sizes[2]; ++i) images[2][i] = images[1][i];
+    images[2][200] = images[1][200] ^ 1u;
+    GuestFn slot = overlay_a;
+    std::array<FnEntry, sizes.size()> arm9{}, arm7{};
+    for (std::size_t i = 0; i < sizes.size(); ++i) {
+        arm9[i] = {address, sizes[i], static_cast<std::int32_t>(i), 0,
+                   fnv1a64(images[i].data(), sizes[i]),
+                   i == sizes.size() - 1 ? nullptr : &slot, "snapshot_test"};
+        arm7[sizes.size() - 1 - i] = arm9[i];
+    }
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {arm9.data(), arm9.size()};
+    config.arm7_table = {arm7.data(), arm7.size()};
+    Machine machine(config);
+    Cpu& cpu9 = machine.cpu(CpuId::Arm9);
+    Cpu& cpu7 = machine.cpu(CpuId::Arm7);
+    auto& impl = detail::MachineAccess::impl(&cpu9);
+    const auto compare = [&](Cpu& cpu, const auto& entries) {
+        const FnEntry* expected = reference_overlay_entry(&cpu, entries.data(), entries.size());
+        check(impl.find_entry(&cpu, address) == expected,
+              "snapshot resolver equals original byte hash after an overlay write");
+        check(impl.find_entry(&cpu, address | 1u) == expected,
+              "unchanged snapshot preserves first match and target normalization");
+    };
+    const auto write_image = [&](const auto& image) {
+        for (std::size_t i = 0; i < image.size(); ++i)
+            wr8(&cpu7, address + 0x00800000u + static_cast<std::uint32_t>(i), image[i]);
+    };
+    write_image(images[2]);
+    compare(cpu9, arm9);
+    check(impl.find_entry(&cpu9, address) == &arm9[2],
+          "short candidate selected after rejecting longer candidate");
+    auto& cached = impl.dispatch_index.at(address);
+    check(cached.snapshot_valid && cached.checked_size == 257,
+          "snapshot includes rejected earlier body's full extent");
+    // No CP15, DMA, card, or other invalidation signal accompanies this write.
+    wr8(&cpu7, address + 200, images[1][200]);
+    // Restore the rest of the earlier long body, leaving the selected prefix unchanged.
+    for (std::uint32_t i = sizes[2]; i < sizes[1]; ++i)
+        wr8(&cpu7, address + i, images[1][i]);
+    compare(cpu9, arm9);
+    check(impl.find_entry(&cpu9, address) == &arm9[1],
+          "write beyond cached selected body can enable an earlier candidate");
+
+    for (unsigned iteration = 0; iteration < 4096; ++iteration) {
+        write_image(images[random() % images.size()]);
+        if ((iteration & 3u) == 0) {
+            const auto offset = random() % images[0].size();
+            const auto a = address + static_cast<std::uint32_t>(offset);
+            // Direct host writes (e.g. a cartridge upload) also need no hooks.
+            cpu9.page_w[a >> kPageShift][a & kPageMask] ^= 1u;
+        }
+        if ((iteration & 7u) == 0) {
+            wr16(&cpu9, address + random() % 254u, static_cast<std::uint16_t>(random()));
+            wr32(&cpu7, address + random() % 252u, random());
+        }
+        if ((iteration & 31u) == 0)
+            dsr_mcr(&cpu9, 15, 0, 7, 5, 0, 0, 0); // Optional, never relied upon.
+        compare(cpu9, arm9);
+        compare(cpu7, arm7); // Separate per-CPU ordering at the same guest address.
+    }
+    write_image(images[4]);
+    compare(cpu9, arm9);
+    check(impl.find_entry(&cpu9, address) == &arm9[4],
+          "identical hashes retain original candidate order");
+
+    const std::uint32_t page = (address + 34) >> kPageShift;
+    auto* mapped = cpu9.page_r[page];
+    cpu9.page_r[page] = nullptr;
+    compare(cpu9, arm9);
+    check(!cached.snapshot_valid, "partly slow-backed range does not cache reads");
+    cpu9.page_r[page] = mapped;
+    compare(cpu9, arm9);
+    check(cached.snapshot_valid, "restored direct page mapping can cache again");
+    impl.reset();
+    compare(cpu9, arm9);
+    write_image(images[6]);
+    compare(cpu9, arm9);
+}
+
+void test_overlay_snapshot_remapping_and_io() {
+    constexpr std::uint32_t address = 0x03000000;
+    constexpr std::array<std::uint8_t, 4> a = {1, 2, 3, 4}, b = {5, 6, 7, 8};
+    GuestFn slot = overlay_a;
+    const FnEntry entries[] = {
+        {address, 4, 0, 0, fnv1a64(a.data(), a.size()), &slot, "wram_a"},
+        {address, 4, 1, 0, fnv1a64(b.data(), b.size()), &slot, "wram_b"},
+        {0x04000130, 2, 0, 0, fnv1a64(a.data(), 2), &slot, "io_a"},
+        {0x04000130, 2, 1, 0, fnv1a64(b.data(), 2), &slot, "io_b"},
+    };
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {entries, 4};
+    Machine machine(config);
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    auto& impl = detail::MachineAccess::impl(&cpu);
+    machine.write8(CpuId::Arm9, 0x04000247, 0);
+    for (unsigned i = 0; i < 4; ++i) {
+        wr8(&cpu, address + i, a[i]);
+        wr8(&cpu, address + 0x4000 + i, b[i]);
+    }
+    check(impl.find_entry(&cpu, address) == &entries[0], "initial WRAM image resolves");
+    machine.write8(CpuId::Arm9, 0x04000247, 1);
+    check(impl.find_entry(&cpu, address) == &entries[1],
+          "WRAM remapping observes different bytes at the same virtual address");
+    machine.write8(CpuId::Arm9, 0x04000247, 2);
+    check(impl.find_entry(&cpu, address) == &entries[0],
+          "WRAM remapping back restores the original candidate");
+    check(impl.find_entry(&cpu, 0x04000130) == nullptr, "unmatched IO-backed candidate is null");
+    check(impl.find_entry(&cpu, 0x04000130) == nullptr &&
+          !impl.dispatch_index.at(0x04000130).snapshot_valid,
+          "IO-backed ranges never suppress their original reads");
+}
+
+void test_bios_memory_swis() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    Cpu& cpu = machine.cpu(CpuId::Arm9);
+    constexpr std::uint32_t source = 0x02005000;
+    constexpr std::uint32_t destination = 0x02005200;
+    const std::uint8_t crc_data[] = {'1','2','3','4','5','6','7','8','9'};
+    for (unsigned i = 0; i < sizeof(crc_data); ++i)
+        machine.write8(CpuId::Arm9, source + i, crc_data[i]);
+    cpu.r[0] = 0xffff;
+    cpu.r[1] = source;
+    cpu.r[2] = sizeof(crc_data) - 1;
+    dsr_swi(&cpu, 0x000e0000, 0x02004000, false);
+    check(cpu.r[0] == 0x37dd, "GetCRC16 matches CRC-16/ARC over complete halfwords");
+
+    const std::uint8_t lz77[] = {0x10, 3, 0, 0, 0, 'A', 'B', 'C'};
+    for (unsigned i = 0; i < sizeof(lz77); ++i)
+        machine.write8(CpuId::Arm9, source + 0x100 + i, lz77[i]);
+    cpu.r[0] = source + 0x100;
+    cpu.r[1] = destination;
+    dsr_swi(&cpu, 0x00110000, 0x02004004, false);
+    check(machine.read8(CpuId::Arm9, destination) == 'A' &&
+          machine.read8(CpuId::Arm9, destination + 2) == 'C',
+          "LZ77 WRAM SWI expands a literal block");
+
+    const std::uint8_t rl[] = {0x30, 3, 0, 0, 2, 'X', 'Y', 'Z'};
+    for (unsigned i = 0; i < sizeof(rl); ++i)
+        machine.write8(CpuId::Arm9, source + 0x200 + i, rl[i]);
+    cpu.r[0] = source + 0x200;
+    cpu.r[1] = destination + 0x10;
+    dsr_swi(&cpu, 0x00140000, 0x02004008, false);
+    check(machine.read8(CpuId::Arm9, destination + 0x10) == 'X' &&
+          machine.read8(CpuId::Arm9, destination + 0x12) == 'Z',
+          "RL WRAM SWI expands a literal block");
+
+    const std::uint8_t diff8[] = {0x80, 3, 0, 0, 10, 2, 0xfe};
+    for (unsigned i = 0; i < sizeof(diff8); ++i)
+        machine.write8(CpuId::Arm9, source + 0x300 + i, diff8[i]);
+    cpu.r[0] = source + 0x300;
+    cpu.r[1] = destination + 0x20;
+    dsr_swi(&cpu, 0x00160000, 0x0200400c, false);
+    check(machine.read8(CpuId::Arm9, destination + 0x20) == 10 &&
+          machine.read8(CpuId::Arm9, destination + 0x22) == 10,
+          "Diff8 SWI restores a delta-coded byte sequence");
+    machine.write8(CpuId::Arm9, 0x04000240, 0x80); // Bank A in LCDC mode.
+    machine.write16(CpuId::Arm9, 0x06800000, 0xa55a);
+    machine.write8(CpuId::Arm9, 0x06800000, 0xff);
+    machine.write8(CpuId::Arm9, 0x06800001, 0x00);
+    check(machine.read16(CpuId::Arm9, 0x06800000) == 0xa55a,
+          "ARM9 byte writes to mapped VRAM are ignored by the width-limited port");
+    machine.write16(CpuId::Arm9, 0x05000002, 0x1357);
+    machine.write8(CpuId::Arm9, 0x05000002, 0xff);
+    check(machine.read16(CpuId::Arm9, 0x05000002) == 0x1357,
+          "ARM9 byte writes to palette RAM are ignored");
+    machine.write16(CpuId::Arm9, 0x07000002, 0x2468);
+    machine.write8(CpuId::Arm9, 0x07000002, 0xff);
+    check(machine.read16(CpuId::Arm9, 0x07000002) == 0x2468,
+          "ARM9 byte writes to OAM are ignored");
+}
+void test_powcnt2_roundtrip_preserves_headphone_audio() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    for (std::uint32_t offset = 0; offset < 16; offset += 2)
+        machine.write16(CpuId::Arm7, 0x02000000 + offset, 0x7fff);
+    machine.write32(CpuId::Arm7, 0x04000404, 0x02000000);
+    machine.write32(CpuId::Arm7, 0x04000500, 0x807f);
+    machine.write32(CpuId::Arm7, 0x04000408, 0xffff);
+    machine.write32(CpuId::Arm7, 0x0400040c, 4);
+    machine.write32(CpuId::Arm7, 0x04000400,
+                    0x80000000u | (1u << 27) | (1u << 29) | (127u << 16) | 127u);
+    check(machine.read8(CpuId::Arm7, 0x04808000) == 0 &&
+          machine.read16(CpuId::Arm7, 0x04808000) == 0 &&
+          machine.read32(CpuId::Arm7, 0x04808000) == 0,
+          "powered-off Wi-Fi registers read zero at every width");
+    check(machine.read16(CpuId::Arm7, 0x04000304) == 1,
+          "POWCNT2 reset defaults to internal speaker enabled");
+    machine.write16(CpuId::Arm7, 0x04000304, 0);
+    check(machine.read16(CpuId::Arm7, 0x04000304) == 0,
+          "ARM7 POWCNT2 reads back the internal speaker-disable bit");
+    machine.spu().run(dsr::Spu::kTicksPerSample);
+    std::array<std::int16_t, 2> audio{};
+    check(machine.spu().drain(audio.data(), 1) == 1 && audio[1] != 0,
+          "disabling the internal speaker leaves headphone audio available");
+    machine.write16(CpuId::Arm7, 0x04000304, 3);
+    check(machine.read16(CpuId::Arm7, 0x04000304) == 3,
+          "ARM7 POWCNT2 preserves speaker and Wi-Fi power bits");
+    machine.write16(CpuId::Arm7, 0x0480815a, 0);
+    machine.write16(CpuId::Arm7, 0x04808158, 0x5006);
+    check(machine.read16(CpuId::Arm7, 0x0480815e) == 0,
+          "Wi-Fi BB_BUSY is clear after a completed baseband transfer");
+    machine.spu().run(dsr::Spu::kTicksPerSample);
+    check(machine.spu().drain(audio.data(), 1) == 1 && audio[1] != 0,
+          "enabling POWCNT2 speaker output also leaves audio available");
+}
+void test_wifi_baseband_and_rf_transactions() {
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write16(CpuId::Arm7, 0x04000304, 3);
+    machine.write16(CpuId::Arm7, 0x04808158, 0x6000);
+    check(machine.read16(CpuId::Arm7, 0x0480815c) == 0x006d,
+          "Wi-Fi baseband default is initialized on machine reset");
+    check(machine.read16(CpuId::Arm7, 0x04808168) == 0x800d,
+          "Wi-Fi BB_POWER reset value matches hardware defaults");
+    machine.write16(CpuId::Arm7, 0x04808168, 0xffff);
+    check(machine.read16(CpuId::Arm7, 0x04808168) == 0x800f,
+          "Wi-Fi baseband power register masks unwritable bits");
+    machine.write16(CpuId::Arm7, 0x0480817c, 0x0080);
+    check(machine.read16(CpuId::Arm7, 0x0480817e) == 0x0007 &&
+          machine.read16(CpuId::Arm7, 0x04808178) == 0x0080,
+          "Wi-Fi RF register reset values and mirrored data port read back");
+    machine.write16(CpuId::Arm7, 0x0480817c, 0x009c);
+    check(machine.read16(CpuId::Arm7, 0x0480817e) == 0x4578 &&
+          machine.read16(CpuId::Arm7, 0x0480817c) == 0x009d,
+          "Wi-Fi RF readback preserves the 16-bit data word and high bits");
+    machine.write16(CpuId::Arm7, 0x0480815a, 0x00a5);
+    machine.write16(CpuId::Arm7, 0x04808158, 0x5005);
+    check(machine.read16(CpuId::Arm7, 0x0480815e) == 0,
+          "Wi-Fi baseband busy clears synchronously after a write");
+    machine.write16(CpuId::Arm7, 0x04808158, 0x6005);
+    check(machine.read16(CpuId::Arm7, 0x0480815c) == 0x00a5 &&
+          machine.read16(CpuId::Arm7, 0x04808158) == 0x00a5,
+          "Wi-Fi baseband writes can be read back through BBREAD and BBCNT");
+
+    machine.write16(CpuId::Arm7, 0x0480815a, 0);
+    machine.write16(CpuId::Arm7, 0x04808158, 0x5000);
+    machine.write16(CpuId::Arm7, 0x04808158, 0x6000);
+    check(machine.read16(CpuId::Arm7, 0x0480815c) == 0x006d,
+          "Wi-Fi baseband read-only defaults survive attempted writes");
+    machine.write16(CpuId::Arm7, 0x04808158, 0x6069);
+    check(machine.read16(CpuId::Arm7, 0x0480815c) == 0,
+          "out-of-range Wi-Fi baseband reads return zero");
+
+    machine.write16(CpuId::Arm7, 0x0480817e, 0x005a);
+    machine.write16(CpuId::Arm7, 0x0480817c, 0x0004);
+    check(machine.read16(CpuId::Arm7, 0x04808180) == 0,
+          "Wi-Fi RF busy clears synchronously after a transfer");
+    machine.write16(CpuId::Arm7, 0x0480817c, 0x0084);
+    check(machine.read16(CpuId::Arm7, 0x0480817e) == 0x005a &&
+          machine.read16(CpuId::Arm7, 0x0480817c) == 0x0084,
+          "Wi-Fi RF register writes can be read back through RF data ports");
+
+    machine.write16(CpuId::Arm7, 0x0480817e, 0x0034);
+    machine.write16(CpuId::Arm7, 0x0480817c, static_cast<std::uint16_t>(13u << 2));
+    machine.write16(CpuId::Arm7, 0x0480817c,
+                    static_cast<std::uint16_t>(0x80u | (13u << 2)));
+    check(machine.read16(CpuId::Arm7, 0x0480817e) == 0,
+          "unused Wi-Fi RF register writes are ignored");
+    machine.write16(CpuId::Arm7, 0x0480817e, 0x00ff);
+    machine.write16(CpuId::Arm7, 0x0480817c, static_cast<std::uint16_t>(31u << 2));
+    machine.write16(CpuId::Arm7, 0x0480817c, 0x0080);
+    check(machine.read16(CpuId::Arm7, 0x0480817e) == 0x0007,
+          "Wi-Fi RF reset command restores RF2958 defaults");
+}
+} // namespace
+
+int run_core_tests() {
+    test_main_ram_write_watch_expands_mirrors();
+    test_irq_and_nested_return();
+    test_timers_dma_and_ipc();
+    test_core_register_contracts();
+    test_rtc_core_io_contract();
+    test_gx_fifo_dma_starts_on_empty_fifo();
+    test_gx_fifo_irq_is_level_triggered();
+    test_slot1_read_ready_latency();
+    test_dma_latches_and_timing();
+    test_video_timing();
+    test_frame_boundary_services_key_poll();
+    test_extended_keypad_bits();
+    test_interworking_return_state();
+    test_math_and_fibers();
+    test_overlay_hash_dispatch();
+    test_overlay_snapshot_dispatch();
+    test_overlay_snapshot_remapping_and_io();
+    test_shared_region_fallback_dispatch();
+    test_bios_memory_swis();
+    test_powcnt2_roundtrip_preserves_headphone_audio();
+    test_wifi_baseband_and_rf_transactions();
+    run_thread_tests();
+    run_abi_config_tests();
+    return failures == 0 ? 0 : 1;
+}
+} // namespace dsr::tests
+
+int main() { return dsr::tests::run_core_tests(); }

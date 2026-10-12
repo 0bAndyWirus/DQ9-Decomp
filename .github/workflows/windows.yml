@@ -1,0 +1,52 @@
+name: Windows runtime
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msvc:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install SDL2
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install sdl2:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Fetch public SWI table oracle (not a Nintendo BIOS)
+        run: |
+          New-Item -ItemType Directory -Force reference/desmume-trace/source/src | Out-Null
+          Invoke-WebRequest 'https://raw.githubusercontent.com/TASEmulators/desmume/859d47e7ff99d0eef4adf318d8aa6fdc3afd3e5a/desmume/src/bios.cpp' -OutFile reference/desmume-trace/source/src/bios.cpp
+      - name: Configure ROM-free runtime and tests
+        run: |
+          cmake -S . -B build/win-ci -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows -DDQ9_BUILD_SDL=ON -DDQ9_BUILD_GODOT=OFF `
+            "-DDSR_SDL2_RUNTIME_DLL=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/SDL2.dll" `
+            "-DDQ9_BIOS_REFERENCE_SOURCE=$PWD/reference/desmume-trace/source/src/bios.cpp"
+      - name: Build
+        run: cmake --build build/win-ci -j 6
+      - name: Run CTest
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+          SDL_AUDIODRIVER: dummy
+        run: ctest --test-dir build/win-ci --output-on-failure
+
+# This workflow builds and tests the host runtime only; it uploads nothing.
+# A generated-game build requires a separately supplied generated-code directory.
+# See docs/BUILDING_WINDOWS.md for local build configuration.

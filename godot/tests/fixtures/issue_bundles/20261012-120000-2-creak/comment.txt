@@ -1,0 +1,4 @@
+Synthetic fixture: Creaking audio when opening the menu. Please retest with normal audio.
+frame: 299
+rtc_epoch: 0
+rtc_timezone_offset_minutes: 0

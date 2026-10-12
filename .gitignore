@@ -1,0 +1,39 @@
+# Build outputs
+/build/
+/build-check/
+/cmake-build-*/
+/out/
+
+# Local reference copies and extracted copyrighted data; never commit these.
+/ROM/
+/rom/
+/reference/
+/assets/local/
+/extracted/
+*.nds
+*.dsv
+*.sav
+*.gp2
+*.bin
+
+# Tool/user state
+/.cache/
+.DS_Store
+Thumbs.db
+
+# Python tooling
+/.venv/
+__pycache__/
+
+# Decompiled game source (ROM-derived); never commit.
+/src/_candidates/
+/src/Recovered/
+
+# Local compiled outputs and packages; never publish generated game builds.
+*.exe
+*.dll
+*.so
+*.dylib
+*.zip
+*.pck
+tools/local/

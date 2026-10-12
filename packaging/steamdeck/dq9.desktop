@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=DQ9-Decomp
+Comment=Native runtime host
+Exec="@INSTALL_DIR@/dq9.sh"
+Path=@INSTALL_DIR@
+Icon=applications-games
+Terminal=false
+Categories=Game;RolePlaying;
+StartupNotify=false

@@ -1,0 +1,5 @@
+audio_driver: synthetic fixture
+queued_audio_ms: 40
+underruns: 0
+dropped_audio_ms: 0
+peak: 0.1

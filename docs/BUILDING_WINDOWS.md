@@ -1,0 +1,105 @@
+# Building DQ9-Decomp on Windows x64
+
+The SDL host and Godot 4.5 GDExtension share the original native runtime. The cross-build uses Zig's MinGW-compatible Windows sysroot on Linux; native MSVC is a separate build path. A cross-link or Wine test is not a Windows hardware/gameplay test.
+
+Targets are Windows 10/11 x64. Images, saves, generated game sources, captures, and game builds remain private. Game-host packages are local-only and must never be uploaded to CI, releases, or issue attachments.
+
+## Build inputs
+
+Game hosts require a separately supplied generated-code directory selected through `DQ9_GENERATED_DIR` or the wrapper's `--gen` option. No end-to-end generator workflow is shipped; these instructions do not explain how to produce that directory.
+
+Runtime-only builds omit `DQ9_GENERATED_DIR` and need no game image. The SWI differential CTest target uses independent formula checks by default. Its external reference-table mode requires a separately available reference-emulator source tree: configure `DQ9_BIOS_REFERENCE_SOURCE` with the path to public DeSmuME HLE `src/bios.cpp`. This is not a Nintendo BIOS and is not bundled. Wine uses its `Z:` mapping when reading the supplied external host path.
+
+## Cross-build on Linux with Zig
+
+Prerequisites: a local Python virtual environment, CMake 3.20+, Ninja, Git, curl, and tar. The wrapper uses `.venv/bin/cmake`:
+
+```sh
+.venv/bin/python -m pip install cmake ziglang==0.17.0
+tools/build_windows.sh --gen /absolute/path/generated-code --jobs 6
+```
+
+The wrapper installs Zig if needed and uses the [official SDL2 MinGW development SDK](https://github.com/libsdl-org/SDL/releases/tag/release-2.30.12) under ignored `build/win-deps/`. `--deps DIR` or `--sdl-root DIR` selects an existing SDK. `DQ9_ZIG_PYTHON` selects the Zig interpreter; `--no-ccache` disables the optional compiler cache.
+
+Outputs include the SDL executable, its SDL2 DLL, runtime test executables, and the session library under `build/win-sdl/`. Generated code retains the compiler options required for guest-pointer semantics; runtime code uses the selected Release settings. SDL2 is a separate DLL and must match the target architecture.
+
+Direct configuration, using absolute SDK/generated paths:
+
+```sh
+.venv/bin/cmake -S . -B build/win-sdl -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/x86_64-windows-zig.cmake \
+  -DCMAKE_BUILD_TYPE=Release -DDQ9_BUILD_GODOT=OFF \
+  -DDQ9_GENERATED_DIR="/absolute/path/generated-code" \
+  -DDQ9_WINDOWS_SDL_ROOT="/absolute/path/SDL2-SDK" \
+  -DSDL2_DIR="/absolute/path/SDL2-SDK/lib/cmake/SDL2" \
+  -DDSR_SDL2_RUNTIME_DLL="/absolute/path/SDL2-SDK/bin/SDL2.dll"
+.venv/bin/cmake --build build/win-sdl -j 6
+```
+
+For runtime-only configuration, omit the generated-directory option. Add `-DDQ9_BIOS_REFERENCE_SOURCE="/absolute/path/desmume/src/bios.cpp"` to exercise the external reference-table comparison; it requires that public HLE source even without game data.
+
+## Godot Windows extension
+
+Use matching external [godot-cpp 4.5 bindings](https://github.com/godotengine/godot-cpp/tree/godot-4.5-stable), selected through `GODOT_CPP_DIR`:
+
+```sh
+GODOT_CPP_DIR="/absolute/path/godot-cpp" \
+  tools/build_windows.sh --both --gen /absolute/path/generated-code --jobs 6
+# --godot-only selects just the extension and does not need SDL2.
+```
+
+The separate build tree is `build/win-godot`. The toolchain supplies Windows platform/architecture information; the wrapper uses `GODOTCPP_TARGET=template_release` and `GODOTCPP_SYSTEM_HEADERS=ON`.
+
+The matching extension and session DLL are written to `godot/bin/`. `godot/dq9.gdextension` lists the Windows x86_64 libraries and session dependency. Do not mix DLLs built by different compilers/configurations or platforms.
+
+To run locally, use the [Godot 4.5 Windows x64 editor](https://godotengine.org/download/archive/4.5-stable/), set `GODOT` to its executable, and open `godot\project.godot` or run `tools\run_godot.bat --menu`. Export templates are not needed to run the project in the editor.
+
+A local standalone Windows export requires matching export templates and a Windows Desktop x86_64 preset. The tracked preset is Linux-only. Include the matching extension/session DLLs, but never an image or save; the resulting game export must remain private.
+
+## Native MSVC build
+
+Install Visual Studio 2022 Build Tools with Desktop development with C++, CMake, Ninja, Python, and Git. Use an x64 developer shell and an external vcpkg checkout with SDL2 installed. In PowerShell:
+
+```powershell
+& "$env:VCPKG_ROOT\vcpkg.exe" install sdl2:x64-windows
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install cmake
+.\.venv\Scripts\cmake.exe -S . -B build/win-native -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows -DDQ9_BUILD_GODOT=OFF `
+  "-DDSR_SDL2_RUNTIME_DLL=$env:VCPKG_ROOT/installed/x64-windows/bin/SDL2.dll"
+.\.venv\Scripts\cmake.exe --build build/win-native -j 6
+.\.venv\Scripts\ctest.exe --test-dir build/win-native --output-on-failure
+```
+
+This is runtime-only. External reference-table comparison additionally configures the separately available HLE source with `DQ9_BIOS_REFERENCE_SOURCE`; the default uses independent formula checks. A local game host configures the separately supplied generated-code directory. A Godot build uses a separate tree with `DQ9_BUILD_SDL=OFF`, `DQ9_BUILD_GODOT=ON`, matching bindings, and the same compiler/session configuration.
+
+MSVC builds use the shared MSVC runtime; local machines without the development tools may need Microsoft's x64 Visual C++ Redistributable.
+
+The Windows CI workflow builds/tests public runtime code only and uploads no artifacts. It makes the external public HLE test source available separately; no Nintendo BIOS or game image is used. CI success must be reported from an actual run, not inferred from its configuration.
+
+## Local-only packaging and launch
+
+```sh
+tools/package_windows.sh             # local SDL + Godot builds required
+tools/package_windows.sh --sdl-only  # local SDL-only package
+```
+
+The package script stages an explicit binary/resource whitelist under ignored `build/dist/`. Unknown files in an existing output directory cause refusal; choose a fresh `--out DIR` rather than deleting user data.
+
+`tools/audit_package.py` is a heuristic filename/size/signature check, not proof that an archive contains no game data or is lawful to share. Even a package with no findings is local-only and must never be uploaded.
+
+Launch from `<install-dir>` with `run_game.bat --menu` or `run_godot.bat --menu`, then select an existing local compatible image. Do not create a bundled image directory or copy an image beside the executable. Direct image selection uses `--rom` or `DQ9_ROM`; choose a writable save path separately. In a source checkout these wrappers live in `tools\`; PowerShell equivalents do not change system execution policy.
+
+`DQ9_SAVE`, `DQ9_EXE`, and `GODOT` select local save/executable/editor paths. Default wrapper saves use the application-data directory. Keep diagnostic saves distinct from normal saves and out of any package. The Godot wrapper performs a headless editor import when needed; this requires a writable project directory and the real editor, not an export template.
+
+`DQ9_ABI_CONFIG` selects caller-supplied local runtime metadata for both hosts; SDL also accepts `--abi-config PATH`. CPU sections use the fields in `runtime/include/dsr/abi_config.h`; supplied sections must be complete, including intentional zero fields. Omitting a CPU section disables its thread overrides with a diagnostic. Optional cartridge backup settings belong in that same private configuration. No title-specific ABI layout is bundled.
+
+## Verification and limits
+
+PE/import inspection verifies linkage and architecture, not execution. Optional Wine CTest checks are not native Windows or Godot-editor compatibility evidence. Cross-built DLLs cannot be exercised by Linux Python ctypes as Windows libraries.
+
+On a Windows workstation, run runtime tests with the external reference source, then validate both hosts locally with suitable inputs: audio, controllers, touch, save persistence, scaling, fibers, and shutdown. Hardware and GPU-backend behavior require separate exercised checks. Keep all generated sources, captures, saves, dumps, and game binaries private.
+
+As of 2026-10-12, native and cross-build configurations are present. This public guide asserts no full-game acceptance, target-hardware result, binary size, game coverage total, or performance guarantee.

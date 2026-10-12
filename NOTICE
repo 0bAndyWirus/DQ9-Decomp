@@ -1,0 +1,41 @@
+DQ9-Decomp
+
+This repository contains original tooling and runtime code only. It contains no
+ROM, no game data or assets, no decompiled or disassembled game code, and no
+compiled build of the game.
+
+"Dragon Quest" is a trademark of Square Enix Co., Ltd. "Nintendo" and
+"Nintendo DS" are trademarks of Nintendo. This project is unofficial and is not
+affiliated with, endorsed by or sponsored by either company.
+
+Third-party software (not included in this repository; used under its own
+license when you obtain it):
+  SDL2        zlib license          https://libsdl.org
+  Godot       MIT license           https://godotengine.org
+  godot-cpp   MIT license           https://github.com/godotengine/godot-cpp
+  DeSmuME     GPL-2.0-or-later      external reference emulator and source
+                                    used for comparisons and test checks
+Other build-time tools (Metrowerks toolchain, wibo, dsd, Ghidra, objdiff) are
+obtained separately by the user and are licensed by their own authors.
+
+Runtime hardware values and behavior have been cross-checked against external
+reference-emulator sources and hardware documentation. Those source trees are
+not bundled. Some differential tests read a separately available public
+high-level-emulation source file; they do not require a Nintendo BIOS.
+
+Prior work consulted for research and tooling design (not bundled): the DQIX
+community projects at https://github.com/DQIX and the ds-decomp toolchain (dsd)
+at https://github.com/AetiasHax/ds-decomp. Their code and materials retain
+their respective licenses; this project's MIT License does not cover them.
+
+The built-in bitmap font in runtime/frontend/src/ui_toolkit.cpp contains the
+printable ASCII glyphs from Spleen 5x8 2.2.0 by Frederic Cambus, Copyright (c)
+2018-2026, distributed under the BSD 2-Clause license. The original row bitmaps
+are preserved; the UI adds horizontal padding and a one-pixel line gap.
+Upstream: https://github.com/fcambus/spleen
+Source (revision 5116f8eac7f65da2cfa169626ec43b5d041665fe):
+https://github.com/fcambus/spleen/blob/5116f8eac7f65da2cfa169626ec43b5d041665fe/spleen-5x8.bdf
+License:
+https://github.com/fcambus/spleen/blob/5116f8eac7f65da2cfa169626ec43b5d041665fe/LICENSE
+The full upstream copyright notice, conditions and disclaimer are reproduced
+verbatim in third_party/spleen-LICENSE.txt.

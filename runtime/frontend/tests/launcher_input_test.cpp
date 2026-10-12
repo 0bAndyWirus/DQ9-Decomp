@@ -1,0 +1,98 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include "dsr/frontend.h"
+#include <SDL.h>
+#include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <string>
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+namespace {
+struct Sequence { SDL_Joystick* joystick; unsigned phase = 0; };
+void key(SDL_Scancode scancode) {
+    SDL_Event event{};
+    event.type = SDL_KEYDOWN;
+    event.key.keysym.scancode = scancode;
+    event.key.keysym.sym = SDL_GetKeyFromScancode(scancode);
+    assert(SDL_PushEvent(&event) == 1);
+    event.type = SDL_KEYUP;
+    assert(SDL_PushEvent(&event) == 1);
+}
+Uint32 sequence(Uint32 interval, void* data) {
+    auto& state = *static_cast<Sequence*>(data);
+    switch (state.phase++) {
+    case 0: assert(SDL_JoystickSetVirtualHat(state.joystick, 0, SDL_HAT_RIGHT) == 0); break;
+    case 1: assert(SDL_JoystickSetVirtualHat(state.joystick, 0, SDL_HAT_CENTERED) == 0); break;
+    case 2:
+        key(SDL_SCANCODE_F2);
+        key(SDL_SCANCODE_RIGHT);
+        key(SDL_SCANCODE_RETURN); // Rebind A using an actual controller event.
+        break;
+    case 3: assert(SDL_JoystickSetVirtualButton(state.joystick, 9, 1) == 0); break;
+    case 4:
+        assert(SDL_JoystickSetVirtualButton(state.joystick, 9, 0) == 0);
+        for (int i = 0; i < 12; ++i) key(SDL_SCANCODE_DOWN);
+        key(SDL_SCANCODE_F4);
+        for (int i = 0; i < 6; ++i) key(SDL_SCANCODE_DOWN);
+        key(SDL_SCANCODE_RETURN); // Debug tool, not a stale Controls row.
+        {
+            SDL_Event mouse{};
+            mouse.type = SDL_MOUSEBUTTONDOWN;
+            mouse.button.button = SDL_BUTTON_LEFT;
+            mouse.button.x = 1010;
+            mouse.button.y = 710; // Outside the visible Launch button.
+            assert(SDL_PushEvent(&mouse) == 1);
+        }
+        break;
+    case 5: assert(SDL_JoystickSetVirtualButton(state.joystick, 6, 1) == 0); break;
+    default: {
+        SDL_Event event{};
+        event.type = SDL_QUIT; // Bounded failure rather than a stuck CTest.
+        assert(SDL_PushEvent(&event) == 1);
+        return 0;
+    }
+    }
+    return interval;
+}
+}
+#endif
+int main() {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    const auto directory = std::filesystem::temp_directory_path() / ("dq9-launcher-test-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+#if defined(_WIN32)
+    SDL_SetMainReady();
+    SDL_setenv("APPDATA", directory.string().c_str(), 1);
+    SDL_setenv("LOCALAPPDATA", directory.string().c_str(), 1);
+#else
+    SDL_setenv("XDG_CONFIG_HOME", directory.string().c_str(), 1);
+    SDL_setenv("XDG_DATA_HOME", directory.string().c_str(), 1);
+#endif
+    SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
+    SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER) == 0);
+    const int device = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 0,
+                                                SDL_CONTROLLER_BUTTON_MAX, 1);
+    assert(device >= 0);
+    char guid[64]{};
+    SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(device), guid, sizeof(guid));
+    const std::string mapping = std::string(guid) + ",DQ9 Launcher Test,start:b6,leftshoulder:b9,dpright:h0.2,";
+    assert(SDL_GameControllerAddMapping(mapping.c_str()) >= 0);
+    SDL_Joystick* joystick = SDL_JoystickOpen(device);
+    assert(joystick);
+    Sequence state{joystick};
+    assert(SDL_AddTimer(150, sequence, &state) != 0);
+    dsr::LauncherOptions options;
+    options.rom_path = "unavailable-test-rom.nds";
+    const bool accepted = dsr::run_sdl_launcher(options);
+    assert(accepted); // Start arrives only if launcher opens a controller handle.
+    assert(options.language == "fr");
+    assert(options.debug_tool); // F4 must reset focus after Controls row 12.
+    assert(state.phase >= 6); // Outside-button clicks must not launch early.
+    assert(options.frontend.gamepad_buttons[0] == SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    std::filesystem::remove_all(directory);
+#endif
+}

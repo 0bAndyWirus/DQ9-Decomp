@@ -1,0 +1,6 @@
+audio_debug: solo=2 muted=3,5
+frame=299
+fps=60
+audio_queue_ms=40
+underruns=0
+fixture=synthetic issue state; no session data

@@ -1,0 +1,2 @@
+Synthetic fixture: Old screen layout report.
+frame: 120
