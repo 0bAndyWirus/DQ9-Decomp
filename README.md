@@ -59,7 +59,11 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 
 ## Status
 
-*As of 2026-10-12.* The recompiler components, hardware runtime, SDL and Godot host sources, development tools and synthetic tests are published. Runtime tests and synthetic rendering checks are **not** proof of full-game compatibility, and device-side Windows and Steam Deck validation is not claimed.
+*As of 2026-10-13.* The recompiler components, hardware runtime, SDL and Godot host sources, development tools and synthetic tests are published. Runtime tests and synthetic rendering checks are **not** proof of full-game compatibility, and device-side Windows and Steam Deck validation is not claimed.
+
+**Performance.** On a fixed 16,200-frame headless replay (Ryzen 7 6800HS, one pinned core), throughput rose from 150.1 to 175.0 FPS (+16.6%; cycles 494G to 427G). Two intermediate regressions in the 2D compositor and the band-parallel 3D rasterizer had hidden part of the gain until they were bisected and fixed; method and tables are in [docs/BAND_PARALLEL_RENDER.md](docs/BAND_PARALLEL_RENDER.md). Set `DSR_RENDER_THREADS` for multi-worker 3D rendering. Wall-clock FPS under load is not an acceptance metric.
+
+**Godot host.** The `DqMachine` GDExtension runs the machine on a worker thread with an audio ring, nonblocking frame slots and a 60 Hz cap (59.8 FPS steady in an earlier live run). It provides DS button and touch input with rebinding, resizable screen layouts, save handling, restart, replayable debug bundles and an issue reviewer. An optional GPU path draws captured 3D scenes as sorted textured meshes with DS-compatible shaders and a masked compositor, supports higher-resolution output, and has a zero-crack regression test. Windows cross-builds package the SDL executable and the Godot extension. There is no oracle-parity claim for the high-resolution path.
 
 No end-to-end generator workflow is shipped. Building a game host needs a separately supplied generated-code directory, which this repository does not explain how to produce. See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
 
