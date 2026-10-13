@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <vector>
 #include <cstdlib>
 #include <memory>
 #include <iostream>
@@ -109,8 +110,12 @@ void submit_frame(Gpu3D& gpu, std::uint32_t sort_mode = 0) {
 }
 
 struct TestTextureSource {
-    std::array<std::array<std::uint8_t, 0x20000>, 4> textures{};
-    std::array<std::array<std::uint8_t, 0x4000>, 6> palettes{};
+    // Heap-backed: ~600 KiB per source overflows the 1 MiB default Windows stack
+    // when a test holds two or more on the stack.
+    std::vector<std::array<std::uint8_t, 0x20000>> textures =
+        std::vector<std::array<std::uint8_t, 0x20000>>(4);
+    std::vector<std::array<std::uint8_t, 0x4000>> palettes =
+        std::vector<std::array<std::uint8_t, 0x4000>>(6);
     std::uint8_t mapped_textures = 0x0fU;
     std::uint8_t overlapping_textures = 0U;
     bool overlapping_palettes = false;
