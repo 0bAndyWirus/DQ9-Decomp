@@ -1,20 +1,26 @@
 <div align="center">
 
-# DQ9-Decomp
+# Dragon Quest IX (DQ9) — European Decompilation & Native Runtime Research
 
-**Research tooling and a native runtime for *Dragon Quest IX: Sentinels of the Starry Skies* (EU)**
+**Open-source research tooling for *Dragon Quest IX: Sentinels of the Starry Skies* (European Nintendo DS release).**
 
-Static recompilation · Nintendo DS hardware runtime · SDL and Godot hosts
+ARM9/ARM7 static recompilation · C++20 Nintendo DS runtime · Experimental SDL2 and Godot hosts
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows%20%C2%B7%20Steam%20Deck-lightgrey.svg)
+![Host targets](https://img.shields.io/badge/host%20targets-Linux%20%C2%B7%20Windows%20%C2%B7%20Steam%20Deck-lightgrey.svg)
 ![Game data](https://img.shields.io/badge/game%20data-none%20included-success.svg)
 ![Status](https://img.shields.io/badge/status-research-orange.svg)
 
 </div>
 
+> **Research project — not a playable PC release.** The public repository provides original tooling, runtime components and synthetic tests. It does **not** include game data, generated game code, compiled game builds or a complete end-to-end game-generation workflow. See [Status](#status) and [Legal](#legal).
+
 > **Bring your own copy.** This repository contains original code only. It does not include the game, any game asset, recovered or generated game code, or any compiled build, and none is published here. See [Legal](#legal).
+
+DQ9-Decomp explores whether the European version of *Dragon Quest IX* can eventually run through a faithful native host on modern hardware. The current work combines original reverse-engineering tools, ARM/Thumb static recompilation research and native runtime services. **Linux is the immediate development platform; Windows and Steam Deck are targets**, not verified full-game compatibility claims.
+
+**Start here:** [Project status](#status) · [Architecture](docs/ARCHITECTURE.md) · [Runtime-only quick start](#quick-start-runtime-and-tests-only) · [Roadmap](docs/ROADMAP.md) · [FAQ](docs/FAQ.md) · [Legal boundary](LEGAL.md)
 
 ---
 
@@ -28,7 +34,7 @@ It provides the engineering pieces that do not depend on any game content:
 |---|---|---|
 | **Recompiler** | [`recomp/`](recomp) | Turns locally supplied ARM9/ARM7 code into host C++ (static recompilation). |
 | **Hardware runtime** | [`runtime/`](runtime) | CPU glue, memory bus, 2D and 3D GPU, sound, peripherals, cartridge and save handling. |
-| **SDL host** | [`game/`](game) | Desktop front end: windowing, input, audio, launcher, debug capture. |
+| **SDL2 host** | [`game/`](game) | Desktop front end: windowing, input, audio, launcher, debug capture. |
 | **Godot host** | [`godot/`](godot) | GDExtension front end with higher-resolution rendering experiments. |
 | **Tools** | [`tools/`](tools) | Build helpers, frame comparison, regression and workflow utilities. |
 | **Tests** | [`tests/`](tests), `runtime/*/tests` | Synthetic unit, differential and rendering checks. |
@@ -58,6 +64,18 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 - **Test-driven:** the default unit and CTest suites use synthetic fixtures only and need no game; optional probes (replay parity, Godot smoke tests) are outside the default suites and require locally supplied inputs.
 
 ## Status
+
+### At a glance
+
+| Area | Publicly documented state |
+| --- | --- |
+| Original tooling and runtime sources | Available |
+| SDL2 / Godot host source code | Available for research |
+| Runtime-only synthetic tests | Available; not full-game tests |
+| Aggregate matching figures | Reported from a local run (dated below); not a fresh full-module or full-ROM validation |
+| End-to-end game generator | Not shipped |
+| Public playable game / binaries | Not distributed |
+| Full-game parity and Windows/Steam Deck validation | Not established |
 
 *As of 2026-10-13.* The recompiler components, hardware runtime, SDL and Godot host sources, development tools and synthetic tests are published. Runtime tests and synthetic rendering checks are **not** proof of full-game compatibility, and device-side Windows and Steam Deck validation is not claimed.
 
@@ -112,6 +130,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 
 | | |
 |---|---|
+| [FAQ](docs/FAQ.md) | Short answers: playability, data boundary, EU version, platforms |
 | [Charter](docs/PROJECT_CHARTER.md) | Purpose, scope and the data boundary |
 | [Architecture](docs/ARCHITECTURE.md) | Components, execution model, presentation invariants |
 | [Tools reference](docs/TOOLS.md) | What each tool does and its exit codes |
@@ -122,7 +141,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 
 ## Contributing
 
-Contributions must be your own original work under the MIT license and must not contain any game-derived bytes, assets, text, symbol or address dumps, or decompiled source. Open an issue before large changes.
+Contributions must be your own original work under the MIT license and must not contain any game-derived bytes, assets, text, symbol or address dumps, or decompiled source. Open an issue before large changes. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Legal
 
