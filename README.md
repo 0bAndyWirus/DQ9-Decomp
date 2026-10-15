@@ -1,20 +1,26 @@
 <div align="center">
 
-# DQ9-Decomp
+# Dragon Quest IX (DQ9) — European Decompilation & Native Runtime Research
 
-**Research tooling and a native runtime for *Dragon Quest IX: Sentinels of the Starry Skies* (EU)**
+**Open-source research tooling for *Dragon Quest IX: Sentinels of the Starry Skies* (European Nintendo DS release).**
 
-Static recompilation · Nintendo DS hardware runtime · SDL and Godot hosts
+ARM9/ARM7 static recompilation · C++20 Nintendo DS runtime · Experimental SDL2 and Godot hosts
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows%20%C2%B7%20Steam%20Deck-lightgrey.svg)
+![Host targets](https://img.shields.io/badge/host%20targets-Linux%20%C2%B7%20Windows%20%C2%B7%20Steam%20Deck-lightgrey.svg)
 ![Game data](https://img.shields.io/badge/game%20data-none%20included-success.svg)
 ![Status](https://img.shields.io/badge/status-research-orange.svg)
 
 </div>
 
+> **Research project — not a playable PC release.** The public repository provides original tooling, runtime components and synthetic tests. It does **not** include game data, generated game code, compiled game builds or a complete end-to-end game-generation workflow. See [Status](#status) and [Legal](#legal).
+
 > **Bring your own copy.** This repository contains original code only. It does not include the game, any game asset, recovered or generated game code, or any compiled build, and none is published here. See [Legal](#legal).
+
+DQ9-Decomp explores whether the European version of *Dragon Quest IX* can eventually run through a faithful native host on modern hardware. The current work combines original reverse-engineering tools, ARM/Thumb static recompilation research and native runtime services. **Linux is the immediate development platform; Windows and Steam Deck are targets**, not verified full-game compatibility claims.
+
+**Start here:** [Project status](#status) · [Architecture](docs/ARCHITECTURE.md) · [Runtime-only quick start](#quick-start-runtime-and-tests-only) · [Roadmap](docs/ROADMAP.md) · [FAQ](docs/FAQ.md) · [Legal boundary](LEGAL.md)
 
 ---
 
@@ -28,7 +34,7 @@ It provides the engineering pieces that do not depend on any game content:
 |---|---|---|
 | **Recompiler** | [`recomp/`](recomp) | Turns locally supplied ARM9/ARM7 code into host C++ (static recompilation). |
 | **Hardware runtime** | [`runtime/`](runtime) | CPU glue, memory bus, 2D and 3D GPU, sound, peripherals, cartridge and save handling. |
-| **SDL host** | [`game/`](game) | Desktop front end: windowing, input, audio, launcher, debug capture. |
+| **SDL2 host** | [`game/`](game) | Desktop front end: windowing, input, audio, launcher, debug capture. |
 | **Godot host** | [`godot/`](godot) | GDExtension front end with higher-resolution rendering experiments. |
 | **Tools** | [`tools/`](tools) | Build helpers, frame comparison, regression and workflow utilities. |
 | **Tests** | [`tests/`](tests), `runtime/*/tests` | Synthetic unit, differential and rendering checks. |
@@ -59,13 +65,25 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 
 ## Status
 
+### At a glance
+
+| Area | Publicly documented state |
+| --- | --- |
+| Original tooling and runtime sources | Available |
+| SDL2 / Godot host source code | Available for research |
+| Runtime-only synthetic tests | Available; not full-game tests |
+| Aggregate matching figures | Reported from a local run (dated below); not a fresh full-module or full-ROM validation |
+| End-to-end game generator | Not shipped |
+| Public playable game / binaries | Not distributed |
+| Full-game parity and Windows/Steam Deck validation | Not established |
+
 *As of 2026-10-13.* The recompiler components, hardware runtime, SDL and Godot host sources, development tools and synthetic tests are published. Runtime tests and synthetic rendering checks are **not** proof of full-game compatibility, and device-side Windows and Steam Deck validation is not claimed.
 
 **Matching progress.** 14,555 of 14,794 functions (98.4%) and 2,859,980 of 2,958,414 code bytes (96.67%) match byte-exactly, per the local status report of 2026-10-11 (aggregate totals only; see [docs/DECOMP_STATUS.md](docs/DECOMP_STATUS.md)). This is not re-verified by a fresh full-module check or a full-ROM checksum, and runtime parity with the reference emulator is partial: checkpoint comparisons still differ on several frames.
 
-**Performance.** On a fixed 16,200-frame headless replay (Ryzen 7 6800HS, one pinned core), throughput rose from 150.1 to 175.0 FPS (+16.6%; cycles 494G to 427G). Two intermediate regressions in the 2D compositor and the band-parallel 3D rasterizer had hidden part of the gain until they were bisected and fixed; method and tables are in [docs/BAND_PARALLEL_RENDER.md](docs/BAND_PARALLEL_RENDER.md). Set `DSR_RENDER_THREADS` for multi-worker 3D rendering. Wall-clock FPS under load is not an acceptance metric.
+**Performance.** Author-reported, historical figures (first published 2026-10-13; the measurement date is not recorded and the replay input and raw tables are not public, so they cannot be reproduced from this repository): on a fixed 16,200-frame headless replay (Ryzen 7 6800HS, one pinned core), throughput rose from 150.1 to 175.0 FPS (+16.6%; cycles 494G to 427G). Two intermediate regressions in the 2D compositor and the band-parallel 3D rasterizer had hidden part of the gain until they were bisected and fixed. [docs/BAND_PARALLEL_RENDER.md](docs/BAND_PARALLEL_RENDER.md) documents the band-parallel implementation contract, not these measurements. Set `DSR_RENDER_THREADS` for multi-worker 3D rendering. Wall-clock FPS under load is not an acceptance metric.
 
-**Godot host.** The `DqMachine` GDExtension runs the machine on a worker thread with an audio ring, nonblocking frame slots and a 60 Hz cap (59.8 FPS steady in an earlier live run). It provides DS button and touch input with rebinding, resizable screen layouts, save handling, restart, replayable debug bundles and an issue reviewer. An optional GPU path draws captured 3D scenes as sorted textured meshes with DS-compatible shaders and a masked compositor, supports higher-resolution output, and has a zero-crack regression test. Windows cross-builds package the SDL executable and the Godot extension. There is no oracle-parity claim for the high-resolution path.
+**Godot host.** The `DqMachine` GDExtension runs the machine on a worker thread with an audio ring, nonblocking frame slots and a 60 Hz cap (59.8 FPS steady in an earlier, undated, author-reported live run; not independently verified). It provides DS button and touch input with rebinding, resizable screen layouts, save handling, restart, replayable debug bundles and an issue reviewer. An optional GPU path draws captured 3D scenes as sorted textured meshes with DS-compatible shaders and a masked compositor, supports higher-resolution output, and has a zero-crack regression test. Windows cross-builds package the SDL executable and the Godot extension. There is no oracle-parity claim for the high-resolution path.
 
 No end-to-end generator workflow is shipped. Building a game host needs a separately supplied generated-code directory, which this repository does not explain how to produce. See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
 
@@ -112,6 +130,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 
 | | |
 |---|---|
+| [FAQ](docs/FAQ.md) | Short answers: playability, data boundary, EU version, platforms |
 | [Charter](docs/PROJECT_CHARTER.md) | Purpose, scope and the data boundary |
 | [Architecture](docs/ARCHITECTURE.md) | Components, execution model, presentation invariants |
 | [Tools reference](docs/TOOLS.md) | What each tool does and its exit codes |
@@ -122,7 +141,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 
 ## Contributing
 
-Contributions must be your own original work under the MIT license and must not contain any game-derived bytes, assets, text, symbol or address dumps, or decompiled source. Open an issue before large changes.
+Contributions must be your own original work under the MIT license and must not contain any game-derived bytes, assets, text, symbol or address dumps, or decompiled source. Open an issue before large changes. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Legal
 
