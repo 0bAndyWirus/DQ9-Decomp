@@ -91,6 +91,7 @@ struct FrontendConfig {
     // chosen on the command line, which wins over the persisted frontend.conf value.
     int gpu3d_scale = 1;
     bool gpu3d_scale_explicit = false;
+    int volume = 100; // master output volume, 0-100 percent (host mixer only; never feeds back into emulation)
     std::array<int, 12> keycodes{};
     std::array<int, 12> gamepad_buttons{};
     bool debug_tool_enabled = false;

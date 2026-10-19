@@ -41,6 +41,10 @@ std::chrono::steady_clock::time_point advance_frame_deadline(
 // require the visible audio page, or an explicit Ctrl+Shift keyboard chord.
 std::uint32_t allowed_debug_actions(std::uint32_t actions, bool overlay_visible,
                                    bool audio_page, bool ctrl, bool shift);
+// Output gain as Q8 fixed point (256 = unity) for a 0-100 percent volume; 0 when muted.
+int volume_gain_q8(int percent, bool muted);
+// Scales interleaved samples in place; unity gain leaves them untouched.
+void apply_volume_gain(std::int16_t* samples, std::size_t count, int gain_q8);
 std::string audio_debug_status(int solo, const std::array<bool, 16>& muted);
 
 struct Rect { int x; int y; int w; int h; };
@@ -69,6 +73,9 @@ struct ConfigData {
     int key_fast_forward = 0;
     int key_screenshot = 0;
     int key_gpu3d_scale = 0;
+    int key_volume_down = 0;
+    int key_volume_up = 0;
+    int key_mute = 0;
     std::string language = "en";
     std::string rom_path;
     std::string save_path;

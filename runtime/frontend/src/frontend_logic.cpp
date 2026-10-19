@@ -29,6 +29,10 @@ void parse_line(const std::string& line, ConfigData& cfg) {
         if (key == "key_fast_forward") cfg.key_fast_forward = scancode_or(std::stoi(value), cfg.key_fast_forward);
         else if (key == "key_screenshot") cfg.key_screenshot = scancode_or(std::stoi(value), cfg.key_screenshot);
         else if (key == "key_gpu3d_scale") cfg.key_gpu3d_scale = scancode_or(std::stoi(value), cfg.key_gpu3d_scale);
+        else if (key == "key_volume_down") cfg.key_volume_down = scancode_or(std::stoi(value), cfg.key_volume_down);
+        else if (key == "key_volume_up") cfg.key_volume_up = scancode_or(std::stoi(value), cfg.key_volume_up);
+        else if (key == "key_mute") cfg.key_mute = scancode_or(std::stoi(value), cfg.key_mute);
+        else if (key == "volume") cfg.frontend.volume = std::clamp(std::stoi(value), 0, 100);
         else if (key == "gpu3d_scale") cfg.frontend.gpu3d_scale = std::clamp(std::stoi(value), 1, 4);
         else if (key == "layout") {
             const int n = std::stoi(value);
@@ -199,6 +203,7 @@ ConfigData default_config() {
     c.key_layout = 63; c.key_swap = 65; c.key_fullscreen = 68;
     c.key_filter = 62; c.key_integer = 61; c.key_lid = 60;
     c.key_fast_forward = 43; c.key_screenshot = 69; // Tab (held), F12
+    c.key_volume_down = 45; c.key_volume_up = 46; c.key_mute = 16; // - = M
     c.key_gpu3d_scale = 64;                          // F7 (was the swap default before hi-res 3D)
     return c;
 }
@@ -211,6 +216,7 @@ std::string serialize_config(const ConfigData& c) {
         << "fullscreen=" << (c.frontend.fullscreen ? 1 : 0) << '\n'
         << "integer_scaling=" << (c.frontend.integer_scaling ? 1 : 0) << '\n'
         << "gpu3d_scale=" << c.frontend.gpu3d_scale << '\n'
+        << "volume=" << c.frontend.volume << '\n'
         << "linear_filter=" << (c.frontend.linear_filter ? 1 : 0) << '\n'
         << "audio_rate=" << c.frontend.audio_rate << '\n'
         << "audio_buffer_ms=" << c.frontend.audio_buffer_ms << '\n'
@@ -232,7 +238,10 @@ std::string serialize_config(const ConfigData& c) {
         << "hotkey_integer=" << c.key_integer << '\n' << "hotkey_lid=" << c.key_lid << '\n'
         << "key_fast_forward=" << c.key_fast_forward << '\n'
         << "key_screenshot=" << c.key_screenshot << '\n'
-        << "key_gpu3d_scale=" << c.key_gpu3d_scale << '\n';
+        << "key_gpu3d_scale=" << c.key_gpu3d_scale << '\n'
+        << "key_volume_down=" << c.key_volume_down << '\n'
+        << "key_volume_up=" << c.key_volume_up << '\n'
+        << "key_mute=" << c.key_mute << '\n';
     return out.str();
 }
 ConfigData parse_config(std::string_view text, ConfigData base) {
@@ -269,6 +278,16 @@ std::uint16_t configured_gamepad_mask(const std::array<int, 12>& mapping, int bu
         if (mapping[i] == button) mask |= static_cast<std::uint16_t>(1u << i);
     return mask;
 }
+int volume_gain_q8(int percent, bool muted) {
+    return muted ? 0 : std::clamp(percent, 0, 100) * 256 / 100;
+}
+
+void apply_volume_gain(std::int16_t* samples, std::size_t count, int gain_q8) {
+    if (gain_q8 >= 256) return;
+    for (std::size_t i = 0; i < count; ++i)
+        samples[i] = static_cast<std::int16_t>((static_cast<std::int32_t>(samples[i]) * gain_q8) >> 8);
+}
+
 double audio_resample_correction(std::size_t backlog_frames, std::size_t target_frames, int output_rate) {
     if (target_frames == 0 || output_rate <= 0) return 0.0;
     const double error_seconds =
