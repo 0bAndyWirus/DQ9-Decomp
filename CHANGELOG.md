@@ -9,6 +9,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Speed (output-identical):** OBJ rejection before affine/tile setup and a hoisted object test in the 2D
   compositor; on a separate local development build the 28,500-frame gameplay script (3D scenes) ran about
   15% faster than before v0.2.1 with identical per-frame hashes and WAV output.
+- **3D speed (output-identical):** large polygon lists are prepared in parallel chunks on the render pool; ~2% shorter on the 28,500-frame gameplay run, identical hashes/audio and identical for 0, 2, 3 and 6 render threads.
 - **Pause:** `P` pauses and resumes without the debug tool (rebindable; a notice stays on screen while paused).
 - **Build safety:** `tools/build_port.py` records which image its workspace was extracted from and refuses to silently rebuild an older image when you give it a different one; `--rebuild-workspace` clears the tool's own folders (never the image) and starts clean.
 - **Saves:** the previous run's save is kept as `<save>.bak` (once per run, before the first overwrite).
