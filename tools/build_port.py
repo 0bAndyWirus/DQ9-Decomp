@@ -14,7 +14,7 @@ Steps:
 
 Known limitation: modules that ship in protected form are NOT unpacked by this
 public tool, and no ABI configuration is supplied. A host built this way currently
-runs but shows blank screens; the cause is not established. This project does not
+runs but shows blank screens without a caller-supplied --abi-config thread layout. This project does not
 claim a playable game; see docs/GETTING_STARTED.md.
 
 Usage:

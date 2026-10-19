@@ -32,7 +32,7 @@ cmake -S . -B build/game-ui -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/game-ui --target dq9
 ```
 
-`tools/build_port.py` can produce that directory, but the result does not yet reach any game output (blank screens; cause not yet identified). Keep it and the resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
+`tools/build_port.py` can produce that directory, but the result does not yet reach any game output (blank screens without a caller-supplied `--abi-config`; see Getting started). Keep it and the resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
 
 ## Godot prerequisites and build
 

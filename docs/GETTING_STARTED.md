@@ -33,7 +33,13 @@ build/game/game/dq9 --rom "path/to/your-copy.nds" --save my.sav --language en
 
 `arm7-metadata.json` is a private file with the ARM7 autoload callback address (`{"autoload_callback": "0x..."}`); this repository does not publish game addresses. Use `--generate-only` to stop after code generation.
 
-**Honest status of this path:** I ran it end to end on a local copy. Code generation reports 0 unsupported sites for both CPUs, the executable builds, and a 1,500-frame headless run (`--language fr`) exits normally with no fatal error. But both screens stay a single solid colour in every frame I dumped (frames 100, 299, 599, 899, 1499), so **the game does not reach the logos, title or any gameplay, and you still cannot play it this way.** I have not identified why it stalls. Differences from the private development build that I have *not* tested as the cause: the step that unpacks protected code modules is not published, no ABI configuration is supplied (thread overrides are reported as disabled), and the ARM7 analysis here uses only a minimal metadata file. Do not treat any of these as the confirmed reason.
+**Honest status of this path:** I ran it end to end on a local copy. Code generation reports 0 unsupported sites for both CPUs, the executable builds, and a 1,500-frame headless run (`--language fr`) exits normally with no fatal error. But both screens stay a single solid colour in every frame I dumped (frames 100, 299, 599, 899, 1499), so **the game does not reach the logos, title or any gameplay, and you still cannot play it this way.** Diagnosis so far (local experiments, same ROM, 900 frames each):
+
+- Swapping the ARM7 generated code between public and private trees changed nothing (still blank), so the ARM7 analysis is not the cause.
+- Running a runtime that has the game's thread layer enabled against the *public* generated code gets past the blank-screen stall and then stops with `no recompiled ARM9 entry` at an address in overlay space, called from main code. That points to the thread layer as the cause of the stall and to protected-module code as the next blocker [INFERENCE for the second part: I did not confirm the failing address belongs to the protected module].
+- The public runtime only enables its thread layer when you pass `--abi-config` with a caller-written INI describing the game's thread structures (see `runtime/core/THREADS.md`). This repository does not publish those values and no tool yet derives them from your copy. Without that file the game stalls.
+
+So today playing needs two things this repository does not provide: a thread-layout INI, and handling of protected code. **You still cannot play it this way.**
 
 ## What you *can* do here
 
