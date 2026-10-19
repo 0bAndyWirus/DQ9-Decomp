@@ -210,6 +210,10 @@ class BuildPortTests(unittest.TestCase):
             self.assertTrue(rom.is_file())
             self.assertTrue((workspace / "config").is_dir())  # nothing was deleted before the refusal
 
+    def test_backup_choices_match_the_derivation_tool(self):
+        from tools import derive_abi_config
+        self.assertEqual(build_port.BACKUP_TYPE_CHOICES, derive_abi_config.BACKUP_TYPES)
+
     def test_launch_hints_do_not_enable_debug_tool(self):
         args = [Path("a path/dq9"), Path("my game.nds"), Path("abi.ini")]
         posix = build_port.launch_hint(*args)
