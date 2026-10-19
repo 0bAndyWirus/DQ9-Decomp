@@ -127,7 +127,11 @@ public:
         SDL_SetMainReady();
         if (!precise_timer_) precise_timer_ = timeBeginPeriod(1) == TIMERR_NOERROR;
 #endif
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) return false;
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) return false;
+        // Sound is optional: a machine without a usable audio device (a server, a broken driver, a
+        // remote session) can still play silently instead of refusing to start.
+        const bool audio_subsystem = SDL_InitSubSystem(SDL_INIT_AUDIO) == 0;
+        std::string audio_problem = audio_subsystem ? std::string{} : SDL_GetError();
         frontend_detail::load_controller_mappings(paths_.config_dir);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, config_.linear_filter ? "1" : "0");
         const Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
@@ -149,9 +153,16 @@ public:
         SDL_AudioSpec want{};
         want.freq = config_.audio_rate; want.format = AUDIO_S16SYS; want.channels = 2;
         want.samples = static_cast<Uint16>(kAudioDeviceBufferSamples);
-        audio_ = SDL_OpenAudioDevice(nullptr, 0, &want, &audio_spec_, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-        if (!audio_) return false;
-        output_rate_ = audio_spec_.freq;
+        if (audio_subsystem) {
+            audio_ = SDL_OpenAudioDevice(nullptr, 0, &want, &audio_spec_, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+            if (!audio_) audio_problem = SDL_GetError();
+        }
+        if (!audio_) {
+            std::fprintf(stderr, "dq9: audio unavailable (%s); continuing without sound.\n",
+                         audio_problem.empty() ? "no device" : audio_problem.c_str());
+            show_message("NO AUDIO DEVICE: PLAYING SILENTLY", 6000);
+        }
+        output_rate_ = audio_ ? audio_spec_.freq : 0;
         if (audio_metrics_enabled_) {
             const char* driver = SDL_GetCurrentAudioDriver();
             std::fprintf(stderr,
@@ -1036,7 +1047,7 @@ private:
         metric_frame_time_max_us_ = std::max(metric_frame_time_max_us_, frame_us);
         if (metric_frame_time_count_ < metric_frame_times_us_.size())
             metric_frame_times_us_[metric_frame_time_count_++] = frame_us;
-        const std::size_t queued_bytes = SDL_GetQueuedAudioSize(audio_);
+        const std::size_t queued_bytes = audio_ ? SDL_GetQueuedAudioSize(audio_) : 0;
         if (metric_queue_samples_ == 0) metric_queue_min_bytes_ = queued_bytes;
         metric_queue_min_bytes_ = std::min(metric_queue_min_bytes_, queued_bytes);
         metric_queue_max_bytes_ = std::max(metric_queue_max_bytes_, queued_bytes);
@@ -1091,9 +1102,10 @@ private:
         swapped_ = !swapped_;
         show_message(swapped_ ? "SCREENS SWAPPED" : "SCREENS: DEFAULT ORDER");
     }
-    void show_message(const std::string& text) override {
+    void show_message(const std::string& text) override { show_message(text, 2500); }
+    void show_message(const std::string& text, int milliseconds) {
         toast_ = text;
-        toast_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+        toast_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
     }
     // Transient notice at the bottom-left plus a held-key fast-forward badge at the top-right.
     void draw_toast() {
