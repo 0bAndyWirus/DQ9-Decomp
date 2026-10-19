@@ -1456,6 +1456,9 @@ struct Gpu2D::Impl {
                 dst_three_d = source.three_d && source.color.alpha == 31U && !blends &&
                               (brightness == 0U || evy == 0U);
             };
+            const Pixel& object = obj_pixels[xi];
+            const bool object_visible = object.opaque && (mask & (1U << 4U)) != 0U;
+            const int object_priority = object.priority;
             for (int priority = 3; priority >= 0; --priority) {
                 for (std::uint8_t i = 0; i < bg_order_count[priority]; ++i) {
                     const std::uint8_t bg = bg_order[priority][i];
@@ -1464,8 +1467,7 @@ struct Gpu2D::Impl {
                         composite(pixel, bg);
                     }
                 }
-                const Pixel& object = obj_pixels[xi];
-                if (object.opaque && object.priority == priority && (mask & (1U << 4U)) != 0U) {
+                if (object_visible && object_priority == priority) {
                     composite(object, kObjLayer);
                 }
             }
