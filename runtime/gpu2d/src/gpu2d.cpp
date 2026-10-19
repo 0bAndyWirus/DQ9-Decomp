@@ -755,6 +755,11 @@ struct Gpu2D::Impl {
             const unsigned local_y = (source_y & 7U) ^ ((entry & 0x800U) != 0U ? 7U : 0U);
             const auto row = source.text_row<Color256>(
                 char_base + (entry & 0x3FFU) * (row_bytes * 8U) + local_y * row_bytes);
+            if (row == 0U) {
+                // A fully transparent tile row (every index 0) writes nothing.
+                x += count;
+                continue;
+            }
             const unsigned flip_x = (entry & 0x400U) != 0U ? 7U : 0U;
             const unsigned palette_base = Color256 && !Extended ? 0U
                 : (entry >> 12U) * (Color256 ? 256U : 16U);
