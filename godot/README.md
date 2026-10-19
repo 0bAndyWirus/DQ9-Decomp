@@ -18,7 +18,7 @@ Select a local image using `--rom`, `DQ9_ROM` when no saved path exists, or Brow
 overrides and optional cartridge backup settings. No title-specific ABI layout
 or values are included. See [Building DQ9-Decomp](../docs/BUILDING.md).
 
-The launcher supports the seven host layouts (vertical, horizontal, top/bottom focus, single top/bottom, merged overlay); F11 toggles fullscreen and F10 opens the pause/debug panel. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.
+The launcher supports the seven host layouts (vertical, horizontal, top/bottom focus, single top/bottom, merged overlay); F11 toggles fullscreen and F10 opens the pause/debug panel; hold Tab to fast-forward (the pause panel's speed returns on release) and press F12 to save a PNG of both screens to `user://screenshots/`. The settings panel shows whether the ROM path exists and the current key/pad binding on each button. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.
 
 ## Development and tests
 

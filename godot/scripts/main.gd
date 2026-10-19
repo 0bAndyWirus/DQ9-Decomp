@@ -9,6 +9,10 @@ const LANGS := ["en","fr","de","es","it"]
 var settings: Dictionary
 var machine: Node
 var layout := 0
+var _user_speed := 1.0          # speed chosen in the pause panel; fast-forward (hold Tab) overrides it
+var _ff_held := false
+var _toast: Label
+var _toast_token := 0
 var settings_panel: PanelContainer
 var game_panel: Control
 var top_rect: TextureRect
@@ -89,6 +93,11 @@ func _build_ui() -> void:
 	bottom_rect = bottom_frame.find_child("Texture", true, false) as TextureRect
 	bottom_rect.gui_input.connect(_on_touch_input)
 	status_label = Label.new(); status_label.position = Vector2(10, 10); status_label.add_theme_font_size_override("font_size", 16); game_panel.add_child(status_label)
+	_toast = Label.new(); _toast.add_theme_font_size_override("font_size", 18); _toast.hide()
+	_toast.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT); _toast.position = Vector2(12, -40)
+	var toast_style := StyleBoxFlat.new(); toast_style.bg_color = Color(0.05, 0.08, 0.13, 0.92); toast_style.border_color = Color(0.3, 0.65, 0.95); toast_style.set_border_width_all(1); toast_style.set_corner_radius_all(4); toast_style.set_content_margin_all(6)
+	_toast.add_theme_stylebox_override("normal", toast_style)
+	game_panel.add_child(_toast)
 	var bar := HBoxContainer.new(); root.add_child(bar)
 	var menu := Button.new(); menu.text = "Start / Settings"; menu.pressed.connect(_show_settings); bar.add_child(menu)
 	var layout_box := OptionButton.new()
@@ -299,7 +308,7 @@ func _make_pause() -> PanelContainer:
 	var step:=Button.new(); step.text="Step one frame"; step.pressed.connect(func():machine.set_paused(true);machine.step_once()); c.add_child(step)
 	var speeds:=OptionButton.new()
 	for label in ["0.25×","0.5×","1×","2×","Max"]: speeds.add_item(label)
-	speeds.item_selected.connect(func(i): machine.set_speed([0.25,0.5,1.0,2.0,0.0][i]))
+	speeds.item_selected.connect(func(i): _user_speed = [0.25,0.5,1.0,2.0,0.0][i]; machine.set_speed(_user_speed))
 	speeds.select(2)
 	c.add_child(speeds)
 	var stats:=CheckButton.new(); stats.text="Show statistics"; stats.button_pressed=true; stats.toggled.connect(func(v):status_label.visible=v); c.add_child(stats)
@@ -332,6 +341,7 @@ func _start_game() -> void:
 		return
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
+	_user_speed = 1.0; _ff_held = false
 	_apply_gpu3d_settings()
 	if machine.has_method("set_rtc_epoch"):
 		var timezone := Time.get_time_zone_from_system()
@@ -609,7 +619,47 @@ func _review_build() -> String:
 		_review_build_id = "dq9_godot sha256:" + FileAccess.get_sha256("res://bin/libdq9_godot.so")
 	return _review_build_id
 
+# Short notice at the bottom-left of the game area; "" hides it at once.
+func _show_toast(text: String, seconds := 2.5) -> void:
+	if _toast == null: return
+	_toast_token += 1
+	_toast.visible = not text.is_empty()
+	_toast.text = text
+	if text.is_empty(): return
+	var token := _toast_token
+	get_tree().create_timer(seconds).timeout.connect(func(): if token == _toast_token: _toast.hide())
+
+# Hold Tab to run unpaced (the pause panel's speed returns on release). Ignored while typing or in dialogs.
+func _update_fast_forward() -> void:
+	if machine == null:
+		if _ff_held: _ff_held = false; _show_toast("")
+		return
+	var typing := get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit
+	var want := machine != null and Input.is_key_pressed(KEY_TAB) and not typing and not settings_panel.visible and not issue_reviewer.visible and not pause_panel.visible
+	if want == _ff_held: return
+	_ff_held = want
+	machine.set_speed(0.0 if want else _user_speed)
+	if want: _show_toast("FAST-FORWARD >>", 600.0)
+	else: _show_toast("")
+
+func _save_screen_hotkey() -> void:
+	if machine == null: return
+	var dir := "user://screenshots"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	var top: Image = machine.get_top_image()
+	var bottom: Image = machine.get_bottom_image()
+	if top == null or bottom == null or top.is_empty() or bottom.is_empty():
+		_show_toast("Screenshot failed: no frame yet"); return
+	var both := Image.create(top.get_width(), top.get_height() + bottom.get_height(), false, top.get_format())
+	both.blit_rect(top, Rect2i(Vector2i.ZERO, top.get_size()), Vector2i.ZERO)
+	both.blit_rect(bottom, Rect2i(Vector2i.ZERO, bottom.get_size()), Vector2i(0, top.get_height()))
+	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
+	var path := "%s/dq9-%s.png" % [dir, stamp]
+	var error := both.save_png(path)
+	_show_toast("Screenshot saved: " + path.get_file() if error == OK else "Screenshot failed (%d)" % error)
+
 func _process(_delta: float) -> void:
+	_update_fast_forward()
 	if machine and machine.has_method("get_stats"):
 		var s:Dictionary=machine.get_stats()
 		var now := Time.get_ticks_msec()
@@ -646,6 +696,7 @@ func _input(event: InputEvent) -> void:
 			if event.keycode == KEY_ESCAPE:
 				_close_issue_reviewer(); get_viewport().set_input_as_handled()
 			return # let the focused reviewer LineEdit/TextEdit receive ordinary keys
+		if event.keycode==KEY_F12 and machine: _save_screen_hotkey(); get_viewport().set_input_as_handled(); return
 		if event.keycode==KEY_F11: get_window().mode=Window.MODE_WINDOWED if get_window().mode==Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
 		elif event.keycode==KEY_F10: _toggle_pause()
 		elif event.keycode==KEY_F6:
