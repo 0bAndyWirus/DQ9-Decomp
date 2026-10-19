@@ -75,32 +75,51 @@ struct Options {
     bool debug_selftest = false;
     bool debug_workflow_selftest = false;
     bool capture_memory_dumps = true;
+    // Flush the cartridge save every N emulated frames (a no-op while it is unchanged), so a crash,
+    // kill or power loss costs at most N frames of progress. -1: 30 s interactively, off headless.
+    std::int64_t autosave_frames = -1;
     int gpu3d_scale = 1; // optional hi-res 3D overlay scale, 1-4 (1 = off)
     bool gpu3d_scale_given = false;
 };
 
 [[noreturn]] void usage(int code) {
     std::fprintf(code ? stderr : stdout,
-                 "usage: dq9 --rom PATH [--save PATH] [--abi-config PATH] [--language en|fr|de|es|it]\n"
-                 "           [--launcher] [--debug-tool] [--frame-time-overlay] [--debug-selftest]\n"
-                 "Select an already locally available compatible image via --rom or $DQ9_ROM.\n"
-                 "--abi-config (or $DQ9_ABI_CONFIG) supplies optional guest overrides as an INI file.\n"
-                 "Without it, thread overrides are disabled. --dump-ram adds frame_NNNN_mainram.bin (logical\n"
-                 "main RAM from 0x02000000, 4 MiB) and frame_NNNN_video.bin (palettes 0x800, OAM 0x800,\n"
-                 "BG-A 0x80000, BG-B 0x20000, OBJ-A 0x40000, OBJ-B 0x20000) beside each dumped frame.\n"
-                 "--dump-vram adds frame_NNNN_vram.bin: texture slots 0-3 (128 KiB each),\n"
-                 "texture-palette slots 0-5 (16 KiB each), in slot order; unmapped slots are zero.\n"
-                 "`frame button_mask touch_x touch_y` (mask in KEYINPUT bit order, X=1<<10,\n"
-                 "Y=1<<11; touch -1 -1 when released); each line applies to one frame.\n"
-                 "--hash-file FILE writes `frame top_fnv1a64 bottom_fnv1a64` for every frame (FNV-1a over the\n"
-                 "RGB bytes of each screen, the same digest the oracle's --hashes option produces).\n"
-                 "--record-input FILE logs the input of every frame that has any (same grammar as\n"
-                 "--input-script) so an interactive session can be replayed headless with the same save.\n"
-                 "--gpu3d-scale N (1-4, default 1 = off) re-renders the 3D scene at N times the native\n"
-                 "resolution and composes it over the top screen; with --dump-frames it also writes\n"
-                 "frame_NNNN_top_hires.ppm. Hash files and the native frame dumps stay 256x192.\n"
-                 "--pause-at-frame N replays through zero-based frame N without pacing/audio, then pauses (or stops headless).\n"
-                 "--rtc-epoch seconds and --rtc-timezone-offset minutes freeze RTC to emulated time.\n");
+        "usage: dq9 --rom PATH [options]\n"
+        "\n"
+        "Run (the image is selected with --rom or $DQ9_ROM; it is never included with this program):\n"
+        "  --rom PATH              your own Nintendo DS image (.nds)\n"
+        "  --save PATH             cartridge save file (default: <data folder>/dq9.sav)\n"
+        "  --language en|fr|de|es|it\n"
+        "  --abi-config PATH       INI written by tools/build_port.py (or $DQ9_ABI_CONFIG); without it the\n"
+        "                          game stalls on blank screens\n"
+        "  --launcher              show the settings launcher first\n"
+        "  --gpu3d-scale N         experimental hi-res 3D overlay, 1-4 (default 1 = off)\n"
+        "  --autosave-frames N     flush the save every N frames (default 1800 = 30 s in a window, off with\n"
+        "                          --headless; 0 disables). The save is also written on exit.\n"
+        "\n"
+        "Headless / automated runs:\n"
+        "  --headless              no window or audio device (needs --frames or --pause-at-frame)\n"
+        "  --frames N              stop after N frames\n"
+        "  --pause-at-frame N      replay through zero-based frame N without pacing/audio, then pause (stop\n"
+        "                          when headless)\n"
+        "  --rtc-epoch SECONDS / --rtc-timezone-offset MINUTES   freeze the clock to emulated time\n"
+        "  --input-script FILE     one `frame button_mask touch_x touch_y` line per frame (mask in KEYINPUT\n"
+        "                          bit order, X=1<<10, Y=1<<11; touch -1 -1 when released)\n"
+        "  --record-input FILE     log the input of every frame that has any (same grammar) so an interactive\n"
+        "                          session can be replayed headless with the same save\n"
+        "  --hash-file FILE        `frame top_fnv1a64 bottom_fnv1a64` per frame (FNV-1a over the RGB bytes)\n"
+        "  --dump-frames SPEC      write frame_NNNN_{top,bottom}.ppm (+ _regs.txt, + _top_hires.ppm with\n"
+        "                          --gpu3d-scale) for frames such as 100,500-900/100 into --dump-dir\n"
+        "  --dump-dir DIR          where dumps go (default build/dq9-frames)\n"
+        "  --dump-ram / --dump-vram   also write frame_NNNN_mainram.bin / _video.bin and _vram.bin\n"
+        "  --dump-audio FILE       write all emitted audio as a 16-bit stereo WAV\n"
+        "\n"
+        "Debugging:\n"
+        "  --debug-tool            capture/annotation tool (F10 menu, F9 note, F8 step)\n"
+        "  --frame-time-overlay    frame-time display only\n"
+        "  --debug-every N         print machine status every N frames\n"
+        "  --no-debug-dumps        skip RAM/VRAM snapshots in debug bundles\n"
+        "  --debug-selftest / --debug-workflow-selftest   built-in self tests\n");
     std::exit(code);
 }
 
@@ -207,6 +226,10 @@ Options parse_args(int argc, char** argv) {
             if (n < 1 || n > 4) usage(2);
             o.gpu3d_scale = static_cast<int>(n);
             o.gpu3d_scale_given = true;
+        }
+        else if (a == "--autosave-frames") {
+            o.autosave_frames = std::stoll(std::string(value()));
+            if (o.autosave_frames < 0) usage(2);
         }
         else if (a == "--launcher") o.launcher = true;
         else if (a == "--debug-tool") o.debug_tool = true;
@@ -493,6 +516,16 @@ int main(int argc, char** argv) {
                      opt.rom.string().c_str(), paths.config_dir.string().c_str());
         return 2;
     }
+    {
+        bool header_crc_ok = true;
+        const std::string problem = dsr::check_rom_image(opt.rom, &header_crc_ok);
+        if (!problem.empty()) {
+            std::fprintf(stderr, "dq9: cannot use %s: %s.\n", opt.rom.string().c_str(), problem.c_str());
+            return 2;
+        }
+        if (!header_crc_ok)
+            std::fprintf(stderr, "dq9: warning: the image header checksum does not match (a patched or modified image?); continuing.\n");
+    }
     std::fprintf(stderr, "debug tool: %s (hotkeys F10 menu, F9 note, F8 step)\n",
                  opt.debug_tool ? "ON" : "OFF");
 
@@ -719,7 +752,10 @@ int main(int argc, char** argv) {
             frontend->present(machine.gpu2d().screen_top(), machine.gpu2d().screen_bottom());
         }
     };
+    const std::int64_t autosave_every = opt.autosave_frames >= 0 ? opt.autosave_frames
+                                       : (opt.headless ? 0 : 1800);
     bool held_fast_forward_was_active = false;
+    bool focus_pause_was_active = false;
     const std::filesystem::path screenshot_dir =
         (save_path.has_parent_path() ? save_path.parent_path() : std::filesystem::path{}) / "screenshots";
     auto handle_debug_input = [&](const dsr::InputState& input, FrameIndex current_frame) {
@@ -1337,7 +1373,11 @@ int main(int argc, char** argv) {
             }
         }
         if (annotation_open) step_requested = false;
-        if (paused && !step_requested) {
+        // Optional: idle while the window is unfocused (never during a --pause-at-frame replay).
+        const bool focus_paused = frontend && !replay_seeking && frontend_input.window_unfocused;
+        if (focus_paused && !focus_pause_was_active) frontend->clear_audio_queue();
+        focus_pause_was_active = focus_paused;
+        if ((paused && !step_requested) || focus_paused) {
             update_overlay(frame > 0 ? static_cast<std::uint64_t>(frame - 1) : 0);
             if (frontend) {
                 present_frame();
@@ -1374,6 +1414,7 @@ int main(int argc, char** argv) {
             if (wanted != machine.gpu3d().output_scale()) machine.gpu3d().set_output_scale(wanted);
         }
         session.step(in);
+        if (autosave_every > 0 && (frame + 1) % autosave_every == 0) session.flush_save();
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)
                 workflow_fail("scripted input replaced the live DS A press after the replay target");

@@ -27,11 +27,12 @@ constexpr int kH = 720;
 constexpr UiRect kLaunchButton{758, 642, 218, 50};
 constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM / SAVE", "OPTIONS", "HOTKEYS"};
 constexpr int kHotkeyPage = 4;
-constexpr int kOptionCount = 14;
-constexpr int kOptionPitch = 33;
+constexpr int kOptionCount = 16;
+constexpr int kOptionPitch = 29;
+constexpr int kHotkeyPitch = 30;
 // Keyboard hotkeys handled by the SDL frontend outside the DS button map.
 struct HotkeyRow { std::string_view name; int frontend_detail::ConfigData::*field; };
-constexpr std::array<HotkeyRow, 9> kHotkeyRows{{
+constexpr std::array<HotkeyRow, 12> kHotkeyRows{{
     {"CYCLE SCREEN LAYOUT", &frontend_detail::ConfigData::key_layout},
     {"SWAP SCREENS", &frontend_detail::ConfigData::key_swap},
     {"TOGGLE FULLSCREEN", &frontend_detail::ConfigData::key_fullscreen},
@@ -41,6 +42,9 @@ constexpr std::array<HotkeyRow, 9> kHotkeyRows{{
     {"FAST-FORWARD (HOLD)", &frontend_detail::ConfigData::key_fast_forward},
     {"SCREENSHOT", &frontend_detail::ConfigData::key_screenshot},
     {"CYCLE HI-RES 3D SCALE (1X-4X)", &frontend_detail::ConfigData::key_gpu3d_scale},
+    {"VOLUME DOWN (10%)", &frontend_detail::ConfigData::key_volume_down},
+    {"VOLUME UP (10%)", &frontend_detail::ConfigData::key_volume_up},
+    {"MUTE / UNMUTE", &frontend_detail::ConfigData::key_mute},
 }};
 constexpr int kHotkeyCount = static_cast<int>(kHotkeyRows.size());
 constexpr std::array<std::string_view, 12> kDsNames{"A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L", "X", "Y"};
@@ -267,6 +271,7 @@ private:
             case 5: config_.frontend.audio_buffer_ms = std::clamp(config_.frontend.audio_buffer_ms + delta * 20, 20, 500); break;
             case 9: config_.frontend.stick_deadzone = std::clamp(config_.frontend.stick_deadzone + delta * 1000, 0, 30000); break;
             case 11: cycle_controller(delta); break;
+            case 14: config_.frontend.volume = std::clamp(config_.frontend.volume + delta * 10, 0, 100); break;
             case 13: config_.frontend.gpu3d_scale = (config_.frontend.gpu3d_scale - 1 + delta + 4) % 4 + 1; break;
             default: toggle_option(); break;
             }
@@ -298,6 +303,7 @@ private:
         case 8: config_.capture_memory_dumps = !config_.capture_memory_dumps; break;
         case 10: config_.frontend.dpad_from_stick = !config_.frontend.dpad_from_stick; break;
         case 12: config_.frontend.mouse_touch_enabled = !config_.frontend.mouse_touch_enabled; break;
+        case 15: config_.frontend.pause_when_unfocused = !config_.frontend.pause_when_unfocused; break;
         default: break;
         }
     }
@@ -371,13 +377,13 @@ private:
             return;
         }
         if (page_ == 1 && y >= 580 && y < 612) { focus_ = 12; reset_controls(); return; }
-        if (page_ == kHotkeyPage && y >= 172 && y < 172 + kHotkeyCount * 34) {
-            focus_ = (y - 172) / 34;
+        if (page_ == kHotkeyPage && y >= 172 && y < 172 + kHotkeyCount * kHotkeyPitch) {
+            focus_ = (y - 172) / kHotkeyPitch;
             pending_bind_ = focus_;
             bind_side_ = 0;
             return;
         }
-        if (page_ == kHotkeyPage && y >= 172 + kHotkeyCount * 34 + 12 && y < 172 + kHotkeyCount * 34 + 44) {
+        if (page_ == kHotkeyPage && y >= 172 + kHotkeyCount * kHotkeyPitch + 12 && y < 172 + kHotkeyCount * kHotkeyPitch + 44) {
             focus_ = kHotkeyCount;
             reset_hotkeys();
             return;
@@ -388,9 +394,9 @@ private:
         if (page_ == 3 && y >= 147 && y < 147 + kOptionCount * kOptionPitch) {
             focus_ = (y - 147) / kOptionPitch;
             if (focus_ == 2 || focus_ == 3 || focus_ == 4 || focus_ == 6 || focus_ == 7 ||
-                focus_ == 8 || focus_ == 10 || focus_ == 12)
+                focus_ == 8 || focus_ == 10 || focus_ == 12 || focus_ == 15)
                 toggle_option();
-            else adjust(1);
+            else adjust(focus_ == 14 && x < 684 ? -1 : 1); // volume: left of the value lowers it
         }
     }
     void draw() {
@@ -456,16 +462,16 @@ private:
         canvas_.text(72, 151, "ACTION", kMuted, 1);
         canvas_.text(470, 151, "KEYBOARD (CLICK / ENTER TO REBIND)", kMuted, 1);
         for (int i = 0; i < kHotkeyCount; ++i) {
-            const int y = 172 + i * 34;
+            const int y = 172 + i * kHotkeyPitch;
             const bool selected = focus_ == i;
             const auto& row = kHotkeyRows[static_cast<std::size_t>(i)];
-            canvas_.fill({68, y, 872, 29}, selected ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
+            canvas_.fill({68, y, 872, kHotkeyPitch - 3}, selected ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
             canvas_.text(78, y + 7, row.name, kWhite, 1);
             canvas_.text(470, y + 7, pending_bind_ == i ? "PRESS A KEY..." : key_name(config_.*row.field),
                          selected ? UiColor{134, 216, 255, 255} : kWhite, 1);
         }
-        canvas_.button({68, 172 + kHotkeyCount * 34 + 12, 260, 32}, "RESET TO DEFAULTS", focus_ == kHotkeyCount);
-        canvas_.text(360, 172 + kHotkeyCount * 34 + 20, "PAD: SELECT+L LAYOUT, SELECT+R3 SWAP, SELECT+R FAST-FORWARD, SELECT+START SHOT.", kMuted, 1);
+        canvas_.button({68, 172 + kHotkeyCount * kHotkeyPitch + 12, 260, 32}, "RESET TO DEFAULTS", focus_ == kHotkeyCount);
+        canvas_.text(360, 172 + kHotkeyCount * kHotkeyPitch + 20, "PAD: SELECT+L LAYOUT, SELECT+R3 SWAP, SELECT+R FAST-FORWARD, SELECT+START SHOT.", kMuted, 1);
     }
     void draw_paths() {
         canvas_.text(86, 162, "ROM IMAGE (.NDS)", kMuted, 1);
@@ -486,10 +492,14 @@ private:
         if (path != rom_checked_path_) {
             rom_checked_path_ = path;
             std::error_code ec;
-            rom_found_ = !path.empty() &&
-                std::filesystem::is_regular_file(launcher_rom_path(host::path_from_utf8(path)), ec);
+            const auto resolved = launcher_rom_path(host::path_from_utf8(path));
+            rom_found_ = !path.empty() && std::filesystem::is_regular_file(resolved, ec);
+            rom_problem_ = rom_found_ ? check_rom_image(resolved) : std::string{};
         }
-        if (rom_found_) {
+        if (rom_found_ && !rom_problem_.empty()) {
+            canvas_.text(48, 660, "ROM UNUSABLE: " + elide_middle(rom_checked_path_, 56), UiColor{255, 176, 96, 255}, 1);
+            canvas_.text(48, 676, rom_problem_, UiColor{255, 176, 96, 255}, 1);
+        } else if (rom_found_) {
             canvas_.text(48, 668, "ROM FOUND: " + elide_middle(path, 60), UiColor{120, 220, 140, 255}, 1);
         } else {
             canvas_.text(48, 660, rom_checked_path_.empty() ? "NO ROM SET." : "ROM NOT FOUND: " + elide_middle(rom_checked_path_, 56),
@@ -513,19 +523,21 @@ private:
             selected_controller(),
             config_.frontend.mouse_touch_enabled ? "ON" : "OFF",
             config_.frontend.gpu3d_scale == 1 ? std::string("OFF (native 3D)")
-                                              : std::to_string(config_.frontend.gpu3d_scale) + "x (experimental)"
+                                              : std::to_string(config_.frontend.gpu3d_scale) + "x (experimental)",
+            std::to_string(config_.frontend.volume) + "%",
+            config_.frontend.pause_when_unfocused ? "ON" : "OFF"
         };
         constexpr std::array<std::string_view, kOptionCount> labels{
             "Screen layout", "Window scale", "Fullscreen", "Integer scaling", "Linear filter",
             "Audio queue limit", "Debug annotation tool", "Frame-time overlay", "Capture RAM/VRAM dumps",
             "Stick dead zone", "D-pad from left stick", "Controller device", "Mouse/touch input",
-            "Hi-res 3D scale"
+            "Hi-res 3D scale", "Master volume", "Pause when window unfocused"
         };
         for (int i = 0; i < kOptionCount; ++i) {
             const int y = 147 + i * kOptionPitch;
             canvas_.fill({72, y, 872, kOptionPitch - 2}, focus_ == i ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
-            canvas_.text(86, y + 8, labels[static_cast<std::size_t>(i)], kWhite, 1);
-            canvas_.text(684, y + 8, values[static_cast<std::size_t>(i)], UiColor{134, 216, 255, 255}, 1);
+            canvas_.text(86, y + 7, labels[static_cast<std::size_t>(i)], kWhite, 1);
+            canvas_.text(684, y + 7, values[static_cast<std::size_t>(i)], UiColor{134, 216, 255, 255}, 1);
         }
     }
     static std::string layout_name(ScreenLayout layout) {
@@ -552,6 +564,7 @@ private:
     bool capture_done_ = false;
     std::string rom_checked_path_;
     bool rom_found_ = false;
+    std::string rom_problem_;
 };
 } // namespace
 

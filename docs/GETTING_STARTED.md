@@ -25,6 +25,8 @@ python -m pip install PyYAML capstone unicorn cmake ninja
 python tools/build_port.py --rom "/path/to/your-copy.nds"
 ```
 
+Before anything slow runs, the script checks Python, the pip packages, CMake/Ninja, a C++ compiler, free disk space and the image header, and stops with a `FAIL` line naming the fix; `python tools/build_port.py --check --rom PATH` runs only those checks.
+
 The build takes about five minutes. At the end it prints the exact command to start the game, which looks like this:
 
 ```sh
@@ -55,6 +57,8 @@ Defaults for the SDL window (rebind them on the launcher's HOTKEYS page or in `f
 | Fast-forward (4x, unpaced) | hold **Tab** (`key_fast_forward`) | hold Select + R |
 | Screenshot (both screens, PNG in `<save folder>/screenshots/`) | **F12** (`key_screenshot`) | Select + Start |
 | Hi-res 3D scale 1x -> 2x -> 3x -> 4x -> 1x | **F7** (`key_gpu3d_scale`) | - |
+| Volume down / up (10% steps) | **-** / **=** (`key_volume_down`, `key_volume_up`; setting `volume=0-100`, also on the Options page) | - |
+| Mute / unmute | **M** (`key_mute`) | - |
 | Cycle screen layout | F6 | Select + L |
 | Swap screens | F8 | Select + R3 (right-stick click) |
 | Toggle fullscreen | F11 (Alt+Enter also works) | - |
@@ -69,6 +73,10 @@ Pad combos never pass the combo buttons to the game while held. With `--debug-to
 ## Optional hi-res 3D (experimental, off by default)
 
 `--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is verified by unit tests only: the public build currently does not reach a scene with 3D, so no hi-res game frame has been inspected, and hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm`.
+
+## Saves
+
+The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written atomically on exit and, in a window, automatically every 30 seconds while it has unsaved changes (`--autosave-frames N`, 0 disables; default off with `--headless`). A crash, kill or power loss therefore costs at most about 30 seconds of progress instead of the whole session. This is not a save state; see the limits below.
 
 ## Known limits
 
@@ -85,6 +93,7 @@ The European release contains English, French, German, Spanish and Italian. Pass
 
 - `dsd: command not found` / wrong version: pass the full path with `--dsd`.
 - Missing Python module: activate the virtual environment and re-run the `pip install` line.
+- `cannot use ...: does not look like a Nintendo DS image` / `image is truncated`: the file is not a complete DS image (wrong file, partial copy). The launcher shows the same warning next to Launch.
 - Blank screens: you forgot `--abi-config build/gen/abi.ini`.
 - Anything else: open an issue with your OS, compiler version and the last 30 lines of output. **Do not attach game files, saves or screenshots of the game.**
 

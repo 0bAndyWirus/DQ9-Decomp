@@ -146,6 +146,25 @@ int main() {
     assert(parse_config("gpu3d_scale=9\n").frontend.gpu3d_scale == 4);
     assert(parse_config("gpu3d_scale=0\n").frontend.gpu3d_scale == 1);
     assert(default_config().frontend.gpu3d_scale == 1);
+    assert(!default_config().frontend.pause_when_unfocused);
+    assert(parse_config("pause_when_unfocused=1\n").frontend.pause_when_unfocused);
+    config.key_volume_down = 80; config.key_volume_up = 81; config.key_mute = 82; config.frontend.volume = 40;
+    const auto with_volume = parse_config(serialize_config(config));
+    assert(with_volume.key_volume_down == 80 && with_volume.key_volume_up == 81 && with_volume.key_mute == 82);
+    assert(with_volume.frontend.volume == 40 && default_config().frontend.volume == 100);
+    assert(parse_config("volume=250\n").frontend.volume == 100 && parse_config("volume=-5\n").frontend.volume == 0);
+    assert(default_config().key_volume_down == 45 && default_config().key_volume_up == 46 && default_config().key_mute == 16);
+    assert(volume_gain_q8(100, false) == 256 && volume_gain_q8(50, false) == 128 && volume_gain_q8(0, false) == 0);
+    assert(volume_gain_q8(100, true) == 0 && volume_gain_q8(900, false) == 256);
+    {
+        std::int16_t pcm[4] = {32767, -32768, 1000, -1000};
+        apply_volume_gain(pcm, 4, 256);
+        assert(pcm[0] == 32767 && pcm[1] == -32768);       // unity gain leaves samples alone
+        apply_volume_gain(pcm, 4, 128);
+        assert(pcm[0] == 16383 && pcm[1] == -16384 && pcm[2] == 500 && pcm[3] == -500);
+        apply_volume_gain(pcm, 4, 0);
+        assert(pcm[0] == 0 && pcm[1] == 0 && pcm[2] == 0 && pcm[3] == 0);
+    }
     // F7 is the hi-res scale key; a pre-existing file that bound the swap to F7 moves the swap.
     assert(default_config().key_gpu3d_scale == 64 &&
            default_config().key_swap != default_config().key_gpu3d_scale);

@@ -219,6 +219,10 @@ public:
                 (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE)) {
                 state.quit_requested = true; // main loop exits and flushes the save
             }
+            if (event.type == SDL_WINDOWEVENT) {
+                if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) window_unfocused_ = true;
+                else if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) window_unfocused_ = false;
+            }
             if (event.type == SDL_CONTROLLERDEVICEADDED) open_controller(event.cdevice.which);
             if (event.type == SDL_CONTROLLERDEVICEREMOVED) remove_controller(event.cdevice.which);
             if (config_.debug_tool_enabled && annotation_route) {
@@ -353,6 +357,14 @@ public:
                 }
                 else if (key == config_data_.key_lid) state.lid_closed = !state.lid_closed;
                 else if (key == config_data_.key_screenshot) state.screenshot_requested = true;
+                else if (key == config_data_.key_mute) {
+                    muted_ = !muted_;
+                    show_message(muted_ ? "AUDIO: MUTED" : "AUDIO: " + std::to_string(config_.volume) + "%");
+                } else if (key == config_data_.key_volume_down || key == config_data_.key_volume_up) {
+                    config_.volume = std::clamp(config_.volume + (key == config_data_.key_volume_up ? 10 : -10), 0, 100);
+                    muted_ = false;
+                    show_message("VOLUME: " + std::to_string(config_.volume) + "%");
+                }
                 else if (key == config_data_.key_gpu3d_scale) {
                     config_.gpu3d_scale = config_.gpu3d_scale % 4 + 1;
                     show_message(config_.gpu3d_scale == 1 ? "HI-RES 3D: OFF"
@@ -581,6 +593,7 @@ public:
             pause_chord_fired_ = false;
         }
         fast_forward_active_ = state.fast_forward;
+        state.window_unfocused = config_.pause_when_unfocused && window_unfocused_;
         if (menu_route) {
             state.buttons = 0;
             state.pen_down = false;
@@ -751,6 +764,9 @@ public:
         metric_audio_correction_ = correction;
         frontend_detail::resample_stereo_cubic_into(frames, count, source_rate, output_rate_,
                                                     source_position_, resampled_audio_, correction);
+        // Mute queues silence rather than nothing so pacing and priming behave as when unmuted.
+        frontend_detail::apply_volume_gain(resampled_audio_.data(), resampled_audio_.size(),
+                                           frontend_detail::volume_gain_q8(config_.volume, muted_));
         const auto bytes = static_cast<Uint32>(resampled_audio_.size() * sizeof(std::int16_t));
         if (bytes) {
             SDL_QueueAudio(audio_, resampled_audio_.data(), bytes);
@@ -1323,6 +1339,8 @@ private:
     std::string toast_;
     std::chrono::steady_clock::time_point toast_until_{};
     bool fast_forward_active_ = false;
+    bool muted_ = false;
+    bool window_unfocused_ = false;
     std::array<SDL_Texture*, 4> texture_view_textures_{};
     std::vector<std::uint32_t> texture_view_pixels_;
     DebugOverlayState debug_overlay_{};

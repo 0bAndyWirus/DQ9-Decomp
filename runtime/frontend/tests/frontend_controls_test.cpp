@@ -202,6 +202,36 @@ int main() {
         assert(after != before);
         tap(SDL_SCANCODE_F8);
     }
+    {
+        // Focus loss only reaches the main loop when the option is on.
+        SDL_Window* focus_window = SDL_GetWindowFromID(1);
+        const auto focus_event = [&](Uint8 kind) {
+            SDL_Event event{};
+            event.type = SDL_WINDOWEVENT;
+            event.window.event = kind;
+            event.window.windowID = SDL_GetWindowID(focus_window);
+            assert(SDL_PushEvent(&event) == 1);
+            frontend->poll(hotkey_input);
+        };
+        focus_event(SDL_WINDOWEVENT_FOCUS_LOST);
+        assert(!hotkey_input.window_unfocused);
+        focus_event(SDL_WINDOWEVENT_FOCUS_GAINED);
+        frontend.reset();
+        const auto conf_dir = directory / "dq9-decomp";
+        std::filesystem::create_directories(conf_dir);
+        std::ofstream(conf_dir / "frontend.conf") << "pause_when_unfocused=1\n";
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+        focus_window = SDL_GetWindowFromID(1);
+        focus_event(SDL_WINDOWEVENT_FOCUS_LOST);
+        assert(hotkey_input.window_unfocused);
+        focus_event(SDL_WINDOWEVENT_FOCUS_GAINED);
+        assert(!hotkey_input.window_unfocused);
+        std::filesystem::remove(conf_dir / "frontend.conf");
+        frontend.reset();
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+    }
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);
