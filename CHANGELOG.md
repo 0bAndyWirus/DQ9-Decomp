@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Godot host:** the bottom bar is a dark toolbar with tooltips and a hotkey hint, and the on-screen statistics have an outline so they stay readable over bright scenes.
 - **Cartridge backup chip:** `dq9 --backup-type TYPE`, `tools/build_port.py --backup-type TYPE` and the `[cartridge] backup_type`
   abi.ini key select the emulated backup chip. With the default guess the title screen reports a corrupt quick-save log on a
   fresh save; with `eeprom64k` a scripted 28,500-frame headless run passes the title menu into a field scene with per-frame
