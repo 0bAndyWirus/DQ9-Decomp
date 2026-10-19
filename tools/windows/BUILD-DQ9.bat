@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
   if errorlevel 1 python -m venv .venv
   if errorlevel 1 goto failure_pop
 )
-".venv\Scripts\python.exe" -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.17.0
+".venv\Scripts\python.exe" -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
 if errorlevel 1 goto failure_pop
 ".venv\Scripts\python.exe" tools\build_port.py --rom "%ROM%"
 if errorlevel 1 goto failure_pop

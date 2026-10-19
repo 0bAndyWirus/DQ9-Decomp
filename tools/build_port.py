@@ -52,6 +52,9 @@ DSD_SHA256 = {
     "dsd-linux-x86_64": "256edde804dd8e5d7bc4c0e4187f85244ee4cd1f42bb427502e01fda6af43ceb",
     "dsd-windows-x86_64.exe": "5917df26bffc05d4752276a2e0b1edd21bd6e920aabe1992be8a50efc9d10932",
 }
+# PyPI publishes no Windows wheel for ziglang 0.17.0; 0.16.0 is the newest release with a
+# win_amd64 wheel. (Linux-hosted cross builds via tools/build_windows.sh use 0.17.0.)
+ZIG_WINDOWS_REQUIREMENT = "ziglang==0.16.0"
 SDL_VERSION = "2.30.12"
 SDL_URL = (
     "https://github.com/libsdl-org/SDL/releases/download/"
@@ -130,7 +133,7 @@ def windows_cmake_options(deps: Path) -> list[str]:
     try:
         importlib.import_module("ziglang")
     except ImportError:
-        run(sys.executable, "-m", "pip", "install", "ziglang==0.17.0")
+        run(sys.executable, "-m", "pip", "install", ZIG_WINDOWS_REQUIREMENT)
     deps = deps.resolve()
     root = deps / f"SDL2-{SDL_VERSION}" / "x86_64-w64-mingw32"
     if not (root / "bin" / "SDL2.dll").is_file():

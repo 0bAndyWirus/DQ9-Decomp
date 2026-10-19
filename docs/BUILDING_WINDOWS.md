@@ -35,11 +35,12 @@ In a source checkout, the launchers are `tools\windows\BUILD-DQ9.bat` and
 
 ```powershell
 py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.17.0
+.\.venv\Scripts\python.exe -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
 .\.venv\Scripts\python.exe tools\build_port.py --rom "C:\path\game.nds"
 ```
 
-`--dsd PATH` selects an existing ds-decomp executable instead of the pinned
+The Windows-hosted flow pins `ziglang==0.16.0` because PyPI publishes no Windows wheel for
+0.17.0, the version used by the Linux-hosted cross build below. `--dsd PATH` selects an existing ds-decomp executable instead of the pinned
 download. `--sdk-deps DIR` selects the SDL SDK download directory (default
 `build/win-deps`). All extracted data, generated sources, ABI metadata, game
 binaries and saves remain local-only; never upload them or add them to the kit.

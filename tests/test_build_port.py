@@ -126,7 +126,7 @@ class BuildPortTests(unittest.TestCase):
                 self.assertIn(f"-DPython3_EXECUTABLE={sys.executable}", options)
                 import_zig.side_effect = ImportError("synthetic missing module")
                 build_port.windows_cmake_options(deps)
-                run.assert_called_once_with(sys.executable, "-m", "pip", "install", "ziglang==0.17.0")
+                run.assert_called_once_with(sys.executable, "-m", "pip", "install", "ziglang==0.16.0")
                 self.assertEqual(build_port.tool_environment()["DQ9_ZIG_PYTHON"], sys.executable)
 
     def test_launch_hints_do_not_enable_debug_tool(self):
