@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <cstring>
 #include <string>
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
@@ -60,7 +61,17 @@ Uint32 sequence(Uint32 interval, void* data) {
         assert(SDL_PushEvent(&mouse) == 1);
         break;
     }
-    case 6: key(SDL_SCANCODE_Q); break; // an ordinary key press, not a rebind target
+    case 6: {
+        key(SDL_SCANCODE_Q); // an ordinary key press, not a rebind target
+        // A dropped file becomes the ROM path (SDL hands ownership of the string to the receiver).
+        SDL_Event drop{};
+        drop.type = SDL_DROPFILE;
+        const char* dropped = "/dq9-dropped/Game Image.nds";
+        drop.drop.file = static_cast<char*>(SDL_malloc(std::strlen(dropped) + 1));
+        std::strcpy(drop.drop.file, dropped);
+        assert(SDL_PushEvent(&drop) == 1);
+        break;
+    }
     case 7: assert(SDL_JoystickSetVirtualButton(state.joystick, 6, 1) == 0); break;
     default: {
         SDL_Event event{};
@@ -107,6 +118,7 @@ int main() {
     assert(options.language == "fr");
     assert(options.debug_tool); // F4 must reset focus after Controls row 12.
     assert(state.phase >= 8); // Outside-button clicks must not launch early.
+    assert(options.rom_path == std::filesystem::path("/dq9-dropped/Game Image.nds"));
     assert(options.frontend.keycodes[11] == 22); // the abandoned rebind of row 11 changed nothing
     assert(options.frontend.gamepad_buttons[0] == SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
     std::filesystem::remove_all(directory);
