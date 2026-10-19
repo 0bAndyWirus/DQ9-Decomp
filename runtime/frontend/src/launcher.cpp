@@ -182,7 +182,7 @@ public:
                 if (event.type == SDL_KEYDOWN && !event.key.repeat) {
                     if (pending_bind_ >= 0) {
                         if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) pending_bind_ = -1;
-                        else if (page_ == kHotkeyPage) config_.*kHotkeyRows[static_cast<std::size_t>(pending_bind_)].field = event.key.keysym.scancode;
+                        else if (page_ == kHotkeyPage && pending_bind_ < kHotkeyCount) config_.*kHotkeyRows[static_cast<std::size_t>(pending_bind_)].field = event.key.keysym.scancode;
                         else if (bind_side_ == 0) config_.keycodes[static_cast<std::size_t>(pending_bind_)] = event.key.keysym.scancode;
                         pending_bind_ = -1;
                         continue;
@@ -345,7 +345,11 @@ private:
     void mouse_click(int x, int y, bool& accepted, bool& running) {
         if (y >= 76 && y < 128) {
             const int tab = (x - 48) / kTabPitch;
-            if (x >= 48 && tab >= 0 && tab < static_cast<int>(kPages.size())) { page_ = tab; focus_ = 0; }
+            if (x >= 48 && tab >= 0 && tab < static_cast<int>(kPages.size())) {
+                page_ = tab;
+                focus_ = 0;
+                pending_bind_ = -1; // a half-finished rebind must not follow us to another page
+            }
         }
         if (y >= kLaunchButton.y && y < kLaunchButton.y + kLaunchButton.h &&
             x >= kLaunchButton.x && x < kLaunchButton.x + kLaunchButton.w) {

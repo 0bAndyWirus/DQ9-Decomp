@@ -46,7 +46,22 @@ Uint32 sequence(Uint32 interval, void* data) {
             assert(SDL_PushEvent(&mouse) == 1);
         }
         break;
-    case 5: assert(SDL_JoystickSetVirtualButton(state.joystick, 6, 1) == 0); break;
+    case 5: {
+        // Start rebinding DS row 11 on CONTROLS, then switch to the HOTKEYS tab with the mouse:
+        // the pending rebind must be dropped, not applied to a hotkey row that does not exist.
+        key(SDL_SCANCODE_F2);
+        for (int i = 0; i < 11; ++i) key(SDL_SCANCODE_DOWN);
+        key(SDL_SCANCODE_RETURN);
+        SDL_Event mouse{};
+        mouse.type = SDL_MOUSEBUTTONDOWN;
+        mouse.button.button = SDL_BUTTON_LEFT;
+        mouse.button.x = 48 + 4 * 186 + 60;
+        mouse.button.y = 100;
+        assert(SDL_PushEvent(&mouse) == 1);
+        break;
+    }
+    case 6: key(SDL_SCANCODE_Q); break; // an ordinary key press, not a rebind target
+    case 7: assert(SDL_JoystickSetVirtualButton(state.joystick, 6, 1) == 0); break;
     default: {
         SDL_Event event{};
         event.type = SDL_QUIT; // Bounded failure rather than a stuck CTest.
@@ -91,7 +106,8 @@ int main() {
     assert(accepted); // Start arrives only if launcher opens a controller handle.
     assert(options.language == "fr");
     assert(options.debug_tool); // F4 must reset focus after Controls row 12.
-    assert(state.phase >= 6); // Outside-button clicks must not launch early.
+    assert(state.phase >= 8); // Outside-button clicks must not launch early.
+    assert(options.frontend.keycodes[11] == 22); // the abandoned rebind of row 11 changed nothing
     assert(options.frontend.gamepad_buttons[0] == SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
     std::filesystem::remove_all(directory);
 #endif
