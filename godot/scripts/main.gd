@@ -159,18 +159,29 @@ func _make_settings() -> PanelContainer:
 	style.set_corner_radius_all(10)
 	style.set_content_margin_all(14)
 	panel.add_theme_stylebox_override("panel", style)
-	var col:=VBoxContainer.new(); panel.add_child(col)
-	var title:=Label.new(); title.text="DQ9-Decomp — Start / Settings"; title.add_theme_font_size_override("font_size",26); col.add_child(title)
+	# Title and the Start/Close row stay pinned; the settings sections scroll between them.
+	var outer:=VBoxContainer.new(); outer.add_theme_constant_override("separation", 6); panel.add_child(outer)
+	var title:=Label.new(); title.text="DQ9-Decomp — Start / Settings"; title.add_theme_font_size_override("font_size",26); outer.add_child(title)
+	var subtitle:=Label.new(); subtitle.text="Choose your ROM and language, then press Start."; subtitle.add_theme_color_override("font_color",Color(0.62,0.7,0.8)); outer.add_child(subtitle)
+	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; scroll.custom_minimum_size=Vector2(0,510); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(scroll)
+	var col:=VBoxContainer.new(); col.add_theme_constant_override("separation", 6); col.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(col)
+	_section(col,"Game")
 	var pathrow:=HBoxContainer.new(); col.add_child(pathrow)
 	var rom:=LineEdit.new(); rom.placeholder_text="Nintendo DS .nds ROM path"; rom.text=settings.rom_path; rom.size_flags_horizontal=Control.SIZE_EXPAND_FILL; pathrow.add_child(rom); _ui.rom=rom
 	var browse:=Button.new(); browse.text="Browse…"; browse.pressed.connect(func(): _pick_path(rom,"*.nds,*.rom")); pathrow.add_child(browse)
+	var rom_status:=Label.new(); col.add_child(rom_status); _ui.rom_status=rom_status
+	rom.text_changed.connect(func(_t): _update_rom_status())
+	_update_rom_status()
 	var saverow:=HBoxContainer.new(); col.add_child(saverow); var save:=LineEdit.new(); save.text=settings.save_path; save.placeholder_text="Save path"; save.size_flags_horizontal=Control.SIZE_EXPAND_FILL; saverow.add_child(save); _ui.save=save
 	var save_browse := Button.new(); save_browse.text="Browse…"; save_browse.pressed.connect(func(): _pick_path(save,"*.sav",true)); saverow.add_child(save_browse)
-	var lang:=OptionButton.new()
+	var lang_row:=HBoxContainer.new(); col.add_child(lang_row)
+	var lang_label:=Label.new(); lang_label.text="Language"; lang_label.custom_minimum_size.x=110; lang_row.add_child(lang_label)
+	var lang:=OptionButton.new(); lang.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	for text in ["English","Français","Deutsch","Español","Italiano"]: lang.add_item(text)
 	lang.select(maxi(0,LANGS.find(settings.language)))
-	col.add_child(lang)
+	lang_row.add_child(lang)
 	_ui.lang=lang
+	_section(col,"Display")
 	var options:=HBoxContainer.new(); col.add_child(options)
 	var layoutbox:=OptionButton.new()
 	for name in Logic.LAYOUTS: layoutbox.add_item(name)
@@ -179,7 +190,6 @@ func _make_settings() -> PanelContainer:
 	options.add_child(layoutbox)
 	var nearest:=CheckButton.new(); nearest.text="Nearest filter"; nearest.button_pressed=settings.nearest; nearest.toggled.connect(func(v):settings.nearest=v;_apply_filter()); options.add_child(nearest)
 	var integer:=CheckButton.new(); integer.text="Integer scaling"; integer.button_pressed=settings.integer_scale; integer.toggled.connect(func(v):settings.integer_scale=v;_layout_screens()); options.add_child(integer)
-	var vol:=HSlider.new(); vol.min_value=0; vol.max_value=1; vol.step=0.01; vol.value=settings.volume; vol.value_changed.connect(func(v):settings.volume=v; if machine: machine.get_audio_player().volume_linear=v); col.add_child(vol)
 	var scale_row:=HBoxContainer.new(); col.add_child(scale_row); var scalelabel:=Label.new(); scalelabel.text="Window scale"; scale_row.add_child(scalelabel)
 	var scale:=OptionButton.new()
 	for n in [1,2,3]: scale.add_item("%dx"%n)
@@ -203,17 +213,72 @@ func _make_settings() -> PanelContainer:
 	gpu_scale.item_selected.connect(func(i): settings.gpu3d_scale=i+2; _apply_gpu3d_settings(); _persist())
 	renderer_row.add_child(gpu_scale)
 	_ui.gpu_scale = gpu_scale
-	var rebind_title:=Label.new(); rebind_title.text="Input bindings — select a button, then press a key/gamepad button"; col.add_child(rebind_title)
-	var grid:=GridContainer.new(); grid.columns=4; col.add_child(grid)
+	_section(col,"Audio")
+	var vol_row:=HBoxContainer.new(); col.add_child(vol_row)
+	var vol_label:=Label.new(); vol_label.text="Volume"; vol_label.custom_minimum_size.x=110; vol_row.add_child(vol_label)
+	var vol:=HSlider.new(); vol.min_value=0; vol.max_value=1; vol.step=0.01; vol.value=settings.volume; vol.size_flags_horizontal=Control.SIZE_EXPAND_FILL; vol.size_flags_vertical=Control.SIZE_SHRINK_CENTER; vol_row.add_child(vol)
+	var vol_value:=Label.new(); vol_value.custom_minimum_size.x=48; vol_value.horizontal_alignment=HORIZONTAL_ALIGNMENT_RIGHT; vol_value.text="%d%%"%roundi(float(settings.volume)*100.0); vol_row.add_child(vol_value)
+	vol.value_changed.connect(func(v):settings.volume=v; vol_value.text="%d%%"%roundi(v*100.0); if machine: machine.get_audio_player().volume_linear=v)
+	_section(col,"Input")
+	var rebind_title:=Label.new(); rebind_title.text="Select a button, then press a key or gamepad control to rebind it."; col.add_child(rebind_title); _ui.rebind_title=rebind_title
+	var grid:=GridContainer.new(); grid.columns=3; grid.add_theme_constant_override("h_separation",4); grid.add_theme_constant_override("v_separation",4); col.add_child(grid)
+	_ui.bind_buttons = {}
 	for action in BUTTON_ACTIONS:
-		var b:=Button.new(); b.text=action.trim_prefix("ds_").capitalize(); b.pressed.connect(func():rebinding_action=action; rebind_title.text="Press a key or gamepad control for %s…"%action); grid.add_child(b)
-	var reset:=Button.new(); reset.text="Reset bindings"; reset.pressed.connect(func():Logic.reset_bindings(); _persist()); col.add_child(reset)
-	var error_label := Label.new(); error_label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; error_label.add_theme_color_override("font_color",Color(1,0.45,0.4)); col.add_child(error_label); _ui.error=error_label
-	var buttons:=HBoxContainer.new(); col.add_child(buttons)
-	var start:=Button.new(); start.text="Start"; start.custom_minimum_size=Vector2(180,52); start.pressed.connect(func():settings.rom_path=rom.text;settings.save_path=save.text;settings.language=LANGS[lang.selected];_persist();_start_game()); buttons.add_child(start)
+		var b:=Button.new(); b.size_flags_horizontal=Control.SIZE_EXPAND_FILL; b.pressed.connect(func():rebinding_action=action; rebind_title.text="Press a key or gamepad control for %s…"%action.trim_prefix("ds_").capitalize()); grid.add_child(b)
+		_ui.bind_buttons[action] = b
+	_refresh_binding_buttons()
+	var reset:=Button.new(); reset.text="Reset bindings"; reset.pressed.connect(func():Logic.reset_bindings(); _persist(); _refresh_binding_buttons()); col.add_child(reset)
+	var error_label := Label.new(); error_label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; error_label.add_theme_color_override("font_color",Color(1,0.45,0.4)); outer.add_child(error_label); _ui.error=error_label
+	var buttons:=HBoxContainer.new(); buttons.add_theme_constant_override("separation",8); outer.add_child(buttons)
+	var start:=Button.new(); start.text="Start"; start.custom_minimum_size=Vector2(220,52); start.size_flags_horizontal=Control.SIZE_EXPAND_FILL;
+	var start_style:=StyleBoxFlat.new(); start_style.bg_color=Color(0.13,0.42,0.3); start_style.set_corner_radius_all(6); start_style.set_content_margin_all(8)
+	start.add_theme_stylebox_override("normal",start_style)
+	var start_hover:=start_style.duplicate() as StyleBoxFlat; start_hover.bg_color=Color(0.17,0.52,0.37); start.add_theme_stylebox_override("hover",start_hover)
+	start.add_theme_font_size_override("font_size",20)
+	start.pressed.connect(func():settings.rom_path=rom.text;settings.save_path=save.text;settings.language=LANGS[lang.selected];_persist();_start_game()); buttons.add_child(start)
 	var close:=Button.new(); close.text="Close"; close.pressed.connect(_hide_settings); buttons.add_child(close)
 	var reviewer := Button.new(); reviewer.text = "Issue reviewer… (F7)"; reviewer.pressed.connect(_open_issue_reviewer); buttons.add_child(reviewer)
 	return panel
+
+func _section(parent: Control, text: String) -> void:
+	var label := Label.new(); label.text = text.to_upper()
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", Color(0.45, 0.7, 0.95))
+	parent.add_child(label)
+
+# [message, ok] for the ROM path currently typed in the settings panel.
+func _rom_status(path: String) -> Array:
+	if path.is_empty(): return ["No ROM selected.", false]
+	if not FileAccess.file_exists(path): return ["ROM not found at this path.", false]
+	var file := FileAccess.open(path, FileAccess.READ)
+	var megabytes := int(file.get_length() / 1048576) if file else 0
+	return ["ROM found (%d MB)." % megabytes, true]
+
+func _update_rom_status() -> void:
+	var label: Label = _ui.get("rom_status")
+	var rom: LineEdit = _ui.get("rom")
+	if label == null or rom == null: return
+	var status := _rom_status(rom.text)
+	label.text = status[0]
+	label.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6) if status[1] else Color(1.0, 0.7, 0.4))
+
+func _binding_text(action: String) -> String:
+	var key := ""
+	var pad := ""
+	for event in InputMap.action_get_events(action):
+		if event is InputEventKey and key.is_empty(): key = event.as_text_physical_keycode() if event.physical_keycode != 0 else event.as_text_keycode()
+		elif event is InputEventJoypadButton and pad.is_empty(): pad = "Pad %d" % event.button_index
+		elif event is InputEventJoypadMotion and pad.is_empty(): pad = "Axis %d%s" % [event.axis, "-" if event.axis_value < 0 else "+"]
+	var parts: Array[String] = []
+	if not key.is_empty(): parts.append(key)
+	if not pad.is_empty(): parts.append(pad)
+	return "%s  [%s]" % [action.trim_prefix("ds_").capitalize(), " · ".join(parts) if not parts.is_empty() else "unbound"]
+
+func _refresh_binding_buttons() -> void:
+	var buttons: Dictionary = _ui.get("bind_buttons", {})
+	for action in buttons: (buttons[action] as Button).text = _binding_text(action)
+	var title: Label = _ui.get("rebind_title")
+	if title: title.text = "Select a button, then press a key or gamepad control to rebind it."
 
 func _make_pause() -> PanelContainer:
 	var p:=PanelContainer.new()
@@ -592,7 +657,7 @@ func _input(event: InputEvent) -> void:
 	_chord_latched = chord
 
 func _replace_binding(event: InputEvent) -> void:
-	InputMap.action_erase_events(rebinding_action); InputMap.action_add_event(rebinding_action,event); rebinding_action=""; _persist()
+	InputMap.action_erase_events(rebinding_action); InputMap.action_add_event(rebinding_action,event); rebinding_action=""; _persist(); _refresh_binding_buttons()
 
 func _toggle_pause() -> void:
 	if not machine: _show_settings(); return
