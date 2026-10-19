@@ -18,7 +18,7 @@ Linux desktop is the immediate development target. Windows has native and cross-
 - Separate game logic, platform services, rendering, audio, input, and asset handling.
 - Provide one simulation for Classic and Enhanced presentation modes; presentation settings must never alter simulation decisions or timing.
 - Renderer design must support Vulkan and Direct3D 12. Higher resolution, widescreen, and effects are optional follow-on work after a faithful rendering baseline.
-- Game hosts require a separately supplied generated-code directory. No end-to-end generator workflow is shipped; generated game sources and all local game-derived outputs stay outside version control.
+- Game hosts require a separately supplied generated-code directory. `tools/build_port.py` runs the local pipeline but does not yet yield a bootable game; generated game sources and all local game-derived outputs stay outside version control.
 - Any future upscaler integration is optional, backend-neutral where practical, and limited to publicly released, properly licensed technology. No leaked or unauthorized DLSS versions.
 - Document original tooling behavior and dependency provenance without publishing game fingerprints, tables, addresses, corpus statistics, or captured content.
 
