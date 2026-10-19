@@ -72,7 +72,7 @@ Pad combos never pass the combo buttons to the game while held. With `--debug-to
 
 ## Optional hi-res 3D (experimental, off by default)
 
-`--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is verified by unit tests only: the public build currently does not reach a scene with 3D, so no hi-res game frame has been inspected, and hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm`.
+`--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is covered by unit tests, and was also run on a separate local development build that reaches real 3D scenes: over a 28,500-frame input script the native frame hashes were identical at scales 1 and 2, and sampled 2x frames were visibly sharper in 3D areas (about +50% frame time at 2x on the author's machine). The public build here reaches only the opening credits, so you will not see 3D scenes in it yet, and hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm`.
 
 ## Saves
 
@@ -81,7 +81,7 @@ The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written 
 ## Known limits
 
 - No save states: guest threads run on host fibers, which cannot be serialized. In-game saves use the cartridge save file only.
-- Hi-res 3D is unverified on real game scenes and makes no parity claim; edge marking and dots stay one output pixel wide at higher scales.
+- Hi-res 3D has no hardware parity claim and has been inspected only on a separate development build (not reachable in the public build yet); edge marking and dots stay one output pixel wide at higher scales.
 - Windows: the kit's ROM run is unverified; Steam Deck is unverified; play beyond the opening credits is unverified.
 - Performance figures in the release notes are from one machine and one headless run; they are not general claims.
 
