@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Godot host:** the bottom bar is a dark toolbar with tooltips and a hotkey hint, and the on-screen statistics have an outline so they stay readable over bright scenes.
 - **Cartridge backup chip:** `dq9 --backup-type TYPE`, `tools/build_port.py --backup-type TYPE` and the `[cartridge] backup_type`
   abi.ini key select the emulated backup chip. With the default guess the title screen reports a corrupt quick-save log on a
   fresh save; with `eeprom64k` a scripted 28,500-frame headless run passes the title menu into a field scene with per-frame
@@ -31,7 +32,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Linux:** `python tools/install_desktop_entry.py` adds an application-menu entry that starts the launcher
   (`--uninstall` removes it); CI now also builds and tests the runtime on Linux.
 - **Docs:** `docs/CONFIGURATION.md` lists every `frontend.conf` key with defaults and folders.
-- **Godot host:** the bottom bar is a dark toolbar with tooltips and a hotkey hint, and the on-screen statistics have an outline for bright scenes; the settings and pause panels are centered and bounded to the window (the pause panel used to
+- **Godot host:** the settings and pause panels are centered and bounded to the window (the pause panel used to
   open off-center and run past the bottom edge).
 - **Windows build:** fixed an intermittent parallel-build race when several executables copied `SDL2.dll` into the
   same folder (seen in CI).
