@@ -66,6 +66,8 @@ struct ConfigData {
     int key_filter = 0;
     int key_integer = 0;
     int key_lid = 0;
+    int key_fast_forward = 0;
+    int key_screenshot = 0;
     std::string language = "en";
     std::string rom_path;
     std::string save_path;

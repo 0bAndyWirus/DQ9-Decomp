@@ -22,9 +22,24 @@ constexpr UiColor kBg{9, 14, 23, 255};
 constexpr UiColor kWhite{239, 244, 251, 255};
 constexpr UiColor kMuted{158, 175, 195, 255};
 constexpr int kW = 1024;
+constexpr int kTabPitch = 186; // five tabs across the 928 px panel
 constexpr int kH = 720;
 constexpr UiRect kLaunchButton{758, 642, 218, 50};
-constexpr std::array<std::string_view, 4> kPages{"LANGUAGE", "CONTROLS", "ROM AND SAVE", "OPTIONS"};
+constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM AND SAVE", "OPTIONS", "HOTKEYS"};
+constexpr int kHotkeyPage = 4;
+// Keyboard hotkeys handled by the SDL frontend outside the DS button map.
+struct HotkeyRow { std::string_view name; int frontend_detail::ConfigData::*field; };
+constexpr std::array<HotkeyRow, 8> kHotkeyRows{{
+    {"CYCLE SCREEN LAYOUT", &frontend_detail::ConfigData::key_layout},
+    {"SWAP SCREENS", &frontend_detail::ConfigData::key_swap},
+    {"TOGGLE FULLSCREEN", &frontend_detail::ConfigData::key_fullscreen},
+    {"TOGGLE LINEAR FILTER", &frontend_detail::ConfigData::key_filter},
+    {"TOGGLE INTEGER SCALING", &frontend_detail::ConfigData::key_integer},
+    {"CLOSE / OPEN LID", &frontend_detail::ConfigData::key_lid},
+    {"FAST-FORWARD (HOLD)", &frontend_detail::ConfigData::key_fast_forward},
+    {"SCREENSHOT", &frontend_detail::ConfigData::key_screenshot},
+}};
+constexpr int kHotkeyCount = static_cast<int>(kHotkeyRows.size());
 constexpr std::array<std::string_view, 12> kDsNames{"A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L", "X", "Y"};
 constexpr std::array<std::string_view, 5> kLanguages{"en", "fr", "de", "es", "it"};
 
@@ -166,6 +181,7 @@ public:
                 if (event.type == SDL_KEYDOWN && !event.key.repeat) {
                     if (pending_bind_ >= 0) {
                         if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) pending_bind_ = -1;
+                        else if (page_ == kHotkeyPage) config_.*kHotkeyRows[static_cast<std::size_t>(pending_bind_)].field = event.key.keysym.scancode;
                         else if (bind_side_ == 0) config_.keycodes[static_cast<std::size_t>(pending_bind_)] = event.key.keysym.scancode;
                         pending_bind_ = -1;
                         continue;
@@ -179,7 +195,7 @@ public:
                         page_ = static_cast<int>(event.key.keysym.scancode - SDL_SCANCODE_F1);
                         focus_ = 0;
                     } else if (event.key.keysym.scancode == SDL_SCANCODE_TAB) {
-                        page_ = (page_ + 1) % 4;
+                        page_ = (page_ + 1) % static_cast<int>(kPages.size());
                         focus_ = 0;
                     }
                     else if (event.key.keysym.scancode == SDL_SCANCODE_UP) move_focus(-1);
@@ -231,7 +247,7 @@ private:
     TextBuffer& text_buffer(int field) { return field == 0 ? rom_text_ : save_text_; }
     void move_focus(int delta) {
         if (text_field_ >= 0) return;
-        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 3 : 13;
+        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 3 : page_ == kHotkeyPage ? kHotkeyCount + 1 : 13;
         focus_ = (focus_ + delta + count) % count;
     }
     void adjust(int delta) {
@@ -262,6 +278,9 @@ private:
                 text_buffer(text_field_).set(focus_ == 0 ? config_.rom_path : config_.save_path);
                 SDL_StartTextInput();
             } else detect_paths();
+        } else if (page_ == kHotkeyPage) {
+            if (focus_ == kHotkeyCount) reset_hotkeys();
+            else { pending_bind_ = focus_; bind_side_ = 0; }
         } else if (page_ == 3) adjust(1);
     }
     void toggle_option() {
@@ -283,6 +302,10 @@ private:
         config_.gamepad_buttons = defaults.gamepad_buttons;
         config_.frontend.keycodes = defaults.keycodes;
         config_.frontend.gamepad_buttons = defaults.gamepad_buttons;
+    }
+    void reset_hotkeys() {
+        const auto defaults = frontend_detail::default_config();
+        for (const auto& row : kHotkeyRows) config_.*row.field = defaults.*row.field;
     }
     void cycle_controller(int delta) {
         if (devices_.empty()) { config_.frontend.controller_guid.clear(); return; }
@@ -320,8 +343,8 @@ private:
     }
     void mouse_click(int x, int y, bool& accepted, bool& running) {
         if (y >= 76 && y < 128) {
-            const int tab = (x - 48) / 232;
-            if (x >= 48 && tab >= 0 && tab < 4) { page_ = tab; focus_ = 0; }
+            const int tab = (x - 48) / kTabPitch;
+            if (x >= 48 && tab >= 0 && tab < static_cast<int>(kPages.size())) { page_ = tab; focus_ = 0; }
         }
         if (y >= kLaunchButton.y && y < kLaunchButton.y + kLaunchButton.h &&
             x >= kLaunchButton.x && x < kLaunchButton.x + kLaunchButton.w) {
@@ -336,6 +359,17 @@ private:
             return;
         }
         if (page_ == 1 && y >= 580 && y < 612) { focus_ = 12; reset_controls(); return; }
+        if (page_ == kHotkeyPage && y >= 172 && y < 172 + kHotkeyCount * 34) {
+            focus_ = (y - 172) / 34;
+            pending_bind_ = focus_;
+            bind_side_ = 0;
+            return;
+        }
+        if (page_ == kHotkeyPage && y >= 172 + kHotkeyCount * 34 + 12 && y < 172 + kHotkeyCount * 34 + 44) {
+            focus_ = kHotkeyCount;
+            reset_hotkeys();
+            return;
+        }
         if (page_ == 2 && y >= 186 && y < 244) { focus_ = 0; activate(); return; }
         if (page_ == 2 && y >= 298 && y < 356) { focus_ = 1; activate(); return; }
         if (page_ == 2 && y >= 405 && y < 465) { focus_ = 2; detect_paths(); return; }
@@ -351,13 +385,15 @@ private:
         canvas_.clear(kBg);
         canvas_.text(48, 28, "DQ9-Decomp - LAUNCHER", kWhite, 3);
         canvas_.text(48, 61, "SET UP YOUR SESSION. CHOOSE A PAGE, THEN LAUNCH.", kMuted, 1);
-        for (int i = 0; i < 4; ++i) canvas_.button({48 + i * 232, 78, 216, 44}, kPages[static_cast<std::size_t>(i)], page_ == i);
+        for (int i = 0; i < static_cast<int>(kPages.size()); ++i)
+            canvas_.button({48 + i * kTabPitch, 78, kTabPitch - 12, 44}, kPages[static_cast<std::size_t>(i)], page_ == i);
         canvas_.panel({48, 140, 928, 476});
         if (page_ == 0) draw_language();
         else if (page_ == 1) draw_controls();
         else if (page_ == 2) draw_paths();
+        else if (page_ == kHotkeyPage) draw_hotkeys();
         else draw_options();
-        canvas_.text(48, 633, "F1-F4 PAGES   TAB NEXT   ARROWS NAVIGATE   ENTER SELECT   ESC CANCEL", kMuted, 1);
+        canvas_.text(48, 633, "F1-F4 PAGES   TAB NEXT PAGE (5: HOTKEYS)   ARROWS NAVIGATE   ENTER SELECT   ESC CANCEL", kMuted, 1);
         canvas_.button(kLaunchButton, "LAUNCH (F5)", false);
         const char* capture_path = std::getenv("DSR_LAUNCHER_CAPTURE");
         if (!capture_done_ && capture_path && *capture_path) {
@@ -399,6 +435,21 @@ private:
         }
         canvas_.button({68, 580, 260, 32}, "RESET TO DEFAULTS", focus_ == 12);
         canvas_.text(360, 588, "STEAM INPUT CAN PRESENT AS AN XBOX-STYLE PAD.", kMuted, 1);
+    }
+    void draw_hotkeys() {
+        canvas_.text(72, 151, "ACTION", kMuted, 1);
+        canvas_.text(470, 151, "KEYBOARD (CLICK / ENTER TO REBIND)", kMuted, 1);
+        for (int i = 0; i < kHotkeyCount; ++i) {
+            const int y = 172 + i * 34;
+            const bool selected = focus_ == i;
+            const auto& row = kHotkeyRows[static_cast<std::size_t>(i)];
+            canvas_.fill({68, y, 872, 29}, selected ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
+            canvas_.text(78, y + 7, row.name, kWhite, 1);
+            canvas_.text(470, y + 7, pending_bind_ == i ? "PRESS A KEY..." : key_name(config_.*row.field),
+                         selected ? UiColor{134, 216, 255, 255} : kWhite, 1);
+        }
+        canvas_.button({68, 172 + kHotkeyCount * 34 + 12, 260, 32}, "RESET TO DEFAULTS", focus_ == kHotkeyCount);
+        canvas_.text(360, 172 + kHotkeyCount * 34 + 20, "PAD: SELECT+L LAYOUT, SELECT+R3 SWAP, SELECT+R FAST-FORWARD, SELECT+START SHOT.", kMuted, 1);
     }
     void draw_paths() {
         canvas_.text(86, 162, "ROM IMAGE (.NDS)", kMuted, 1);

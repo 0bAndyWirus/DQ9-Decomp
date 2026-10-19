@@ -129,6 +129,8 @@ int main() {
     config.frame_time_overlay = true;
     config.capture_memory_dumps = false;
     config.key_layout = 66;
+    config.key_fast_forward = 77;
+    config.key_screenshot = 78;
     const auto decoded = parse_config(serialize_config(config));
     assert(decoded.frontend.layout == config.frontend.layout);
     assert(decoded.frontend.window_scale == 4 && decoded.frontend.linear_filter);
@@ -137,6 +139,18 @@ int main() {
     assert(decoded.keycodes[0] == 55 && decoded.key_layout == 66 && decoded.gamepad_buttons[0] == 16);
     assert(decoded.language == "fr" && decoded.rom_path == config.rom_path && decoded.save_path == config.save_path);
     assert(decoded.debug_tool && decoded.frame_time_overlay && !decoded.capture_memory_dumps);
+    assert(decoded.key_fast_forward == 77 && decoded.key_screenshot == 78);
+    // The named key_* settings must not be swallowed by the numeric key_<N> branch, and a
+    // legacy file without them keeps the defaults (Tab held, F12).
+    const auto defaults = default_config();
+    assert(defaults.key_fast_forward == 43 && defaults.key_screenshot == 69);
+    const auto old_file = parse_config("key_0=55\n");
+    assert(old_file.key_fast_forward == defaults.key_fast_forward &&
+           old_file.key_screenshot == defaults.key_screenshot);
+    // Out-of-range scancodes are rejected; the numeric key_<N> table is unaffected.
+    const auto bad = parse_config("key_fast_forward=9999\nkey_screenshot=-1\nkey_1=60\n");
+    assert(bad.key_fast_forward == defaults.key_fast_forward && bad.key_screenshot == defaults.key_screenshot);
+    assert(bad.keycodes[1] == 60);
     const auto legacy = parse_config("layout=2\nscale=4\nkey_0=55\n");
     assert(legacy.frontend.layout == ScreenLayout::TopFocus && legacy.frontend.window_scale == 4);
     assert(legacy.keycodes[0] == 55 && legacy.gamepad_buttons[0] == 1);

@@ -63,6 +63,8 @@ struct InputState {
     int pen_y = 0;
     bool lid_closed = false;
     bool quit_requested = false;
+    bool fast_forward = false;         // Held fast-forward key or Select+R; works without the debug tool.
+    bool screenshot_requested = false; // One-shot: set by the poll that saw the key or Select+Start tap.
     std::uint32_t debug_actions = 0;
     std::vector<EditorEvent> editor_events;
     std::uint16_t editor_buttons = 0; // Controller-only annotation grid; never guest input.

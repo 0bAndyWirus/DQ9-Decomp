@@ -163,6 +163,8 @@ public:
         state.editor_events.clear();
         state.menu_actions.clear();
         state.editor_buttons = 0;
+        state.fast_forward = false;
+        state.screenshot_requested = false;
         state.menu_selection = debug_overlay_.menu_selection;
         if (config_.debug_tool_enabled) state.debug_actions = 0;
         bool annotation_route = debug_overlay_.annotation_open;
@@ -346,6 +348,7 @@ public:
                 else if (key == config_data_.key_filter) toggle_filter();
                 else if (key == config_data_.key_integer) { config_.integer_scaling = !config_.integer_scaling; SDL_RenderSetIntegerScale(renderer_, config_.integer_scaling ? SDL_TRUE : SDL_FALSE); }
                 else if (key == config_data_.key_lid) state.lid_closed = !state.lid_closed;
+                else if (key == config_data_.key_screenshot) state.screenshot_requested = true;
             }
             if (config_.debug_tool_enabled && event.type == SDL_MOUSEBUTTONDOWN &&
                 event.button.button == SDL_BUTTON_LEFT) {
@@ -402,6 +405,8 @@ public:
         int key_count = 0;
         const Uint8* keys = SDL_GetKeyboardState(&key_count);
         if (!annotation_route && !menu_route) {
+            const int ff_key = config_data_.key_fast_forward;
+            if (ff_key > 0 && ff_key < key_count && keys[ff_key]) state.fast_forward = true;
             for (std::size_t i = 0; i < config_data_.keycodes.size(); ++i) {
                 const int keycode = config_data_.keycodes[i];
                 const bool debug_hotkey = config_.debug_tool_enabled &&
@@ -446,15 +451,36 @@ public:
             select_l_held_ = select && left_shoulder;
             const bool right_shoulder =
                 SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0;
-            if (!annotation_open && select && right_shoulder && !select_r_held_) {
-                swap_screens();
+            // Select+R (held) is fast-forward. It replaces the former Select+R swap toggle,
+            // which moved to Select+R3 so no pad combo has two meanings.
+            if (!annotation_open && select && right_shoulder) {
+                state.fast_forward = true;
                 state.buttons &= static_cast<std::uint16_t>(~(kBtnSelect | kBtnR));
             }
-            select_r_held_ = select && right_shoulder;
-
             const bool r3_down =
                 SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_RIGHTSTICK) != 0;
-            if (!annotation_open && r3_down && !r3_pressed_) stylus_mode_ = !stylus_mode_;
+            const bool select_r3 = select && r3_down;
+            if (!annotation_open && select_r3 && !select_r3_held_) {
+                swap_screens();
+                state.buttons &= static_cast<std::uint16_t>(~kBtnSelect);
+            }
+            select_r3_held_ = select_r3;
+
+            // Select+Start rising edge is a screenshot. The debug tool's separate 1 s
+            // Select+Start hold (pause) can still follow in the same hold.
+            const auto pad_down = [&](int button) {
+                return button >= 0 && button < SDL_CONTROLLER_BUTTON_MAX &&
+                       SDL_GameControllerGetButton(controller_, static_cast<SDL_GameControllerButton>(button)) != 0;
+            };
+            const int pad_select = config_data_.gamepad_buttons[2];
+            const int pad_start = config_data_.gamepad_buttons[3];
+            const bool select_start = pad_select != pad_start && pad_down(pad_select) && pad_down(pad_start);
+            if (select_start && !select_start_held_ && !annotation_open) state.screenshot_requested = true;
+            select_start_held_ = select_start;
+            if (select_start && !annotation_open)
+                state.buttons &= static_cast<std::uint16_t>(~(kBtnSelect | kBtnStart));
+
+            if (!annotation_open && r3_down && !r3_pressed_ && !select) stylus_mode_ = !stylus_mode_;
             r3_pressed_ = r3_down;
             if (!annotation_open && stylus_mode_) {
                 const Sint16 sx = SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_RIGHTX);
@@ -1243,7 +1269,7 @@ private:
     int output_rate_ = 0;
     bool audio_device_started_ = false;
     bool initialized_ = false, swapped_ = false, stylus_mode_ = false, r3_pressed_ = false;
-    bool select_l_held_ = false, select_r_held_ = false;
+    bool select_l_held_ = false, select_r3_held_ = false, select_start_held_ = false;
     int cursor_x_ = 128, cursor_y_ = 96;
     double source_position_ = 0.0;
     std::vector<std::int16_t> resampled_audio_;

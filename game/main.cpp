@@ -688,6 +688,9 @@ int main(int argc, char** argv) {
     // The frontend updates pen and lid only on events, so its state must
     // persist across frames; scripted input is rebuilt per frame below.
     dsr::InputState frontend_input;
+    bool held_fast_forward_was_active = false;
+    const std::filesystem::path screenshot_dir =
+        (save_path.has_parent_path() ? save_path.parent_path() : std::filesystem::path{}) / "screenshots";
     auto handle_debug_input = [&](const dsr::InputState& input, FrameIndex current_frame) {
         if (!opt.debug_tool) return;
         const std::uint64_t capture_frame = current_frame >= 0
@@ -1289,6 +1292,16 @@ int main(int argc, char** argv) {
             in = frontend_input;
         }
         handle_debug_input(frontend_input, frame - 1);
+        if (frontend) {
+            // The held key / Select+R and the screenshot hotkeys work without the debug tool.
+            if (held_fast_forward_was_active && !frontend_input.fast_forward) frontend->clear_audio_queue();
+            held_fast_forward_was_active = frontend_input.fast_forward;
+            if (frontend_input.screenshot_requested) {
+                const auto saved = dq9::save_screenshot(screenshot_dir, machine);
+                if (saved.empty()) std::fprintf(stderr, "Screenshot failed: %s\n", screenshot_dir.string().c_str());
+                else std::fprintf(stderr, "Screenshot saved: %s\n", saved.string().c_str());
+            }
+        }
         if (annotation_open) step_requested = false;
         if (paused && !step_requested) {
             update_overlay(frame > 0 ? static_cast<std::uint64_t>(frame - 1) : 0);
@@ -1383,7 +1396,7 @@ int main(int argc, char** argv) {
                 frontend->queue_audio(audio, samples, dsr::Session::audio_rate());
             }
             if (paused) frontend->pace_frame();
-            else if (!fast_forward) {
+            else if (!fast_forward && !frontend_input.fast_forward) {
                 frontend->pace_frame();
                 if (slow_motion < 1.0) {
                     const auto extra = std::chrono::duration<double>(1.0 / 59.8261 * (1.0 / slow_motion - 1.0));

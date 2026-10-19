@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <initializer_list>
 #include <string>
 #include <thread>
 #include <vector>
@@ -148,6 +149,55 @@ int main() {
     assert(SDL_RenderGetIntegerScale(ordinary_renderer) == SDL_TRUE);
     tap(SDL_SCANCODE_F4);
     assert(SDL_RenderGetIntegerScale(ordinary_renderer) == SDL_FALSE);
+    // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
+    tap(SDL_SCANCODE_F12);
+    assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);
+    frontend->poll(hotkey_input);
+    assert(!hotkey_input.screenshot_requested);
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    {
+        // Pad combos through a virtual controller: Select=back, Start, L/R shoulders, R3.
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+        const int device = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 0, 8, 0);
+        assert(device >= 0);
+        char guid[64]{};
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(device), guid, sizeof(guid));
+        const std::string mapping = std::string(guid) +
+            ",DQ9 Controls Test,back:b0,start:b1,leftshoulder:b2,rightshoulder:b3,rightstick:b4,a:b5,";
+        assert(SDL_GameControllerAddMapping(mapping.c_str()) >= 0);
+        SDL_Joystick* joystick = SDL_JoystickOpen(device);
+        assert(joystick);
+        const auto pad = [&](std::initializer_list<int> down) {
+            for (int b = 0; b < 8; ++b) SDL_JoystickSetVirtualButton(joystick, b, 0);
+            for (const int b : down) SDL_JoystickSetVirtualButton(joystick, b, 1);
+            SDL_JoystickUpdate();
+            frontend->poll(hotkey_input);
+        };
+        frontend->poll(hotkey_input); // open the newly attached controller
+        pad({});
+        pad({0, 3}); // Select+R held: fast-forward, nothing forwarded to the DS
+        assert(hotkey_input.fast_forward && (hotkey_input.buttons & (dsr::kBtnSelect | dsr::kBtnR)) == 0);
+        pad({0, 3});
+        assert(hotkey_input.fast_forward);
+        pad({});
+        assert(!hotkey_input.fast_forward);
+        pad({0, 1}); // Select+Start: one screenshot per press, buttons withheld for the whole hold
+        assert(hotkey_input.screenshot_requested && !hotkey_input.fast_forward);
+        assert((hotkey_input.buttons & (dsr::kBtnSelect | dsr::kBtnStart)) == 0);
+        pad({0, 1});
+        assert(!hotkey_input.screenshot_requested);
+        assert((hotkey_input.buttons & (dsr::kBtnSelect | dsr::kBtnStart)) == 0);
+        pad({});
+        pad({0, 4}); // Select+R3 is the screen swap now: no fast-forward, Select withheld
+        assert(!hotkey_input.fast_forward && !hotkey_input.screenshot_requested);
+        assert((hotkey_input.buttons & dsr::kBtnSelect) == 0);
+        pad({3}); // R alone is an ordinary DS button
+        assert(!hotkey_input.fast_forward && (hotkey_input.buttons & dsr::kBtnR) != 0);
+        pad({});
+        SDL_JoystickClose(joystick);
+        SDL_JoystickDetachVirtual(device);
+    }
+#endif
     frontend.reset();
     std::filesystem::remove_all(directory);
 }

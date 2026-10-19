@@ -16,13 +16,19 @@ Rect fit_rect(int x, int y, int w, int h, int area_w, int area_h) {
     const int out_h = std::max(1, static_cast<int>(std::floor(h * scale)));
     return {x + (area_w - out_w) / 2, y + (area_h - out_h) / 2, out_w, out_h};
 }
+// SDL scancodes are 0..511; anything else keeps the previous binding.
+int scancode_or(int value, int fallback) { return value >= 0 && value < 512 ? value : fallback; }
+
 void parse_line(const std::string& line, ConfigData& cfg) {
     const auto split = line.find('=');
     if (split == std::string::npos) return;
     const std::string key = line.substr(0, split);
     const std::string value = line.substr(split + 1);
     try {
-        if (key == "layout") {
+        // Named key_* settings must precede the numeric key_<N> branch below.
+        if (key == "key_fast_forward") cfg.key_fast_forward = scancode_or(std::stoi(value), cfg.key_fast_forward);
+        else if (key == "key_screenshot") cfg.key_screenshot = scancode_or(std::stoi(value), cfg.key_screenshot);
+        else if (key == "layout") {
             const int n = std::stoi(value);
             if (n >= 0 && n <= 5) cfg.frontend.layout = static_cast<ScreenLayout>(n);
         } else if (key == "scale") cfg.frontend.window_scale = std::clamp(std::stoi(value), 1, 8);
@@ -190,6 +196,7 @@ ConfigData default_config() {
     c.frontend.gamepad_buttons = c.gamepad_buttons;
     c.key_layout = 63; c.key_swap = 64; c.key_fullscreen = 68;
     c.key_filter = 62; c.key_integer = 61; c.key_lid = 60;
+    c.key_fast_forward = 43; c.key_screenshot = 69; // Tab (held), F12
     return c;
 }
 std::string serialize_config(const ConfigData& c) {
@@ -218,7 +225,9 @@ std::string serialize_config(const ConfigData& c) {
         out << "gamepad_" << i << '=' << c.gamepad_buttons[i] << '\n';
     out << "hotkey_layout=" << c.key_layout << '\n' << "hotkey_swap=" << c.key_swap << '\n'
         << "hotkey_fullscreen=" << c.key_fullscreen << '\n' << "hotkey_filter=" << c.key_filter << '\n'
-        << "hotkey_integer=" << c.key_integer << '\n' << "hotkey_lid=" << c.key_lid << '\n';
+        << "hotkey_integer=" << c.key_integer << '\n' << "hotkey_lid=" << c.key_lid << '\n'
+        << "key_fast_forward=" << c.key_fast_forward << '\n'
+        << "key_screenshot=" << c.key_screenshot << '\n';
     return out.str();
 }
 ConfigData parse_config(std::string_view text, ConfigData base) {
