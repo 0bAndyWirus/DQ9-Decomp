@@ -99,7 +99,7 @@ struct Options {
         "\n"
         "Headless / automated runs:\n"
         "  --headless              no window or audio device (needs --frames or --pause-at-frame)\n"
-        "  --frames N              stop after N frames\n"
+        "  --frames N              stop after N frames; headless runs end with a one-line speed summary\n"
         "  --pause-at-frame N      replay through zero-based frame N without pacing/audio, then pause (stop\n"
         "                          when headless)\n"
         "  --rtc-epoch SECONDS / --rtc-timezone-offset MINUTES   freeze the clock to emulated time\n"
@@ -1350,6 +1350,7 @@ int main(int argc, char** argv) {
             break;
         }
     };
+    const auto run_started = std::chrono::steady_clock::now();
     while (opt.frames < 0 || frame < opt.frames) {
         const bool replay_seeking = opt.pause_at_frame >= 0 && frame < opt.pause_at_frame;
         if (opt.debug_workflow_selftest) {
@@ -1612,6 +1613,13 @@ int main(int argc, char** argv) {
                      debug_session->directory().string().c_str());
     }
     finished = true;
+    if (opt.headless && frame > 0) {
+        // One line a user can paste into a bug report or compare between builds.
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_started).count();
+        if (seconds > 0.0)
+            std::fprintf(stderr, "dq9: %" PRId64 " frames in %.2f s (%.0f FPS, %.1fx real time)\n", frame, seconds,
+                         static_cast<double>(frame) / seconds, static_cast<double>(frame) / seconds / 59.8261);
+    }
     if (!opt.record_input.empty()) {
         // Total emulated frames, so idle frames after the last input survive replay (`--frames N`).
         std::ofstream(dsr::host::path_with_suffix(opt.record_input, ".frames")) << frames_done.load() << '\n';
