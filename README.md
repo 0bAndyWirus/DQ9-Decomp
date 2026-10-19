@@ -85,7 +85,7 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 
 **Godot host.** The `DqMachine` GDExtension runs the machine on a worker thread with an audio ring, nonblocking frame slots and a 60 Hz cap (59.8 FPS steady in an earlier, undated, author-reported live run; not independently verified). It provides DS button and touch input with rebinding, resizable screen layouts, save handling, restart, replayable debug bundles and an issue reviewer. An optional GPU path draws captured 3D scenes as sorted textured meshes with DS-compatible shaders and a masked compositor, supports higher-resolution output, and has a zero-crack regression test. Windows cross-builds package the SDL executable and the Godot extension. There is no oracle-parity claim for the high-resolution path.
 
-`tools/build_port.py` runs the local build-from-your-own-copy pipeline (see [Getting started](docs/GETTING_STARTED.md)); it currently produces a host that does not boot, because protected modules are not unpacked. Supported game languages: English, French, German, Spanish, Italian (European release only). See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
+`tools/build_port.py` runs the local build-from-your-own-copy pipeline (see [Getting started](docs/GETTING_STARTED.md)); it currently produces a host that builds and runs but shows only blank screens (cause not yet identified). Supported game languages: English, French, German, Spanish, Italian (European release only). See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
 
 ## Quick start (runtime and tests only)
 

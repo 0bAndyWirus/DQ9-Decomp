@@ -13,8 +13,9 @@ Steps:
   6. configure and build the `dq9` executable (unless --generate-only).
 
 Known limitation: modules that ship in protected form are NOT unpacked by this
-public tool. A host built without them can fail early at runtime. This project
-does not currently claim a playable game; see docs/GETTING_STARTED.md.
+public tool, and no ABI configuration is supplied. A host built this way currently
+runs but shows blank screens; the cause is not established. This project does not
+claim a playable game; see docs/GETTING_STARTED.md.
 
 Usage:
   python tools/build_port.py --rom PATH --dsd PATH --arm7-metadata PATH.json
@@ -25,6 +26,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -93,6 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     for src, dst in pairs:
         if src.exists() and not dst.exists():
             dst.write_bytes(src.read_bytes())
+    # The manifest builder reads per-module load addresses from these YAML files
+    # next to the images; without them every non-main module gets base 0.
+    for name in ("arm9.yaml", "itcm.yaml", "dtcm.yaml"):
+        shutil.copyfile(extract / "arm9" / name, images / name)
+    overlays_yaml = (extract / "arm9_overlays" / "overlays.yaml").read_text(encoding="utf-8")
+    (images / "arm9_overlays.yaml").write_text(
+        re.sub(r"file_name: ov(\d+)\.bin", r"file_name: arm9_ov\1.bin", overlays_yaml), encoding="utf-8")
 
     GEN.mkdir(parents=True, exist_ok=True)
     manifest9 = GEN / "arm9.manifest.json"
