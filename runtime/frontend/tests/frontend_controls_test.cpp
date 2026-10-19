@@ -182,6 +182,26 @@ int main() {
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
     }
+    {
+        // Hotkey feedback: swapping screens (both screens identical here) must draw a notice
+        // in the bottom-left corner, and nothing there before the key press.
+        SDL_Window* toast_window = SDL_GetWindowFromID(1);
+        SDL_Renderer* toast_renderer = SDL_GetRenderer(toast_window);
+        std::array<std::uint32_t, 256 * 192> flat{};
+        flat.fill(0xff102030);
+        int tw = 0, th = 0;
+        SDL_GetRendererOutputSize(toast_renderer, &tw, &th);
+        const SDL_Rect probe{20, th - 30, 1, 1};
+        std::uint32_t before = 0, after = 0;
+        frontend->present(flat.data(), flat.data());
+        assert(SDL_RenderReadPixels(toast_renderer, &probe, SDL_PIXELFORMAT_ARGB8888, &before, 4) == 0);
+        assert(before == 0xff102030);
+        tap(SDL_SCANCODE_F8);
+        frontend->present(flat.data(), flat.data());
+        assert(SDL_RenderReadPixels(toast_renderer, &probe, SDL_PIXELFORMAT_ARGB8888, &after, 4) == 0);
+        assert(after != before);
+        tap(SDL_SCANCODE_F8);
+    }
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);

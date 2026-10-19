@@ -1330,7 +1330,10 @@ int main(int argc, char** argv) {
             if (frontend_input.screenshot_requested) {
                 const auto saved = dq9::save_screenshot(screenshot_dir, machine);
                 if (saved.empty()) std::fprintf(stderr, "Screenshot failed: %s\n", screenshot_dir.string().c_str());
-                else std::fprintf(stderr, "Screenshot saved: %s\n", saved.string().c_str());
+                else {
+                    std::fprintf(stderr, "Screenshot saved: %s\n", saved.string().c_str());
+                    frontend->show_message("SCREENSHOT SAVED: " + saved.filename().string());
+                }
             }
         }
         if (annotation_open) step_requested = false;

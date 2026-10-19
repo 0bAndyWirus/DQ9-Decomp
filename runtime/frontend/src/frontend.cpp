@@ -346,10 +346,18 @@ public:
                 else if (key == config_data_.key_layout) cycle_layout();
                 else if (key == config_data_.key_swap) swap_screens();
                 else if (key == config_data_.key_filter) toggle_filter();
-                else if (key == config_data_.key_integer) { config_.integer_scaling = !config_.integer_scaling; SDL_RenderSetIntegerScale(renderer_, config_.integer_scaling ? SDL_TRUE : SDL_FALSE); }
+                else if (key == config_data_.key_integer) {
+                    config_.integer_scaling = !config_.integer_scaling;
+                    SDL_RenderSetIntegerScale(renderer_, config_.integer_scaling ? SDL_TRUE : SDL_FALSE);
+                    show_message(config_.integer_scaling ? "INTEGER SCALING: ON" : "INTEGER SCALING: OFF");
+                }
                 else if (key == config_data_.key_lid) state.lid_closed = !state.lid_closed;
                 else if (key == config_data_.key_screenshot) state.screenshot_requested = true;
-                else if (key == config_data_.key_gpu3d_scale) config_.gpu3d_scale = config_.gpu3d_scale % 4 + 1;
+                else if (key == config_data_.key_gpu3d_scale) {
+                    config_.gpu3d_scale = config_.gpu3d_scale % 4 + 1;
+                    show_message(config_.gpu3d_scale == 1 ? "HI-RES 3D: OFF"
+                                                          : "HI-RES 3D: " + std::to_string(config_.gpu3d_scale) + "X");
+                }
             }
             if (config_.debug_tool_enabled && event.type == SDL_MOUSEBUTTONDOWN &&
                 event.button.button == SDL_BUTTON_LEFT) {
@@ -572,6 +580,7 @@ public:
             pause_chord_active_ = false;
             pause_chord_fired_ = false;
         }
+        fast_forward_active_ = state.fast_forward;
         if (menu_route) {
             state.buttons = 0;
             state.pen_down = false;
@@ -646,6 +655,7 @@ public:
             SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255); SDL_RenderDrawRect(renderer_, &cursor);
         }
         draw_debug_overlay();
+        draw_toast();
         if (!debug_banner_capture_path_.empty() &&
             debug_overlay_.startup_banner_visible && !debug_banner_captured_) {
             debug_banner_captured_ = true;
@@ -1040,14 +1050,49 @@ private:
         if (!controllers_.empty() && SDL_GameControllerGetAttached(controllers_.front()))
             controller_ = controllers_.front();
     }
-    void cycle_layout() { config_.layout = static_cast<ScreenLayout>((static_cast<int>(config_.layout) + 1) % 6); }
-    void swap_screens() { swapped_ = !swapped_; }
+    void cycle_layout() {
+        config_.layout = static_cast<ScreenLayout>((static_cast<int>(config_.layout) + 1) % 6);
+        constexpr const char* kNames[6] = {"VERTICAL", "HORIZONTAL", "TOP FOCUS", "BOTTOM FOCUS", "TOP ONLY", "BOTTOM ONLY"};
+        show_message(std::string("LAYOUT: ") + kNames[static_cast<int>(config_.layout)]);
+    }
+    void swap_screens() {
+        swapped_ = !swapped_;
+        show_message(swapped_ ? "SCREENS SWAPPED" : "SCREENS: DEFAULT ORDER");
+    }
+    void show_message(const std::string& text) override {
+        toast_ = text;
+        toast_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    }
+    // Transient notice at the bottom-left plus a held-key fast-forward badge at the top-right.
+    void draw_toast() {
+        const bool toast = !toast_.empty() && std::chrono::steady_clock::now() < toast_until_;
+        if (!toast && !fast_forward_active_) return;
+        int width = 0, height = 0;
+        SDL_GetRendererOutputSize(renderer_, &width, &height);
+        ui_detail::UiCanvas canvas(renderer_);
+        const ui_detail::UiColor white{238, 244, 252, 255};
+        const int scale = height >= 700 ? 2 : 1;
+        if (toast) {
+            const int text_w = canvas.text_width(toast_, scale);
+            const int box_h = 14 * scale + 12;
+            canvas.panel({14, height - 14 - box_h, text_w + 28, box_h});
+            canvas.text(28, height - 14 - box_h + 6 + scale * 2, toast_, white, scale);
+        }
+        if (fast_forward_active_) {
+            const char* label = "FAST-FORWARD >>";
+            const int text_w = canvas.text_width(label, scale);
+            const int box_h = 14 * scale + 12;
+            canvas.panel({width - 14 - text_w - 28, 14, text_w + 28, box_h});
+            canvas.text(width - 14 - text_w - 14, 14 + 6 + scale * 2, label, ui_detail::UiColor{128, 216, 255, 255}, scale);
+        }
+    }
     void toggle_fullscreen() {
         const bool now = (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
         SDL_SetWindowFullscreen(window_, now ? 0u : static_cast<Uint32>(SDL_WINDOW_FULLSCREEN_DESKTOP));
     }
     void toggle_filter() {
         config_.linear_filter = !config_.linear_filter;
+        show_message(config_.linear_filter ? "FILTER: LINEAR" : "FILTER: NEAREST");
         for (auto* texture : textures_) SDL_SetTextureScaleMode(texture, config_.linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
     }
     void draw_debug_overlay() {
@@ -1275,6 +1320,9 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     std::array<SDL_Texture*, 2> textures_{};
     std::array<int, 2> texture_scale_{1, 1};
+    std::string toast_;
+    std::chrono::steady_clock::time_point toast_until_{};
+    bool fast_forward_active_ = false;
     std::array<SDL_Texture*, 4> texture_view_textures_{};
     std::vector<std::uint32_t> texture_view_pixels_;
     DebugOverlayState debug_overlay_{};

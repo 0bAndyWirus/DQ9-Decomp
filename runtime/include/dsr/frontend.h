@@ -199,6 +199,8 @@ public:
     // Stereo frames queued but not yet played (for pacing).
     virtual std::size_t audio_backlog() const = 0;
     virtual void clear_audio_queue() {}
+    // Short on-screen notice (screenshot saved, layout changed, ...); hosts without a window ignore it.
+    virtual void show_message(const std::string& /*text*/) {}
 
     // Sleep until the next emulated frame deadline (59.8261 Hz).
     virtual void pace_frame() = 0;
