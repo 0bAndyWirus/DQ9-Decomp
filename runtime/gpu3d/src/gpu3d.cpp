@@ -2838,8 +2838,21 @@ struct Gpu3D::Impl {
             band_polygons = std::make_unique<std::array<PreparedPolygon, kPolygonLimit>>();
         // Clip, project, cull and order vertices once. The prepared row bounds
         // are from the actual raster path, not the preclip sorting y range.
-        for (std::size_t i = 0; i < render_polygon_count; ++i)
-            prepare_polygon(render_polygons[i], (*band_polygons)[i]);
+        // prepare_polygon only reads frozen geometry/IO and writes its own PreparedPolygon, so
+        // large polygon lists are prepared in contiguous chunks on the pool (the serial loop used
+        // to sit on the critical path before the band pass). Small lists skip the extra barrier.
+        constexpr std::size_t kParallelPrepareMin = 48;
+        if (render_polygon_count >= kParallelPrepareMin) {
+            pool->run(kRenderBands, [this](int band) {
+                const std::size_t first = render_polygon_count * static_cast<std::size_t>(band) / kRenderBands;
+                const std::size_t last = render_polygon_count * static_cast<std::size_t>(band + 1) / kRenderBands;
+                for (std::size_t i = first; i < last; ++i)
+                    prepare_polygon(render_polygons[i], (*band_polygons)[i]);
+            });
+        } else {
+            for (std::size_t i = 0; i < render_polygon_count; ++i)
+                prepare_polygon(render_polygons[i], (*band_polygons)[i]);
+        }
         pool->run(kRenderBands, [this](int band) {
             const int y_begin = band * tgt_.band_height;
             const int y_end = y_begin + tgt_.band_height;
