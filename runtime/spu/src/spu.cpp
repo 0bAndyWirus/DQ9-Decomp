@@ -358,7 +358,7 @@ void Spu::run(std::int64_t ticks) {
             until=std::min(until,capture.phase>=p?0U:p-capture.phase);
         }
         const std::uint32_t step=static_cast<std::uint32_t>(std::min(remain,until));
-        for(unsigned n=0;n<16;++n) impl_->advance(impl_->ch[n],n,step);
+        for(unsigned n=0;n<16;++n) if(impl_->ch[n].busy) impl_->advance(impl_->ch[n],n,step);
         impl_->advance_capture(step);
         impl_->sample_phase+=step; remain-=step;
         if(impl_->sample_phase==static_cast<std::uint64_t>(kTicksPerSample)) { impl_->sample_phase=0; impl_->emit(); }
