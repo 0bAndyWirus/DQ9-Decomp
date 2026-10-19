@@ -192,6 +192,7 @@ public:
         state.editor_buttons = 0;
         state.fast_forward = false;
         state.screenshot_requested = false;
+        state.pause_toggle_requested = false;
         state.menu_selection = debug_overlay_.menu_selection;
         if (config_.debug_tool_enabled) state.debug_actions = 0;
         bool annotation_route = debug_overlay_.annotation_open;
@@ -384,6 +385,7 @@ public:
                 }
                 else if (key == config_data_.key_lid) state.lid_closed = !state.lid_closed;
                 else if (key == config_data_.key_screenshot) state.screenshot_requested = true;
+                else if (key == config_data_.key_pause) state.pause_toggle_requested = true;
                 else if (key == config_data_.key_mute) {
                     muted_ = !muted_;
                     show_message(muted_ ? "AUDIO: MUTED" : "AUDIO: " + std::to_string(config_.volume) + "%");
@@ -1108,8 +1110,7 @@ private:
         swapped_ = !swapped_;
         show_message(swapped_ ? "SCREENS SWAPPED" : "SCREENS: DEFAULT ORDER");
     }
-    void show_message(const std::string& text) override { show_message(text, 2500); }
-    void show_message(const std::string& text, int milliseconds) {
+    void show_message(const std::string& text, int milliseconds = 2500) override {
         toast_ = text;
         toast_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
     }

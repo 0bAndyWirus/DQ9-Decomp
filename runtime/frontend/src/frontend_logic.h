@@ -76,6 +76,7 @@ struct ConfigData {
     int key_volume_down = 0;
     int key_volume_up = 0;
     int key_mute = 0;
+    int key_pause = 0;
     std::string language = "en";
     std::string rom_path;
     std::string save_path;

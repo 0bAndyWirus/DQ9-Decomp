@@ -35,6 +35,7 @@ void parse_line(const std::string& line, ConfigData& cfg) {
         else if (key == "key_volume_down") cfg.key_volume_down = scancode_or(std::stoi(value), cfg.key_volume_down);
         else if (key == "key_volume_up") cfg.key_volume_up = scancode_or(std::stoi(value), cfg.key_volume_up);
         else if (key == "key_mute") cfg.key_mute = scancode_or(std::stoi(value), cfg.key_mute);
+        else if (key == "key_pause") cfg.key_pause = scancode_or(std::stoi(value), cfg.key_pause);
         else if (key == "pause_when_unfocused") cfg.frontend.pause_when_unfocused = std::stoi(value) != 0;
         else if (key == "window_width") cfg.frontend.window_width = window_extent(std::stoi(value));
         else if (key == "window_height") cfg.frontend.window_height = window_extent(std::stoi(value));
@@ -210,6 +211,7 @@ ConfigData default_config() {
     c.key_filter = 62; c.key_integer = 61; c.key_lid = 60;
     c.key_fast_forward = 43; c.key_screenshot = 69; // Tab (held), F12
     c.key_volume_down = 45; c.key_volume_up = 46; c.key_mute = 16; // - = M
+    c.key_pause = 19;                                                 // P
     c.key_gpu3d_scale = 64;                          // F7 (was the swap default before hi-res 3D)
     return c;
 }
@@ -250,7 +252,8 @@ std::string serialize_config(const ConfigData& c) {
         << "key_gpu3d_scale=" << c.key_gpu3d_scale << '\n'
         << "key_volume_down=" << c.key_volume_down << '\n'
         << "key_volume_up=" << c.key_volume_up << '\n'
-        << "key_mute=" << c.key_mute << '\n';
+        << "key_mute=" << c.key_mute << '\n'
+        << "key_pause=" << c.key_pause << '\n';
     return out.str();
 }
 ConfigData parse_config(std::string_view text, ConfigData base) {

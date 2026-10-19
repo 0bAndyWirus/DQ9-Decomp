@@ -29,10 +29,10 @@ constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM / 
 constexpr int kHotkeyPage = 4;
 constexpr int kOptionCount = 16;
 constexpr int kOptionPitch = 29;
-constexpr int kHotkeyPitch = 30;
+constexpr int kHotkeyPitch = 28;
 // Keyboard hotkeys handled by the SDL frontend outside the DS button map.
 struct HotkeyRow { std::string_view name; int frontend_detail::ConfigData::*field; };
-constexpr std::array<HotkeyRow, 12> kHotkeyRows{{
+constexpr std::array<HotkeyRow, 13> kHotkeyRows{{
     {"CYCLE SCREEN LAYOUT", &frontend_detail::ConfigData::key_layout},
     {"SWAP SCREENS", &frontend_detail::ConfigData::key_swap},
     {"TOGGLE FULLSCREEN", &frontend_detail::ConfigData::key_fullscreen},
@@ -45,6 +45,7 @@ constexpr std::array<HotkeyRow, 12> kHotkeyRows{{
     {"VOLUME DOWN (10%)", &frontend_detail::ConfigData::key_volume_down},
     {"VOLUME UP (10%)", &frontend_detail::ConfigData::key_volume_up},
     {"MUTE / UNMUTE", &frontend_detail::ConfigData::key_mute},
+    {"PAUSE / RESUME", &frontend_detail::ConfigData::key_pause},
 }};
 constexpr int kHotkeyCount = static_cast<int>(kHotkeyRows.size());
 constexpr std::array<std::string_view, 12> kDsNames{"A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L", "X", "Y"};

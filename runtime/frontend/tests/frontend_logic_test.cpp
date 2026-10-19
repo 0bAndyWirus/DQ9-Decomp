@@ -163,6 +163,12 @@ int main() {
     assert(with_volume.key_volume_down == 80 && with_volume.key_volume_up == 81 && with_volume.key_mute == 82);
     assert(with_volume.frontend.volume == 40 && default_config().frontend.volume == 100);
     assert(parse_config("volume=250\n").frontend.volume == 100 && parse_config("volume=-5\n").frontend.volume == 0);
+    assert(default_config().key_pause == 19 && parse_config("key_pause=44\n").key_pause == 44);
+    {
+        auto remapped = default_config();
+        remapped.key_pause = 80;
+        assert(parse_config(serialize_config(remapped)).key_pause == 80);
+    }
     assert(default_config().key_volume_down == 45 && default_config().key_volume_up == 46 && default_config().key_mute == 16);
     assert(volume_gain_q8(100, false) == 256 && volume_gain_q8(50, false) == 128 && volume_gain_q8(0, false) == 0);
     assert(volume_gain_q8(100, true) == 0 && volume_gain_q8(900, false) == 256);
