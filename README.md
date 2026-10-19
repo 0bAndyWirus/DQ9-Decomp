@@ -20,7 +20,7 @@ ARM9/ARM7 static recompilation · C++20 Nintendo DS runtime · Experimental SDL2
 
 DQ9-Decomp explores whether the European version of *Dragon Quest IX* can eventually run through a faithful native host on modern hardware. The current work combines original reverse-engineering tools, ARM/Thumb static recompilation research and native runtime services. **Linux is the immediate development platform; Windows and Steam Deck are targets**, not verified full-game compatibility claims.
 
-**Start here:** [Getting started (plain language)](docs/GETTING_STARTED.md) · [Project status](#status) · [Architecture](docs/ARCHITECTURE.md) · [Runtime-only quick start](#quick-start-runtime-and-tests-only) · [Roadmap](docs/ROADMAP.md) · [FAQ](docs/FAQ.md) · [Legal boundary](LEGAL.md)
+**Start here:** [Getting started (plain language)](docs/GETTING_STARTED.md) · [Project status](#status) · [Architecture](docs/ARCHITECTURE.md) · [Runtime-only quick start](#quick-start-runtime-and-tests-only) · [Roadmap](docs/ROADMAP.md) · [FAQ](docs/FAQ.md) · [Configuration](docs/CONFIGURATION.md) · [Legal boundary](LEGAL.md)
 
 ---
 
