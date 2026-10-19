@@ -1,6 +1,6 @@
 # Building DQ9-Decomp
 
-The SDL host and Godot 4.5 GDExtension share the original native runtime. This repository distributes sources and tests only: no game data, generated game sources, or binaries. A local build-from-your-own-copy script (`tools/build_port.py`) is provided but currently yields a host that does not boot; see [Getting started](GETTING_STARTED.md). A game host needs a separately supplied generated-code directory.
+The SDL host and Godot 4.5 GDExtension share the original native runtime. This repository distributes sources and tests only: no game data, generated game sources, or binaries. A local build-from-your-own-copy script (`tools/build_port.py`) is provided; a local build from a fresh clone was verified to reach the opening credits; see [Getting started](GETTING_STARTED.md). A game host needs a separately supplied generated-code directory.
 
 For Windows native/cross-builds, see [Building on Windows](BUILDING_WINDOWS.md). Build outputs, saves, captures, and packages stay local; game-host packages (which include code generated from the game) must never be uploaded or distributed.
 
@@ -32,7 +32,7 @@ cmake -S . -B build/game-ui -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/game-ui --target dq9
 ```
 
-`tools/build_port.py` can produce that directory, but the result does not yet reach any game output (blank screens without a caller-supplied `--abi-config`; see Getting started). Keep it and the resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
+`tools/build_port.py` can produce that directory, and the host needs the generated `build/gen/abi.ini` passed as `--abi-config` (see Getting started). Keep it and the resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
 
 ## Godot prerequisites and build
 

@@ -14,7 +14,7 @@ ARM9/ARM7 static recompilation · C++20 Nintendo DS runtime · Experimental SDL2
 
 </div>
 
-> **Research project — not a playable PC release.** The public repository provides original tooling, runtime components and synthetic tests. It does **not** include game data, generated game code, or compiled game builds. A local build-from-your-own-copy script exists but does not yet produce a bootable game. See [Status](#status) and [Legal](#legal).
+> **Experimental — bring your own copy; not a finished port.** The public repository provides original tooling, runtime components and synthetic tests. It does **not** include game data, generated game code, or compiled game builds. `tools/build_port.py` builds a local program from *your own* copy; it currently reaches the opening credits and START prompt (see [Getting started](docs/GETTING_STARTED.md)). See [Status](#status) and [Legal](#legal).
 
 > **Bring your own copy.** This repository contains original code only. It does not include the game, any game asset, recovered or generated game code, or any compiled build, and none is published here. See [Legal](#legal).
 
@@ -85,7 +85,7 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 
 **Godot host.** The `DqMachine` GDExtension runs the machine on a worker thread with an audio ring, nonblocking frame slots and a 60 Hz cap (59.8 FPS steady in an earlier, undated, author-reported live run; not independently verified). It provides DS button and touch input with rebinding, resizable screen layouts, save handling, restart, replayable debug bundles and an issue reviewer. An optional GPU path draws captured 3D scenes as sorted textured meshes with DS-compatible shaders and a masked compositor, supports higher-resolution output, and has a zero-crack regression test. Windows cross-builds package the SDL executable and the Godot extension. There is no oracle-parity claim for the high-resolution path.
 
-`tools/build_port.py` runs the local build-from-your-own-copy pipeline (see [Getting started](docs/GETTING_STARTED.md)); it currently produces a host that builds and runs but shows only blank screens unless you supply a thread-layout config; protected code is the next known blocker (see Getting started). Supported game languages: English, French, German, Spanish, Italian (European release only). See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
+`tools/build_port.py` runs the local build-from-your-own-copy pipeline (see [Getting started](docs/GETTING_STARTED.md)); verified from a fresh clone: it builds a host that reaches the opening credits and START prompt in all five languages. Gameplay beyond that is unverified. Supported game languages: English, French, German, Spanish, Italian (European release only). See the [architecture](docs/ARCHITECTURE.md), [workflow status](docs/DECOMP_STATUS.md) and [roadmap](docs/ROADMAP.md).
 
 ## Quick start (runtime and tests only)
 

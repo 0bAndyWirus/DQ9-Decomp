@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local SDL host from an image you already own (experimental, local-only).
+"""Build a local SDL host from an image you already own.
 
 Everything this script produces is derived from your image. It stays under
 `build/` and `extracted/` (both git-ignored) and must never be uploaded or shared.
@@ -7,34 +7,30 @@ Everything this script produces is derived from your image. It stays under
 Steps:
   1. optionally verify the image against a private fingerprint profile;
   2. extract the image and initialise the analysis workspace with ds-decomp (`dsd`);
-  3. build the ARM9 manifest from the analysis files;
+  3. build the ARM9 manifest and resolve protected overlay code from your own image;
   4. discover ARM7 code from the extracted ARM7 binary;
-  5. optionally derive a private ABI configuration (--derive-abi);
+  5. derive the thread-layer configuration `build/gen/abi.ini` from your own binaries;
   6. recompile both CPUs to host C++ (python -m recomp);
   7. configure and build the `dq9` executable (unless --generate-only).
 
-Known limitation: modules that ship in protected form are NOT unpacked by this
-public tool. ABI derivation is disabled by default; --derive-abi writes a private
-configuration even with --generate-only and prints its resolved --abi-config path,
-but does not pass it to the host automatically. A host built this way currently
-runs but shows blank screens without a caller-supplied --abi-config thread layout.
-This project does not claim a playable game; see docs/GETTING_STARTED.md.
-
 Usage:
-  python tools/build_port.py --rom PATH --dsd PATH --arm7-metadata PATH.json
+  python tools/build_port.py --rom PATH --dsd PATH
+  build/game/game/dq9 --rom PATH --abi-config build/gen/abi.ini [--language en|fr|de|es|it]
+
+See docs/GETTING_STARTED.md for the verified status.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 try:
     from .host_tools import executable_name
@@ -51,29 +47,15 @@ def run(*cmd: object, cwd: Path = ROOT) -> None:
     subprocess.run([str(c) for c in cmd], cwd=cwd, check=True)
 
 
-def arm7_header_layout(rom: Path) -> tuple[int, int]:
-    """Return (ram address, entry address) of the ARM7 binary from the standard NDS header."""
-    with rom.open("rb") as f:
-        header = f.read(0x40)
-    if len(header) < 0x40:
-        raise SystemExit(f"{rom}: too small to be a Nintendo DS image")
-    entry, ram = struct.unpack_from("<II", header, 0x34)
-    return ram, entry
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--rom", type=Path, required=True, help="your own image")
     p.add_argument("--dsd", type=Path, required=True, help="ds-decomp executable you installed yourself")
-    p.add_argument("--arm7-metadata", type=Path, required=True,
-                   help="private JSON with at least autoload_callback (see tools/arm7_analyze.py)")
     p.add_argument("--profile", type=Path, help="private fingerprint profile JSON for verify_reference_rom.py")
     p.add_argument("--workspace", type=Path, default=WORKSPACE)
     p.add_argument("--build-dir", type=Path, default=ROOT / "build" / "game")
     p.add_argument("--config", default="RelWithDebInfo")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
-    p.add_argument("--derive-abi", action="store_true",
-                   help="derive private abi.ini and print its --abi-config path; do not apply it to the host")
     args = p.parse_args(argv)
 
     rom = args.rom.resolve()
@@ -112,20 +94,19 @@ def main(argv: list[str] | None = None) -> int:
     GEN.mkdir(parents=True, exist_ok=True)
     manifest9 = GEN / "arm9.manifest.json"
     run(py, "-m", "recomp.dsd_manifest", "--config", config, "--out", manifest9)
+    run(py, tools / "unwrap_protected_overlay.py", "--manifest", manifest9, "--out", GEN)
 
-    base, entry = arm7_header_layout(rom)
-    meta = json.loads(args.arm7_metadata.read_text(encoding="utf-8"))
-    if "autoload_callback" not in meta:
-        raise SystemExit("--arm7-metadata must contain autoload_callback")
+    # DSD writes the ARM7 load address, entry and autoload callback while extracting.
+    arm7_meta = yaml.safe_load((extract / "arm7" / "arm7.yaml").read_text(encoding="utf-8"))
+    for key in ("base_address", "entry_function", "autoload_callback"):
+        if key not in arm7_meta:
+            raise SystemExit(f"{extract / 'arm7' / 'arm7.yaml'} lacks {key}")
     run(py, tools / "arm7_analyze.py", "--arm7", extract / "arm7" / "arm7.bin", "--out", GEN,
-        "--base", hex(base), "--entry", hex(entry), "--metadata", args.arm7_metadata)
+        "--base", hex(arm7_meta["base_address"]), "--entry", hex(arm7_meta["entry_function"]),
+        "--autoload-callback", hex(arm7_meta["autoload_callback"]))
 
-    if args.derive_abi:
-        abi_config = GEN / "abi.ini"
-        run(py, tools / "derive_abi_config.py", "--workspace", args.workspace,
-            "--arm9-manifest", manifest9, "--arm7-manifest", GEN / "arm7.manifest.json",
-            "--out", abi_config)
-        print(f"--abi-config {abi_config.resolve()}")
+    abi = GEN / "abi.ini"
+    run(py, tools / "derive_abi_config.py", "--workspace", args.workspace, "--out", abi, "--report", GEN / "abi-report.json")
 
     run(py, "-m", "recomp", "--manifest", manifest9, "--out", GEN / "arm9")
     run(py, "-m", "recomp", "--manifest", GEN / "arm7.manifest.json", "--out", GEN / "arm7")
@@ -136,7 +117,9 @@ def main(argv: list[str] | None = None) -> int:
     run("cmake", "-S", ROOT, "-B", args.build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={args.config}",
         f"-DDQ9_GENERATED_DIR={GEN}")
     run("cmake", "--build", args.build_dir, "--target", "dq9")
-    print(f"built {args.build_dir / 'game' / executable_name('dq9')} (local only; never distribute)")
+    exe = args.build_dir / "game" / executable_name("dq9")
+    print(f"built {exe} (local only; never distribute)")
+    print(f'run: "{exe}" --rom "{rom}" --abi-config "{abi}" --language en')
     return 0
 
 
