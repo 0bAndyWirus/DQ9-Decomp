@@ -92,14 +92,20 @@ func _build_ui() -> void:
 	top_rect = top_frame.find_child("Texture", true, false) as TextureRect
 	bottom_rect = bottom_frame.find_child("Texture", true, false) as TextureRect
 	bottom_rect.gui_input.connect(_on_touch_input)
-	status_label = Label.new(); status_label.position = Vector2(10, 10); status_label.add_theme_font_size_override("font_size", 16); game_panel.add_child(status_label)
+	status_label = Label.new(); status_label.position = Vector2(10, 10); status_label.add_theme_font_size_override("font_size", 16)
+	status_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9)); status_label.add_theme_constant_override("outline_size", 5) # readable over bright scenes
+	game_panel.add_child(status_label)
 	_toast = Label.new(); _toast.add_theme_font_size_override("font_size", 18); _toast.hide()
 	_toast.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT); _toast.position = Vector2(12, -40)
 	var toast_style := StyleBoxFlat.new(); toast_style.bg_color = Color(0.05, 0.08, 0.13, 0.92); toast_style.border_color = Color(0.3, 0.65, 0.95); toast_style.set_border_width_all(1); toast_style.set_corner_radius_all(4); toast_style.set_content_margin_all(6)
 	_toast.add_theme_stylebox_override("normal", toast_style)
 	game_panel.add_child(_toast)
-	var bar := HBoxContainer.new(); root.add_child(bar)
-	var menu := Button.new(); menu.text = "Start / Settings"; menu.pressed.connect(_show_settings); bar.add_child(menu)
+	var bar_panel := PanelContainer.new(); root.add_child(bar_panel)
+	var bar_style := StyleBoxFlat.new(); bar_style.bg_color = Color(0.055, 0.07, 0.1); bar_style.set_content_margin_all(4)
+	bar_style.border_color = Color(0.3, 0.65, 0.95, 0.5); bar_style.border_width_top = 1
+	bar_panel.add_theme_stylebox_override("panel", bar_style)
+	var bar := HBoxContainer.new(); bar.add_theme_constant_override("separation", 8); bar_panel.add_child(bar)
+	var menu := Button.new(); menu.text = "Start / Settings"; menu.tooltip_text = "ROM, language, display, audio and input settings"; menu.pressed.connect(_show_settings); bar.add_child(menu)
 	var layout_box := OptionButton.new()
 	for name in Logic.LAYOUTS: layout_box.add_item(name)
 	layout_box.selected = layout
@@ -107,7 +113,8 @@ func _build_ui() -> void:
 	bar.add_child(layout_box)
 	var filter := CheckButton.new(); filter.text = "Nearest"; filter.button_pressed = settings.nearest; filter.toggled.connect(func(v): settings.nearest=v; _apply_filter()); bar.add_child(filter)
 	var integer := CheckButton.new(); integer.text = "Integer scale"; integer.button_pressed = settings.integer_scale; integer.toggled.connect(func(v): settings.integer_scale=v; _layout_screens()); bar.add_child(integer)
-	var debug := Button.new(); debug.text = "Debug (F10)"; debug.pressed.connect(_toggle_pause); bar.add_child(debug)
+	var debug := Button.new(); debug.text = "Debug (F10)"; debug.tooltip_text = "Pause and open the debug panel (also Escape or Select+Start)"; debug.pressed.connect(_toggle_pause); bar.add_child(debug)
+	var hint := Label.new(); hint.text = "Tab: fast-forward   F12: screenshot   F11: fullscreen"; hint.add_theme_color_override("font_color", Color(0.55, 0.65, 0.78)); hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL; hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; hint.add_theme_font_size_override("font_size", 13); bar.add_child(hint)
 	var compare := Button.new(); compare.text = "3D A/B (F6)"; compare.tooltip_text = "With GPU hi-res selected, compare it with software instantly (also while paused). 2D stays unchanged."
 	compare.disabled = int(settings.renderer_gpu3d) == 0; compare.pressed.connect(_toggle_gpu3d_compare); bar.add_child(compare); _ui.gpu_compare = compare
 	var settings_overlay := Control.new()
