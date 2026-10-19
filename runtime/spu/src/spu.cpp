@@ -84,11 +84,11 @@ struct Spu::Impl {
         c.lfsr=0x7fff;
         const unsigned fmt=(c.cnt>>29U)&3U;
         if(fmt==2U) {
-            const std::uint32_t h=read8 ? read8(c.sad)&255U : 0U;
-            const std::uint32_t h1=read8 ? read8(c.sad+1U)&255U : 0U;
+            const std::uint32_t h=rd(c.sad)&255U;
+            const std::uint32_t h1=rd(c.sad+1U)&255U;
             c.predictor=static_cast<std::int16_t>(h|(h1<<8U));
             c.current=c.predictor;
-            c.adpcm_index=std::min(88,static_cast<int>((read8 ? read8(c.sad+2U) : 0U)&127U));
+            c.adpcm_index=std::min(88,static_cast<int>(rd(c.sad+2U)&127U));
             c.initial_predictor=c.predictor;
             c.initial_adpcm_index=c.adpcm_index;
             // ADPCM sample position zero is the 32-bit header; the first
@@ -102,8 +102,12 @@ struct Spu::Impl {
             }
         }
     }
-    std::function<std::uint32_t(std::uint32_t)> read8;
-    std::function<void(std::uint32_t,std::uint8_t)> write8;
+    // The bus callbacks live on the owning Spu; keeping a pointer avoids copying two
+    // std::function objects on every run()/io call.
+    const Spu* owner=nullptr;
+    std::uint32_t rd(std::uint32_t addr) const { return owner!=nullptr && owner->read8 ? owner->read8(addr) : 0U; }
+    bool can_write() const { return owner!=nullptr && static_cast<bool>(owner->write8); }
+    void wr(std::uint32_t addr,std::uint8_t value) const { owner->write8(addr,value); }
     void decode_adpcm(Channel& c) {
         const std::uint32_t total=sample_count(c);
         if(c.pos>=total) {
@@ -128,7 +132,7 @@ struct Spu::Impl {
         if(!c.loop_state_valid && nibble==loop_start) {
             c.loop_pos=nibble; c.loop_predictor=c.predictor; c.loop_index=c.adpcm_index; c.loop_state_valid=true;
         }
-        const std::uint32_t raw=read8 ? read8(c.sad+nibble/2U)&255U : 0U;
+        const std::uint32_t raw=rd(c.sad+nibble/2U)&255U;
         const int code=static_cast<int>((nibble&1U)?(raw>>4U):(raw&15U));
         const int step=kStepTable[static_cast<std::size_t>(c.adpcm_index)];
         const int diff=((code&7)*2+1)*step>>3;
@@ -153,11 +157,11 @@ struct Spu::Impl {
                     c.pos=loop_start;
                 }
                 if(fmt==0U) {
-                    const auto b=read8 ? read8(c.sad+c.pos)&255U : 0U;
+                    const auto b=rd(c.sad+c.pos)&255U;
                     c.current=static_cast<std::int8_t>(b)*256; ++c.pos;
                 } else {
-                    const auto lo=read8 ? read8(c.sad+c.pos*2U)&255U : 0U;
-                    const auto hi=read8 ? read8(c.sad+c.pos*2U+1U)&255U : 0U;
+                    const auto lo=rd(c.sad+c.pos*2U)&255U;
+                    const auto hi=rd(c.sad+c.pos*2U+1U)&255U;
                     c.current=static_cast<std::int16_t>(lo|(hi<<8U)); ++c.pos;
                 }
             } else if(n<8U) {
@@ -243,7 +247,7 @@ struct Spu::Impl {
     }
     void capture(unsigned i,std::int32_t value) {
         Capture& c=cap[i];
-        if((c.cnt&0x80U)==0U || !write8) return;
+        if((c.cnt&0x80U)==0U || !can_write()) return;
         const bool is8=(c.cnt&8U)!=0U;
         const std::uint32_t limit=std::max(1U,c.len&0xffffU)*4U;
         if(c.written>=limit) {
@@ -253,13 +257,13 @@ struct Spu::Impl {
         const std::uint32_t address=c.dst+c.written;
         if(is8) {
             const std::int32_t q=std::clamp(value>>8U,-128,127);
-            write8(address,static_cast<std::uint8_t>(static_cast<std::int8_t>(q)));
+            wr(address,static_cast<std::uint8_t>(static_cast<std::int8_t>(q)));
             ++c.written;
         } else {
             const std::int32_t q=std::clamp(value,-32768,32767);
             const auto v=static_cast<std::uint16_t>(static_cast<std::int16_t>(q));
             for(unsigned b=0;b<2U;++b)
-                write8(address+b,static_cast<std::uint8_t>(v>>(8U*b)));
+                wr(address+b,static_cast<std::uint8_t>(v>>(8U*b)));
             c.written+=2U;
         }
         if(c.written>=limit && (c.cnt&4U)!=0U) c.cnt&=static_cast<std::uint8_t>(~0x80U);
@@ -334,12 +338,12 @@ struct Spu::Impl {
 
 Spu::Spu() : impl_(new Impl) { reset(); }
 Spu::~Spu() { delete impl_; }
-void Spu::reset() { auto read=std::move(impl_->read8); auto write=std::move(impl_->write8); *impl_=Impl{}; impl_->read8=std::move(read); impl_->write8=std::move(write); }
+void Spu::reset() { *impl_=Impl{}; impl_->owner=this; }
 // Public widths are in bits (8/16/32) like the core bus; Impl works in bytes.
-std::uint32_t Spu::io_read(std::uint32_t a,int w) { impl_->read8=read8; return impl_->io_read(a,w/8); }
-void Spu::io_write(std::uint32_t a,std::uint32_t v,int w) { impl_->read8=read8; impl_->write8=write8; impl_->io_write(a,v,w/8); }
+std::uint32_t Spu::io_read(std::uint32_t a,int w) { impl_->owner=this; return impl_->io_read(a,w/8); }
+void Spu::io_write(std::uint32_t a,std::uint32_t v,int w) { impl_->owner=this; impl_->io_write(a,v,w/8); }
 void Spu::run(std::int64_t ticks) {
-    impl_->read8=read8; impl_->write8=write8;
+    impl_->owner=this;
     if(ticks<=0) return;
     auto remain=static_cast<std::uint64_t>(ticks);
     while(remain!=0U) {
