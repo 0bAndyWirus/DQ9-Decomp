@@ -12,7 +12,9 @@
 /extracted/
 *.nds
 *.dsv
+*.dsv.*
 *.sav
+*.sav.*
 *.gp2
 *.bin
 
