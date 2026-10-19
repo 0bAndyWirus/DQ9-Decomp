@@ -55,6 +55,7 @@ DSD_SHA256 = {
 # PyPI publishes no Windows wheel for ziglang 0.17.0; 0.16.0 is the newest release with a
 # win_amd64 wheel. (Linux-hosted cross builds via tools/build_windows.sh use 0.17.0.)
 ZIG_WINDOWS_REQUIREMENT = "ziglang==0.16.0"
+WORKSPACE_MARKER = "rom.sha256"  # local-only fingerprint of the image the workspace was extracted from
 SDL_VERSION = "2.30.12"
 SDL_URL = (
     "https://github.com/libsdl-org/SDL/releases/download/"
@@ -160,6 +161,71 @@ def ctest_executable() -> str:
     return located
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+WORKSPACE_PARTS = ("extract", "config", "build")  # what build_port.py itself creates in a workspace
+
+
+def clear_workspace(workspace: Path, rom: Path, generated: Path) -> None:
+    """Deletes only the directories this script created, never a user directory.
+
+    --workspace is caller-supplied, so it is resolved and refused when it is the repository, one of
+    its ancestors, or contains the image, and a custom workspace is only cleared when it carries
+    this tool's fingerprint file. Only the extract/config/build subdirectories and the fingerprint
+    are removed (errors are raised, not hidden). The generated-code directory is only
+    cleared when it is the build/gen directory of this checkout.
+    """
+    workspace, rom = workspace.resolve(), rom.resolve()
+    if workspace == ROOT or workspace in ROOT.parents or workspace.parent == workspace:
+        raise SystemExit(f"Refusing to clear {workspace}: it is the repository or one of its parent directories.")
+    if rom == workspace or workspace in rom.parents:
+        raise SystemExit(f"Refusing to clear {workspace}: it contains the image {rom}.")
+    # Generic folder names prove nothing: only this checkout's default workspace, or one carrying
+    # our fingerprint file, is known to be ours. Anything else that already has such folders is
+    # somebody else's project; point at a new, empty directory instead.
+    owned = workspace == WORKSPACE.resolve() or (workspace / WORKSPACE_MARKER).is_file()
+    existing = [part for part in WORKSPACE_PARTS if (workspace / part).is_dir()]
+    if existing and not owned:
+        raise SystemExit(
+            f"Refusing to clear {workspace}: it has {', '.join(existing)} folders that this tool did not create "
+            f"(no {WORKSPACE_MARKER} fingerprint, and it is not the default workspace).\n"
+            f"Use a new, empty directory for --workspace instead.")
+    for part in existing:
+        shutil.rmtree(workspace / part)
+    (workspace / WORKSPACE_MARKER).unlink(missing_ok=True)
+    if generated.resolve() == (ROOT / "build" / "gen").resolve() and generated.is_dir():
+        shutil.rmtree(generated)  # stale chunks from the old image must not be compiled
+
+
+def ensure_workspace_matches_rom(workspace: Path, rom: Path, rebuild: bool, generated: Path) -> str:
+    """Refuse to rebuild from a workspace that was extracted from a different image.
+
+    The extraction step is skipped when a workspace already exists, and copied module images are
+    never overwritten, so building image B after image A would silently recompile A. The image
+    fingerprint is kept next to the extracted data (git-ignored, local only). Returns the digest.
+    """
+    digest = file_sha256(rom)
+    if rebuild:
+        clear_workspace(workspace, rom, generated)
+    elif (workspace / "config" / "arm9" / "config.yaml").exists():
+        marker = workspace / WORKSPACE_MARKER
+        recorded = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+        if recorded != digest:
+            reason = ("was extracted from a different image" if recorded
+                      else "has no record of the image it was extracted from")
+            raise SystemExit(
+                f"The existing workspace {workspace} {reason}.\n"
+                f"Build this image from a clean workspace with:\n"
+                f"  python tools/build_port.py --rebuild-workspace --rom \"{rom}\"")
+    return digest
+
+
 def launch_hint(exe: Path, rom: Path, abi: Path) -> str:
     args = [str(exe), "--rom", str(rom), "--abi-config", str(abi), "--language", "en"]
     if os.name == "nt":
@@ -181,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     # RelWithDebInfo (outputs identical); pass --config RelWithDebInfo when you need symbols.
     p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
+    p.add_argument("--rebuild-workspace", action="store_true",
+                   help="discard the extracted workspace and generated code first (use when switching to a different image)")
     p.add_argument("--check", action="store_true", help="only report whether this machine and image are ready, then exit")
     args = p.parse_args(argv)
     if not args.runtime_only and args.rom is None:
@@ -213,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     rom = args.rom.resolve()
     py = sys.executable
     tools = ROOT / "tools"
+    rom_digest = ensure_workspace_matches_rom(args.workspace, rom, args.rebuild_workspace, GEN)
 
     if args.profile:
         run(py, tools / "verify_reference_rom.py", "--rom", rom, "--profile", args.profile)
@@ -227,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         run(py, tools / "prepare_dsd_config.py", extract / "config.yaml", extract / "config-dsd.yaml")
         run(args.dsd, "init", "--rom-config", extract / "config-dsd.yaml",
             "--output-path", config_dir, "--build-path", build_dir)
+        (args.workspace / WORKSPACE_MARKER).write_text(rom_digest + "\n", encoding="utf-8")
 
     images = build_dir / "build"
     images.mkdir(parents=True, exist_ok=True)
