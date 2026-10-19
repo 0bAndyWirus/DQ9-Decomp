@@ -1,54 +1,46 @@
-DQ9-Decomp - Windows x64
+DQ9-Decomp - Windows x64 source build kit
 
-Requires Windows 10/11 x64 (system Universal CRT).
-This file accompanies locally created packages, not a public binary release.
-Game-host packages (they include code generated from the game) are local-only and must never be uploaded or distributed, including
-through CI, releases, or public issue attachments. This source project ships
-no binaries or generated game sources. Keep all session data private.
+No game or binary is included. This kit contains public source and build
+scripts only. You supply your own legally obtained European multilingual
+.nds dump; this project cannot help you obtain one. Every generated file,
+executable, extracted asset and save must stay private on your own computer.
+Never upload or distribute the resulting dq9.exe: it embeds game-derived code.
 
-A local package contains native host binaries, SDL2, launchers and (for the full
-package) a Godot project with its Windows GDExtension. It does not include an
-image, BIOS, saves, game assets, generated source files, or Godot itself.
-Cross-compilation alone does not establish Windows gameplay compatibility.
+Requirements
+- Windows 10/11 x64.
+- Python 3.10+ from https://www.python.org/downloads/windows/ . Enable
+  "Add python.exe to PATH" in the installer.
+- Internet access to download Python packages, ds-decomp and the SDL2 SDK.
+- About 5 GB of free disk space and a writable extracted kit directory.
+- Your own .nds dump; no Nintendo BIOS is required or included.
 
-1. Use a writable <install-dir> for the complete local package. Keep SDL2.dll
-   beside dq9.exe.
-2. Select an already locally available compatible image with --rom or DQ9_ROM.
-   There is no required image folder or filename. From <install-dir>, run:
-     run_game.bat --rom "%DQ9_ROM%"
-   Or run run_game.bat --menu and select the image's existing local path.
-3. An optional language precedes other options, for example:
-     run_game.bat fr --rom "%DQ9_ROM%"
-   Supported languages are en, fr, de, es and it. Other native options are
-   forwarded, for example --headless. Explicit --rom takes precedence over
-   DQ9_ROM; explicit --save takes precedence over DQ9_SAVE.
-4. Saves default to %APPDATA%\dq9-decomp\dq9.sav, not to <install-dir>.
-   Use --save or DQ9_SAVE to override the save path and keep a backup.
+Extract the ZIP, open Command Prompt in its directory, then run:
+  BUILD-DQ9.bat "C:\path\game.nds"
 
-DQ9_ABI_CONFIG selects caller-supplied local runtime metadata for both hosts;
-SDL also accepts --abi-config PATH. No title-specific ABI layout or values
-are supplied. Keep that configuration local alongside other private inputs.
+The script creates .venv, installs the tools, verifies a pinned ds-decomp
+release download, and builds from your own file. It asks no questions.
+Compilation can take 30-90 minutes; not measured by the author.
+Keep the terminal open and read any error before trying again.
 
-Godot (only included in the full local package):
-- Use a locally installed Godot 4.5 stable Windows x64 editor from
-  godotengine.org. Set GODOT to its executable.
-- From <install-dir>, run:
-    run_godot.bat --rom "%DQ9_ROM%"
-  Or use run_godot.bat --menu to open settings and Browse for a local image.
-- Saves default to %APPDATA%\dq9-decomp\godot.sav. The same --rom/DQ9_ROM
-  and --save/DQ9_SAVE selection rules apply.
-- Keep godot\bin\dq9_godot.windows.template_release.x86_64.dll and
-  dsr_session.dll together. A release extension works in both the editor
-  and a release export.
-- Export templates are not bundled. For a local standalone Godot executable,
-  open godot\project.godot, install the matching 4.5 templates, add Windows
-  Desktop x86_64 in Project > Export, and include the GDExtension DLLs.
-  Keep the resulting package local; do not upload it.
+After the build, launch from the same directory:
+  PLAY-DQ9.bat "C:\path\game.nds" en
 
-The Zig build statically links its C++ runtime; no MinGW runtime installation
-is needed. Native MSVC builds may require Microsoft's x64 Visual C++
-Redistributable.
-A generated-game build requires a separately supplied generated-code directory.
-For local build configuration and verification limits,
-see docs/BUILDING_WINDOWS.md in the source project. Third-party license notices
-are in licenses\ in the local package.
+Languages: en, fr, de, es, it. Omitting the language selects en.
+In PowerShell, prefix these commands with .\, for example:
+  .\BUILD-DQ9.bat "C:\path\game.nds"
+  .\PLAY-DQ9.bat "C:\path\game.nds" en
+The launcher supplies build\gen\abi.ini and does not enable the debug tool.
+Keep backups of your saves and keep all local output out of the kit ZIP.
+
+Protection-step legal note (from docs/GETTING_STARTED.md):
+Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
+The root copy of this note is accompanied by LEGAL.md in this kit.
+
+The first ROM run on Windows is unverified. The Windows kit's CI job builds
+and tests the ROM-free runtime with Zig; check the actual CI result before
+claiming that it passed. The author has not run a game on Windows.
+A cross-build or runtime test does not establish Windows game compatibility.
+
+See docs/BUILDING_WINDOWS.md for the Python build flow, Linux cross-builds,
+MSVC runtime tests and verification limits. No save-state support is claimed.
+This project is not affiliated with Nintendo, Square Enix or Level-5.

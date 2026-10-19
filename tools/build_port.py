@@ -14,7 +14,8 @@ Steps:
   7. configure and build the `dq9` executable (unless --generate-only).
 
 Usage:
-  python tools/build_port.py --rom PATH --dsd PATH
+  python tools/build_port.py --rom PATH [--dsd PATH]
+  python tools/build_port.py --runtime-only
   build/game/game/dq9 --rom PATH --abi-config build/gen/abi.ini [--language en|fr|de|es|it]
 
 See docs/GETTING_STARTED.md for the verified status.
@@ -23,11 +24,17 @@ See docs/GETTING_STARTED.md for the verified status.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import os
+import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -40,23 +47,152 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = ROOT / "extracted" / "workspace"
 GEN = ROOT / "build" / "gen"
+DSD_RELEASE = "https://github.com/AetiasHax/ds-decomp/releases/download/v0.12.1"
+DSD_SHA256 = {
+    "dsd-linux-x86_64": "256edde804dd8e5d7bc4c0e4187f85244ee4cd1f42bb427502e01fda6af43ceb",
+    "dsd-windows-x86_64.exe": "5917df26bffc05d4752276a2e0b1edd21bd6e920aabe1992be8a50efc9d10932",
+}
+SDL_VERSION = "2.30.12"
+SDL_URL = (
+    "https://github.com/libsdl-org/SDL/releases/download/"
+    f"release-{SDL_VERSION}/SDL2-devel-{SDL_VERSION}-mingw.tar.gz"
+)
 
 
-def run(*cmd: object, cwd: Path = ROOT) -> None:
+def tool_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    if os.name == "nt":
+        env["DQ9_ZIG_PYTHON"] = sys.executable
+    if extra:
+        env.update(extra)
+    return env
+
+
+def run(*cmd: object, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
     print("+ " + " ".join(str(c) for c in cmd), flush=True)
-    subprocess.run([str(c) for c in cmd], cwd=cwd, check=True)
+    subprocess.run([str(c) for c in cmd], cwd=cwd, env=tool_environment(env), check=True)
+
+
+def fetch_dsd() -> Path:
+    if os.name == "nt":
+        asset = "dsd-windows-x86_64.exe"
+    elif sys.platform.startswith("linux") and platform.machine().lower() in ("x86_64", "amd64"):
+        asset = "dsd-linux-x86_64"
+    else:
+        raise SystemExit("Automatic dsd download supports Linux/Windows x64; supply --dsd PATH.")
+    destination = ROOT / "build" / "tools" / asset
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        print(f"Downloading {DSD_RELEASE}/{asset}", flush=True)
+        temporary = destination.with_suffix(destination.suffix + ".download")
+        try:
+            urllib.request.urlretrieve(f"{DSD_RELEASE}/{asset}", temporary)
+            verify_dsd(temporary, asset)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    verify_dsd(destination, asset)
+    if os.name != "nt":
+        destination.chmod(destination.stat().st_mode | 0o111)
+    return destination
+
+
+def verify_dsd(path: Path, asset: str) -> None:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != DSD_SHA256[asset]:
+        raise SystemExit(f"SHA-256 mismatch for {path}; refusing to execute it.")
+
+
+def extract_sdk(archive: Path, destination: Path) -> None:
+    """Validate paths and links, including on Python without tarfile's data filter."""
+    root = destination.resolve()
+    with tarfile.open(archive, "r:gz") as sdk:
+        for member in sdk.getmembers():
+            target = (root / member.name).resolve()
+            if not target.is_relative_to(root):
+                raise ValueError(f"Unsafe SDK archive member: {member.name}")
+            if member.issym() or member.islnk():
+                base = target.parent if member.issym() else root
+                if not (base / member.linkname).resolve().is_relative_to(root):
+                    raise ValueError(f"Unsafe SDK archive link: {member.name}")
+            elif not (member.isfile() or member.isdir()):
+                raise ValueError(f"Unsupported SDK archive member: {member.name}")
+        if hasattr(tarfile, "data_filter"):
+            sdk.extractall(root, filter="data")
+        else:
+            sdk.extractall(root)
+
+
+def windows_cmake_options(deps: Path) -> list[str]:
+    if os.name != "nt":
+        return []
+    try:
+        importlib.import_module("ziglang")
+    except ImportError:
+        run(sys.executable, "-m", "pip", "install", "ziglang==0.17.0")
+    deps = deps.resolve()
+    root = deps / f"SDL2-{SDL_VERSION}" / "x86_64-w64-mingw32"
+    if not (root / "bin" / "SDL2.dll").is_file():
+        deps.mkdir(parents=True, exist_ok=True)
+        archive = deps / f"SDL2-devel-{SDL_VERSION}-mingw.tar.gz"
+        urllib.request.urlretrieve(SDL_URL, archive)
+        extract_sdk(archive, deps)
+    return [
+        f"-DCMAKE_TOOLCHAIN_FILE={ROOT / 'cmake/toolchains/x86_64-windows-zig.cmake'}",
+        f"-DDQ9_WINDOWS_SDL_ROOT={root}",
+        f"-DSDL2_DIR={root / 'lib/cmake/SDL2'}",
+        f"-DDSR_SDL2_RUNTIME_DLL={root / 'bin/SDL2.dll'}",
+        f"-DPython3_EXECUTABLE={sys.executable}",
+    ]
+
+
+def ctest_executable() -> str:
+    local = Path(sys.executable).parent / executable_name("ctest")
+    if local.is_file():
+        return str(local)
+    located = shutil.which("ctest", path=tool_environment()["PATH"])
+    if not located:
+        raise SystemExit("ctest not found; install cmake with this Python interpreter.")
+    return located
+
+
+def launch_hint(exe: Path, rom: Path, abi: Path) -> str:
+    args = [str(exe), "--rom", str(rom), "--abi-config", str(abi), "--language", "en"]
+    if os.name == "nt":
+        quoted = ['"' + arg.replace("`", "``").replace("$", "`$").replace('"', '`"') + '"' for arg in args]
+        return "& " + " ".join(quoted)
+    return shlex.join(args)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--rom", type=Path, required=True, help="your own image")
-    p.add_argument("--dsd", type=Path, required=True, help="ds-decomp executable you installed yourself")
+    p.add_argument("--rom", type=Path, help="your own image (required unless --runtime-only)")
+    p.add_argument("--dsd", type=Path, help="ds-decomp executable (default: verified pinned download)")
     p.add_argument("--profile", type=Path, help="private fingerprint profile JSON for verify_reference_rom.py")
     p.add_argument("--workspace", type=Path, default=WORKSPACE)
-    p.add_argument("--build-dir", type=Path, default=ROOT / "build" / "game")
+    p.add_argument("--build-dir", type=Path, help="default: build/game, or build/win-zig with --runtime-only")
+    p.add_argument("--sdk-deps", type=Path, default=ROOT / "build" / "win-deps")
+    p.add_argument("--runtime-only", action="store_true", help="build/test the public runtime without any image")
     p.add_argument("--config", default="RelWithDebInfo")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
     args = p.parse_args(argv)
+    if not args.runtime_only and args.rom is None:
+        p.error("--rom is required unless --runtime-only is used")
+    if args.runtime_only and args.generate_only:
+        p.error("--runtime-only and --generate-only cannot be combined")
+    args.build_dir = args.build_dir or ROOT / "build" / ("win-zig" if args.runtime_only else "game")
+    cmake = [sys.executable, "-m", "cmake"]
+    if args.runtime_only:
+        options = windows_cmake_options(args.sdk_deps)
+        run(*cmake, "-S", ROOT, "-B", args.build_dir, "-G", "Ninja",
+            f"-DCMAKE_BUILD_TYPE={args.config}", "-UDQ9_GENERATED_DIR",
+            "-DDQ9_BUILD_SDL=ON", "-DDQ9_BUILD_GODOT=OFF", *options)
+        run(*cmake, "--build", args.build_dir)
+        run(ctest_executable(), "--test-dir", args.build_dir, "--output-on-failure",
+            env={"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy", "SDL_RENDER_DRIVER": "software"})
+        return 0
+    args.dsd = args.dsd.resolve() if args.dsd else fetch_dsd()
 
     rom = args.rom.resolve()
     py = sys.executable
@@ -114,12 +250,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"generated C++ in {GEN}")
         return 0
 
-    run("cmake", "-S", ROOT, "-B", args.build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={args.config}",
-        f"-DDQ9_GENERATED_DIR={GEN}")
-    run("cmake", "--build", args.build_dir, "--target", "dq9")
+    run(*cmake, "-S", ROOT, "-B", args.build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={args.config}",
+        f"-DDQ9_GENERATED_DIR={GEN}", *windows_cmake_options(args.sdk_deps))
+    run(*cmake, "--build", args.build_dir, "--target", "dq9")
     exe = args.build_dir / "game" / executable_name("dq9")
     print(f"built {exe} (local only; never distribute)")
-    print(f'run: "{exe}" --rom "{rom}" --abi-config "{abi}" --language en')
+    print("run: " + launch_hint(exe, rom, abi))
     return 0
 
 

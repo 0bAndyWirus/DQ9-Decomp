@@ -1,4 +1,5 @@
 import tarfile
+import json
 import tempfile
 import unittest
 import zipfile
@@ -23,6 +24,16 @@ class ClassifyTests(unittest.TestCase):
     def test_oversized_data_file_is_flagged_but_big_binaries_are_not(self):
         self.assertIn("large", classify("assets.dat", 100 * 1024 * 1024))
         self.assertIsNone(classify("dq9.exe", 100 * 1024 * 1024))
+
+    def test_source_tree_allows_only_listed_original_sources(self):
+        tracked = {"runtime/original.cpp", "src/original.cc", "src/original.cxx",
+                   "gen/fn_table.cpp", "gen/chunk_000.cpp"}
+        for name in ("runtime/original.cpp", "src/original.cc", "src/original.cxx"):
+            self.assertIsNone(classify(name, 10, tracked), name)
+        for name in ("runtime/untracked.cpp", "gen/fn_table.cpp", "gen/chunk_000.cpp",
+                     "arm9.manifest.json", "game.nds", "save.sav", "data.bin",
+                     "dq9.exe", "SDL2.dll", "CMakeFiles/untracked.cpp"):
+            self.assertIsNotNone(classify(name, 10, tracked), name)
 
 
 class AuditTests(unittest.TestCase):
@@ -55,6 +66,19 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(main([str(clean)]), 0)
             self.assertEqual(main([str(dirty)]), 1)
             self.assertEqual(main([str(root / "missing")]), 2)
+
+    def test_source_tree_cli_uses_explicit_path_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "pkg"
+            package.mkdir()
+            (package / "original.cpp").write_text("// original runtime source\n")
+            allowlist = root / "tracked.json"
+            allowlist.write_text(json.dumps(["original.cpp"]))
+            self.assertEqual(main(["--source-tree", str(allowlist), str(package)]), 0)
+            self.assertEqual(main([str(package)]), 1)
+            allowlist.write_text("{}")
+            self.assertEqual(main(["--source-tree", str(allowlist), str(package)]), 2)
 
 
 if __name__ == "__main__":
