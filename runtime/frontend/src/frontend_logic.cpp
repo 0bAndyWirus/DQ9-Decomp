@@ -19,6 +19,9 @@ Rect fit_rect(int x, int y, int w, int h, int area_w, int area_h) {
 // SDL scancodes are 0..511; anything else keeps the previous binding.
 int scancode_or(int value, int fallback) { return value >= 0 && value < 512 ? value : fallback; }
 
+// Remembered window sizes: 0 means "not set"; anything else is limited to a sane window.
+int window_extent(int value) { return value <= 0 ? 0 : std::clamp(value, 256, 16384); }
+
 void parse_line(const std::string& line, ConfigData& cfg) {
     const auto split = line.find('=');
     if (split == std::string::npos) return;
@@ -33,6 +36,8 @@ void parse_line(const std::string& line, ConfigData& cfg) {
         else if (key == "key_volume_up") cfg.key_volume_up = scancode_or(std::stoi(value), cfg.key_volume_up);
         else if (key == "key_mute") cfg.key_mute = scancode_or(std::stoi(value), cfg.key_mute);
         else if (key == "pause_when_unfocused") cfg.frontend.pause_when_unfocused = std::stoi(value) != 0;
+        else if (key == "window_width") cfg.frontend.window_width = window_extent(std::stoi(value));
+        else if (key == "window_height") cfg.frontend.window_height = window_extent(std::stoi(value));
         else if (key == "volume") cfg.frontend.volume = std::clamp(std::stoi(value), 0, 100);
         else if (key == "gpu3d_scale") cfg.frontend.gpu3d_scale = std::clamp(std::stoi(value), 1, 4);
         else if (key == "layout") {
@@ -218,6 +223,8 @@ std::string serialize_config(const ConfigData& c) {
         << "integer_scaling=" << (c.frontend.integer_scaling ? 1 : 0) << '\n'
         << "gpu3d_scale=" << c.frontend.gpu3d_scale << '\n'
         << "pause_when_unfocused=" << (c.frontend.pause_when_unfocused ? 1 : 0) << '\n'
+        << "window_width=" << c.frontend.window_width << '\n'
+        << "window_height=" << c.frontend.window_height << '\n'
         << "volume=" << c.frontend.volume << '\n'
         << "linear_filter=" << (c.frontend.linear_filter ? 1 : 0) << '\n'
         << "audio_rate=" << c.frontend.audio_rate << '\n'

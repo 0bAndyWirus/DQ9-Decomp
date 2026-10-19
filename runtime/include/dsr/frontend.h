@@ -93,6 +93,8 @@ struct FrontendConfig {
     int gpu3d_scale = 1;
     bool gpu3d_scale_explicit = false;
     bool pause_when_unfocused = false; // main loop idles (and drops queued audio) while the window lacks focus
+    int window_width = 0;  // remembered window size in windowed mode; 0 = 256 * window_scale by 384 * window_scale
+    int window_height = 0;
     int volume = 100; // master output volume, 0-100 percent (host mixer only; never feeds back into emulation)
     std::array<int, 12> keycodes{};
     std::array<int, 12> gamepad_buttons{};
