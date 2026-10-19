@@ -9,13 +9,16 @@ Steps:
   2. extract the image and initialise the analysis workspace with ds-decomp (`dsd`);
   3. build the ARM9 manifest from the analysis files;
   4. discover ARM7 code from the extracted ARM7 binary;
-  5. recompile both CPUs to host C++ (python -m recomp);
-  6. configure and build the `dq9` executable (unless --generate-only).
+  5. optionally derive a private ABI configuration (--derive-abi);
+  6. recompile both CPUs to host C++ (python -m recomp);
+  7. configure and build the `dq9` executable (unless --generate-only).
 
 Known limitation: modules that ship in protected form are NOT unpacked by this
-public tool, and no ABI configuration is supplied. A host built this way currently
-runs but shows blank screens without a caller-supplied --abi-config thread layout. This project does not
-claim a playable game; see docs/GETTING_STARTED.md.
+public tool. ABI derivation is disabled by default; --derive-abi writes a private
+configuration even with --generate-only and prints its resolved --abi-config path,
+but does not pass it to the host automatically. A host built this way currently
+runs but shows blank screens without a caller-supplied --abi-config thread layout.
+This project does not claim a playable game; see docs/GETTING_STARTED.md.
 
 Usage:
   python tools/build_port.py --rom PATH --dsd PATH --arm7-metadata PATH.json
@@ -69,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--build-dir", type=Path, default=ROOT / "build" / "game")
     p.add_argument("--config", default="RelWithDebInfo")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
+    p.add_argument("--derive-abi", action="store_true",
+                   help="derive private abi.ini and print its --abi-config path; do not apply it to the host")
     args = p.parse_args(argv)
 
     rom = args.rom.resolve()
@@ -114,6 +119,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--arm7-metadata must contain autoload_callback")
     run(py, tools / "arm7_analyze.py", "--arm7", extract / "arm7" / "arm7.bin", "--out", GEN,
         "--base", hex(base), "--entry", hex(entry), "--metadata", args.arm7_metadata)
+
+    if args.derive_abi:
+        abi_config = GEN / "abi.ini"
+        run(py, tools / "derive_abi_config.py", "--workspace", args.workspace,
+            "--arm9-manifest", manifest9, "--arm7-manifest", GEN / "arm7.manifest.json",
+            "--out", abi_config)
+        print(f"--abi-config {abi_config.resolve()}")
 
     run(py, "-m", "recomp", "--manifest", manifest9, "--out", GEN / "arm9")
     run(py, "-m", "recomp", "--manifest", GEN / "arm7.manifest.json", "--out", GEN / "arm7")
