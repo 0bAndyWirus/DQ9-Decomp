@@ -140,10 +140,9 @@ struct Spu::Impl {
         c.adpcm_index=std::clamp(c.adpcm_index+kIndexAdjust[static_cast<std::size_t>(code&7)],0,88);
         c.current=c.predictor; ++c.pos;
     }
-    void advance(Channel& c,unsigned n,std::uint32_t ticks) {
-        if(!c.busy) return;
+    // Consumes the sample periods that have elapsed in c.phase (callers add the ticks first).
+    void run_events(Channel& c,unsigned n) {
         const std::uint64_t p=period(c,n);
-        c.phase+=ticks;
         while(c.busy && c.phase>=p) {
             c.phase-=p;
             const unsigned fmt=(c.cnt>>29U)&3U;
@@ -358,7 +357,13 @@ void Spu::run(std::int64_t ticks) {
             until=std::min(until,capture.phase>=p?0U:p-capture.phase);
         }
         const std::uint32_t step=static_cast<std::uint32_t>(std::min(remain,until));
-        for(unsigned n=0;n<16;++n) if(impl_->ch[n].busy) impl_->advance(impl_->ch[n],n,step);
+        for(unsigned n=0;n<16;++n) {
+            Impl::Channel& c=impl_->ch[n];
+            if(!c.busy) continue;
+            c.phase+=step;
+            // Most steps end before the next sample boundary; only those that cross one decode.
+            if(c.phase>=impl_->period(c,n)) impl_->run_events(c,n);
+        }
         impl_->advance_capture(step);
         impl_->sample_phase+=step; remain-=step;
         if(impl_->sample_phase==static_cast<std::uint64_t>(kTicksPerSample)) { impl_->sample_phase=0; impl_->emit(); }
