@@ -10,6 +10,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
   abi.ini key select the emulated backup chip. With the default guess the title screen reports a corrupt quick-save log on a
   fresh save; with `eeprom64k` a scripted 28,500-frame headless run passes the title menu into a field scene with per-frame
   output identical to a separate development build. The runtime still ships no per-title table.
+- **Hi-res dumps:** `--dump-frames` with `--gpu3d-scale` now writes both `_top_hires.ppm` and `_bottom_hires.ppm` (the screen the 3D engine drives is composed, the other upscaled). Verified on the public build over a 28,500-frame scripted run: native hashes identical at scales 1 and 2, 3D areas differ from a plain upscale on both routes.
 
 ## v0.2.2
 

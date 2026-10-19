@@ -111,7 +111,7 @@ struct Options {
         "  --record-input FILE     log the input of every frame that has any (same grammar) so an interactive\n"
         "                          session can be replayed headless with the same save\n"
         "  --hash-file FILE        `frame top_fnv1a64 bottom_fnv1a64` per frame (FNV-1a over the RGB bytes)\n"
-        "  --dump-frames SPEC      write frame_NNNN_{top,bottom}.ppm (+ _regs.txt, + _top_hires.ppm with\n"
+        "  --dump-frames SPEC      write frame_NNNN_{top,bottom}.ppm (+ _regs.txt, + _{top,bottom}_hires.ppm with\n"
         "                          --gpu3d-scale) for frames such as 100,500-900/100 into --dump-dir\n"
         "  --dump-dir DIR          where dumps go (default build/dq9-frames)\n"
         "  --dump-ram / --dump-vram   also write frame_NNNN_mainram.bin / _video.bin and _vram.bin\n"
@@ -1540,20 +1540,35 @@ int main(int argc, char** argv) {
             std::snprintf(name, sizeof name, "frame_%04" PRId64 "_bottom.ppm", frame);
             write_ppm(opt.dump_dir / name, machine.gpu2d().screen_bottom());
             if (opt.gpu3d_scale > 1) {
-                // Top screen at hi-res: the composed 3D overlay when engine A drives it, else a
-                // nearest-neighbour upscale of the native frame.
+                // Hi-res dumps: the screen the 3D engine drives comes from the composed overlay, the other is a
+                // nearest-neighbour upscale of the native frame. Both files are always written so callers
+                // need not know which screen carries the 3D scene.
                 const int scale = opt.gpu3d_scale;
                 const int w = 256 * scale, h = 192 * scale;
                 hires_screen.resize(static_cast<std::size_t>(w) * h);
                 bool on_top = true;
-                if (!session.compose_hires(hires_screen.data(), scale, &on_top) || !on_top) {
-                    const std::uint32_t* native = machine.gpu2d().screen_top();
+                const bool composed = session.compose_hires(hires_screen.data(), scale, &on_top);
+                const auto upscale = [&](const std::uint32_t* native, std::vector<std::uint32_t>& out) {
+                    out.resize(static_cast<std::size_t>(w) * h);
                     for (int y = 0; y < h; ++y)
                         for (int x = 0; x < w; ++x)
-                            hires_screen[static_cast<std::size_t>(y) * w + x] = native[(y / scale) * 256 + x / scale];
+                            out[static_cast<std::size_t>(y) * w + x] = native[(y / scale) * 256 + x / scale];
+                };
+                std::vector<std::uint32_t> other;
+                const std::vector<std::uint32_t>* top_pixels = &hires_screen;
+                const std::vector<std::uint32_t>* bottom_pixels = &other;
+                if (composed && !on_top) {
+                    upscale(machine.gpu2d().screen_top(), other);
+                    top_pixels = &other;
+                    bottom_pixels = &hires_screen;
+                } else {
+                    if (!composed) upscale(machine.gpu2d().screen_top(), hires_screen);
+                    upscale(machine.gpu2d().screen_bottom(), other);
                 }
                 std::snprintf(name, sizeof name, "frame_%04" PRId64 "_top_hires.ppm", frame);
-                write_ppm(opt.dump_dir / name, hires_screen.data(), w, h);
+                write_ppm(opt.dump_dir / name, top_pixels->data(), w, h);
+                std::snprintf(name, sizeof name, "frame_%04" PRId64 "_bottom_hires.ppm", frame);
+                write_ppm(opt.dump_dir / name, bottom_pixels->data(), w, h);
             }
             // I/O registers for oracle comparison (read at the frame boundary).
             std::snprintf(name, sizeof name, "frame_%04" PRId64 "_regs.txt", frame);
