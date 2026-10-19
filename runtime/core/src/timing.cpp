@@ -30,15 +30,15 @@ void Machine::Impl::timer_increment(unsigned cpu_index, unsigned timer_index, st
 }
 
 void Machine::Impl::run_timers(std::uint64_t ticks) {
-    static constexpr std::uint32_t prescalers[4] = {1, 64, 256, 1024};
+    static constexpr unsigned prescaler_shift[4] = {0, 6, 8, 10}; // dividers 1, 64, 256, 1024
     for (unsigned ci = 0; ci < 2; ++ci) {
         for (unsigned ti = 0; ti < 4; ++ti) {
             TimerState& timer = timers[ci * 4 + ti];
             if ((timer.control & 0x80u) == 0 || (timer.control & 4u) != 0) continue;
             timer.phase += ticks;
-            const std::uint32_t divisor = prescalers[timer.control & 3u];
-            const std::uint64_t increments = timer.phase / divisor;
-            timer.phase %= divisor;
+            const unsigned shift = prescaler_shift[timer.control & 3u];
+            const std::uint64_t increments = timer.phase >> shift;
+            timer.phase &= (std::uint64_t{1} << shift) - 1u;
             timer_increment(ci, ti, increments);
         }
     }
