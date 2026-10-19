@@ -37,6 +37,8 @@ build/game/game/dq9 --rom "/path/to/your-copy.nds" --abi-config build/gen/abi.in
 
 What the script does, in plain words: it unpacks your file with `dsd`, translates the game's ARM code into C++ on your machine, works out the game's internal thread layout from your own file, and compiles it with the open-source hardware runtime in this repository. Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
 
+On Linux, `python tools/install_desktop_entry.py` adds an application-menu entry that starts the launcher (`--uninstall` removes it); it only points at your local build.
+
 ## Windows build kit (unverified on hardware)
 
 Windows builds from your own `.nds` with a **source-and-scripts kit** (no game and no binary is included, because the executable embeds code generated from your game). Install Python 3.10+ (with "Add python.exe to PATH"), extract the kit, then:
