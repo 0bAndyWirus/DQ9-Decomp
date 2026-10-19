@@ -502,6 +502,16 @@ int main(int argc, char** argv) {
                      opt.rom.string().c_str(), paths.config_dir.string().c_str());
         return 2;
     }
+    {
+        bool header_crc_ok = true;
+        const std::string problem = dsr::check_rom_image(opt.rom, &header_crc_ok);
+        if (!problem.empty()) {
+            std::fprintf(stderr, "dq9: cannot use %s: %s.\n", opt.rom.string().c_str(), problem.c_str());
+            return 2;
+        }
+        if (!header_crc_ok)
+            std::fprintf(stderr, "dq9: warning: the image header checksum does not match (a patched or modified image?); continuing.\n");
+    }
     std::fprintf(stderr, "debug tool: %s (hotkeys F10 menu, F9 note, F8 step)\n",
                  opt.debug_tool ? "ON" : "OFF");
 

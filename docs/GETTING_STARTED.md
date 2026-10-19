@@ -91,6 +91,7 @@ The European release contains English, French, German, Spanish and Italian. Pass
 
 - `dsd: command not found` / wrong version: pass the full path with `--dsd`.
 - Missing Python module: activate the virtual environment and re-run the `pip install` line.
+- `cannot use ...: does not look like a Nintendo DS image` / `image is truncated`: the file is not a complete DS image (wrong file, partial copy). The launcher shows the same warning next to Launch.
 - Blank screens: you forgot `--abi-config build/gen/abi.ini`.
 - Anything else: open an issue with your OS, compiler version and the last 30 lines of output. **Do not attach game files, saves or screenshots of the game.**
 

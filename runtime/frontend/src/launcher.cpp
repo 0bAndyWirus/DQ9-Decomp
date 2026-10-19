@@ -492,10 +492,14 @@ private:
         if (path != rom_checked_path_) {
             rom_checked_path_ = path;
             std::error_code ec;
-            rom_found_ = !path.empty() &&
-                std::filesystem::is_regular_file(launcher_rom_path(host::path_from_utf8(path)), ec);
+            const auto resolved = launcher_rom_path(host::path_from_utf8(path));
+            rom_found_ = !path.empty() && std::filesystem::is_regular_file(resolved, ec);
+            rom_problem_ = rom_found_ ? check_rom_image(resolved) : std::string{};
         }
-        if (rom_found_) {
+        if (rom_found_ && !rom_problem_.empty()) {
+            canvas_.text(48, 660, "ROM UNUSABLE: " + elide_middle(rom_checked_path_, 56), UiColor{255, 176, 96, 255}, 1);
+            canvas_.text(48, 676, rom_problem_, UiColor{255, 176, 96, 255}, 1);
+        } else if (rom_found_) {
             canvas_.text(48, 668, "ROM FOUND: " + elide_middle(path, 60), UiColor{120, 220, 140, 255}, 1);
         } else {
             canvas_.text(48, 660, rom_checked_path_.empty() ? "NO ROM SET." : "ROM NOT FOUND: " + elide_middle(rom_checked_path_, 56),
@@ -560,6 +564,7 @@ private:
     bool capture_done_ = false;
     std::string rom_checked_path_;
     bool rom_found_ = false;
+    std::string rom_problem_;
 };
 } // namespace
 

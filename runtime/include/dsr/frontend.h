@@ -167,6 +167,12 @@ std::filesystem::path resolve_rom_path(const std::filesystem::path& path,
                                       const std::filesystem::path& config_dir,
                                       const std::filesystem::path& executable_dir);
 
+// Structural sanity check of a Nintendo DS image header (no game-specific data): size, a trimmed
+// or truncated file, ARM9/ARM7 payloads that lie inside the file. Returns an explanation when the
+// file cannot be a complete image, empty when it looks usable. `*header_crc_ok` (optional) reports
+// whether the header's own CRC-16 matches; a mismatch alone is not an error (patched headers).
+std::string check_rom_image(const std::filesystem::path& path, bool* header_crc_ok = nullptr);
+
 struct UserPaths {
     std::filesystem::path config_dir; // e.g. $XDG_CONFIG_HOME/dq9-decomp
     std::filesystem::path data_dir;   // saves, e.g. $XDG_DATA_HOME/dq9-decomp
