@@ -269,6 +269,10 @@ int main() {
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
     }
+    tap(SDL_SCANCODE_P);
+    assert(hotkey_input.pause_toggle_requested && hotkey_input.debug_actions == 0);
+    frontend->poll(hotkey_input);
+    assert(!hotkey_input.pause_toggle_requested);
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);

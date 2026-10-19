@@ -65,6 +65,7 @@ struct InputState {
     bool quit_requested = false;
     bool fast_forward = false;         // Held fast-forward key or Select+R; works without the debug tool.
     bool window_unfocused = false;     // pause_when_unfocused is on and the window lost input focus
+    bool pause_toggle_requested = false; // One-shot: the pause hotkey was pressed (works without the debug tool).
     bool screenshot_requested = false; // One-shot: set by the poll that saw the key or Select+Start tap.
     std::uint32_t debug_actions = 0;
     std::vector<EditorEvent> editor_events;
@@ -211,7 +212,7 @@ public:
     virtual std::size_t audio_backlog() const = 0;
     virtual void clear_audio_queue() {}
     // Short on-screen notice (screenshot saved, layout changed, ...); hosts without a window ignore it.
-    virtual void show_message(const std::string& /*text*/) {}
+    virtual void show_message(const std::string& /*text*/, int /*milliseconds*/ = 2500) {}
 
     // Sleep until the next emulated frame deadline (59.8261 Hz).
     virtual void pace_frame() = 0;

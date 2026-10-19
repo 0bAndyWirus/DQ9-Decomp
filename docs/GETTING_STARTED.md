@@ -61,6 +61,7 @@ Defaults for the SDL window (rebind them on the launcher's HOTKEYS page or in `f
 | Hi-res 3D scale 1x -> 2x -> 3x -> 4x -> 1x | **F7** (`key_gpu3d_scale`) | - |
 | Volume down / up (10% steps) | **-** / **=** (`key_volume_down`, `key_volume_up`; setting `volume=0-100`, also on the Options page) | - |
 | Mute / unmute | **M** (`key_mute`) | - |
+| Pause / resume (holds the last frame, drops queued audio) | **P** (`key_pause`) | - |
 | Cycle screen layout | F6 | Select + L |
 | Swap screens | F8 | Select + R3 (right-stick click) |
 | Toggle fullscreen | F11 (Alt+Enter also works) | - |

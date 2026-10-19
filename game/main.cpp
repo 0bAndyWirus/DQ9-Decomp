@@ -1373,6 +1373,17 @@ int main(int argc, char** argv) {
             // The held key / Select+R and the screenshot hotkeys work without the debug tool.
             if (held_fast_forward_was_active && !frontend_input.fast_forward) frontend->clear_audio_queue();
             held_fast_forward_was_active = frontend_input.fast_forward;
+            if (frontend_input.pause_toggle_requested && !opt.debug_workflow_selftest) {
+                // Plain pause (P): hold the last frame, drop queued audio, keep a notice on screen.
+                paused = !paused;
+                if (paused) {
+                    step_requested = false;
+                    frontend->clear_audio_queue();
+                    frontend->show_message("PAUSED  (PRESS THE PAUSE KEY AGAIN TO RESUME)", 24 * 60 * 60 * 1000);
+                } else {
+                    frontend->show_message("");
+                }
+            }
             if (frontend_input.screenshot_requested) {
                 // With the hi-res 3D overlay active the screenshot matches what the window shows.
                 const int shot_scale = machine.gpu3d().output_scale();
