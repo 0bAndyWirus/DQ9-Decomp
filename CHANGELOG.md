@@ -4,6 +4,14 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## Unreleased
+
+- **Speed (output-identical):** OBJ rejection before affine/tile setup and a hoisted object test in the 2D
+  compositor; on a separate local development build the 28,500-frame gameplay script (3D scenes) ran about
+  15% faster than before v0.2.1 with identical per-frame hashes and WAV output.
+- **Launcher:** drop a `.nds` file on the window to set the ROM path.
+- **Screenshots:** F12 follows the hi-res 3D overlay (saved at the hi-res size while it is showing).
+
 ## v0.2.1
 
 Host and tooling polish on top of v0.2.0.
