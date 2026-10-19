@@ -27,8 +27,8 @@ constexpr int kH = 720;
 constexpr UiRect kLaunchButton{758, 642, 218, 50};
 constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM / SAVE", "OPTIONS", "HOTKEYS"};
 constexpr int kHotkeyPage = 4;
-constexpr int kOptionCount = 15;
-constexpr int kOptionPitch = 31;
+constexpr int kOptionCount = 16;
+constexpr int kOptionPitch = 29;
 constexpr int kHotkeyPitch = 30;
 // Keyboard hotkeys handled by the SDL frontend outside the DS button map.
 struct HotkeyRow { std::string_view name; int frontend_detail::ConfigData::*field; };
@@ -303,6 +303,7 @@ private:
         case 8: config_.capture_memory_dumps = !config_.capture_memory_dumps; break;
         case 10: config_.frontend.dpad_from_stick = !config_.frontend.dpad_from_stick; break;
         case 12: config_.frontend.mouse_touch_enabled = !config_.frontend.mouse_touch_enabled; break;
+        case 15: config_.frontend.pause_when_unfocused = !config_.frontend.pause_when_unfocused; break;
         default: break;
         }
     }
@@ -393,7 +394,7 @@ private:
         if (page_ == 3 && y >= 147 && y < 147 + kOptionCount * kOptionPitch) {
             focus_ = (y - 147) / kOptionPitch;
             if (focus_ == 2 || focus_ == 3 || focus_ == 4 || focus_ == 6 || focus_ == 7 ||
-                focus_ == 8 || focus_ == 10 || focus_ == 12)
+                focus_ == 8 || focus_ == 10 || focus_ == 12 || focus_ == 15)
                 toggle_option();
             else adjust(focus_ == 14 && x < 684 ? -1 : 1); // volume: left of the value lowers it
         }
@@ -519,13 +520,14 @@ private:
             config_.frontend.mouse_touch_enabled ? "ON" : "OFF",
             config_.frontend.gpu3d_scale == 1 ? std::string("OFF (native 3D)")
                                               : std::to_string(config_.frontend.gpu3d_scale) + "x (experimental)",
-            std::to_string(config_.frontend.volume) + "%"
+            std::to_string(config_.frontend.volume) + "%",
+            config_.frontend.pause_when_unfocused ? "ON" : "OFF"
         };
         constexpr std::array<std::string_view, kOptionCount> labels{
             "Screen layout", "Window scale", "Fullscreen", "Integer scaling", "Linear filter",
             "Audio queue limit", "Debug annotation tool", "Frame-time overlay", "Capture RAM/VRAM dumps",
             "Stick dead zone", "D-pad from left stick", "Controller device", "Mouse/touch input",
-            "Hi-res 3D scale", "Master volume"
+            "Hi-res 3D scale", "Master volume", "Pause when window unfocused"
         };
         for (int i = 0; i < kOptionCount; ++i) {
             const int y = 147 + i * kOptionPitch;

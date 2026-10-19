@@ -64,6 +64,7 @@ struct InputState {
     bool lid_closed = false;
     bool quit_requested = false;
     bool fast_forward = false;         // Held fast-forward key or Select+R; works without the debug tool.
+    bool window_unfocused = false;     // pause_when_unfocused is on and the window lost input focus
     bool screenshot_requested = false; // One-shot: set by the poll that saw the key or Select+Start tap.
     std::uint32_t debug_actions = 0;
     std::vector<EditorEvent> editor_events;
@@ -91,6 +92,7 @@ struct FrontendConfig {
     // chosen on the command line, which wins over the persisted frontend.conf value.
     int gpu3d_scale = 1;
     bool gpu3d_scale_explicit = false;
+    bool pause_when_unfocused = false; // main loop idles (and drops queued audio) while the window lacks focus
     int volume = 100; // master output volume, 0-100 percent (host mixer only; never feeds back into emulation)
     std::array<int, 12> keycodes{};
     std::array<int, 12> gamepad_buttons{};

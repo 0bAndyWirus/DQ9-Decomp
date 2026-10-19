@@ -720,6 +720,7 @@ int main(int argc, char** argv) {
         }
     };
     bool held_fast_forward_was_active = false;
+    bool focus_pause_was_active = false;
     const std::filesystem::path screenshot_dir =
         (save_path.has_parent_path() ? save_path.parent_path() : std::filesystem::path{}) / "screenshots";
     auto handle_debug_input = [&](const dsr::InputState& input, FrameIndex current_frame) {
@@ -1337,7 +1338,11 @@ int main(int argc, char** argv) {
             }
         }
         if (annotation_open) step_requested = false;
-        if (paused && !step_requested) {
+        // Optional: idle while the window is unfocused (never during a --pause-at-frame replay).
+        const bool focus_paused = frontend && !replay_seeking && frontend_input.window_unfocused;
+        if (focus_paused && !focus_pause_was_active) frontend->clear_audio_queue();
+        focus_pause_was_active = focus_paused;
+        if ((paused && !step_requested) || focus_paused) {
             update_overlay(frame > 0 ? static_cast<std::uint64_t>(frame - 1) : 0);
             if (frontend) {
                 present_frame();

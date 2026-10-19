@@ -146,6 +146,8 @@ int main() {
     assert(parse_config("gpu3d_scale=9\n").frontend.gpu3d_scale == 4);
     assert(parse_config("gpu3d_scale=0\n").frontend.gpu3d_scale == 1);
     assert(default_config().frontend.gpu3d_scale == 1);
+    assert(!default_config().frontend.pause_when_unfocused);
+    assert(parse_config("pause_when_unfocused=1\n").frontend.pause_when_unfocused);
     config.key_volume_down = 80; config.key_volume_up = 81; config.key_mute = 82; config.frontend.volume = 40;
     const auto with_volume = parse_config(serialize_config(config));
     assert(with_volume.key_volume_down == 80 && with_volume.key_volume_up == 81 && with_volume.key_mute == 82);

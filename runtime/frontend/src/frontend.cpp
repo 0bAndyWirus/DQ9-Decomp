@@ -219,6 +219,10 @@ public:
                 (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE)) {
                 state.quit_requested = true; // main loop exits and flushes the save
             }
+            if (event.type == SDL_WINDOWEVENT) {
+                if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) window_unfocused_ = true;
+                else if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) window_unfocused_ = false;
+            }
             if (event.type == SDL_CONTROLLERDEVICEADDED) open_controller(event.cdevice.which);
             if (event.type == SDL_CONTROLLERDEVICEREMOVED) remove_controller(event.cdevice.which);
             if (config_.debug_tool_enabled && annotation_route) {
@@ -589,6 +593,7 @@ public:
             pause_chord_fired_ = false;
         }
         fast_forward_active_ = state.fast_forward;
+        state.window_unfocused = config_.pause_when_unfocused && window_unfocused_;
         if (menu_route) {
             state.buttons = 0;
             state.pen_down = false;
@@ -1335,6 +1340,7 @@ private:
     std::chrono::steady_clock::time_point toast_until_{};
     bool fast_forward_active_ = false;
     bool muted_ = false;
+    bool window_unfocused_ = false;
     std::array<SDL_Texture*, 4> texture_view_textures_{};
     std::vector<std::uint32_t> texture_view_pixels_;
     DebugOverlayState debug_overlay_{};
