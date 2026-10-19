@@ -95,7 +95,7 @@ std::uint64_t guest_region_hash(Cpu* cpu, const DispatchRegionEntry& region) {
     std::fprintf(stderr,
                  "[dsr] hint: the program reached code its generated tables do not contain. This usually means the image "
                  "differs from the one tools/build_port.py was run on (another region or revision, or a modified file); "
-                 "rebuild with the exact file you are running.\n");
+                 "rebuild with that exact file: python tools/build_port.py --rebuild-workspace --rom <your .nds>.\n");
     std::fprintf(stderr, "[dsr] registers:");
     for (unsigned i = 0; i < 15; ++i)
         std::fprintf(stderr, " r%u=%08x", i, cpu->r[i]);

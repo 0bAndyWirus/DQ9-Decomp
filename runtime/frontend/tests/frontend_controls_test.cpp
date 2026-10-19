@@ -232,6 +232,26 @@ int main() {
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
     }
+    {
+        // The windowed size is remembered across runs (written when the frontend is destroyed).
+        const auto conf_dir = directory / "dq9-decomp";
+        std::filesystem::create_directories(conf_dir);
+        std::ofstream(conf_dir / "frontend.conf") << "window_width=701\nwindow_height=913\n";
+        frontend.reset();
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+        int ww = 0, wh = 0;
+        SDL_GetWindowSize(SDL_GetWindowFromID(1), &ww, &wh);
+        assert(ww == 701 && wh == 913);
+        SDL_SetWindowSize(SDL_GetWindowFromID(1), 640, 880);
+        frontend.reset();
+        std::ifstream in(conf_dir / "frontend.conf");
+        const std::string saved((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(saved.find("window_width=640") != std::string::npos && saved.find("window_height=880") != std::string::npos);
+        std::filesystem::remove(conf_dir / "frontend.conf");
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+    }
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);

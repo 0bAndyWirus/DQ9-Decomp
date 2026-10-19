@@ -129,6 +129,70 @@ class BuildPortTests(unittest.TestCase):
                 run.assert_called_once_with(sys.executable, "-m", "pip", "install", "ziglang==0.16.0")
                 self.assertEqual(build_port.tool_environment()["DQ9_ZIG_PYTHON"], sys.executable)
 
+    def test_switching_images_requires_a_clean_workspace(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace, generated = root / "workspace", root / "gen"
+            rom_a, rom_b = root / "a.nds", root / "b.nds"
+            rom_a.write_bytes(b"image A" * 100)
+            rom_b.write_bytes(b"image B" * 100)
+            # First build: nothing to compare against yet.
+            digest_a = build_port.ensure_workspace_matches_rom(workspace, rom_a, False, generated)
+            (workspace / "config/arm9").mkdir(parents=True)
+            (workspace / "config/arm9/config.yaml").write_text("x", encoding="utf-8")
+            (workspace / build_port.WORKSPACE_MARKER).write_text(digest_a + "\n", encoding="utf-8")
+            # Same image again: accepted. Another image: refused with the recovery command.
+            self.assertEqual(build_port.ensure_workspace_matches_rom(workspace, rom_a, False, generated), digest_a)
+            with self.assertRaises(SystemExit) as refused:
+                build_port.ensure_workspace_matches_rom(workspace, rom_b, False, generated)
+            self.assertIn("--rebuild-workspace", str(refused.exception))
+            self.assertIn("different image", str(refused.exception))
+            # A workspace from an older script version has no marker: also refused, never guessed.
+            (workspace / build_port.WORKSPACE_MARKER).unlink()
+            with self.assertRaises(SystemExit) as unknown:
+                build_port.ensure_workspace_matches_rom(workspace, rom_a, False, generated)
+            self.assertIn("no record", str(unknown.exception))
+            # --rebuild-workspace clears the extraction and the generated code of the old image.
+            generated.mkdir()
+            (generated / "chunk_999.cpp").write_text("old", encoding="utf-8")
+            # A custom workspace without our fingerprint is not provably ours: even --rebuild refuses.
+            with self.assertRaises(SystemExit):
+                build_port.ensure_workspace_matches_rom(workspace, rom_b, True, generated)
+            self.assertTrue((workspace / "config/arm9/config.yaml").is_file())
+            (workspace / build_port.WORKSPACE_MARKER).write_text(digest_a + "\n", encoding="utf-8")
+            digest_b = build_port.ensure_workspace_matches_rom(workspace, rom_b, True, generated)
+            self.assertNotEqual(digest_a, digest_b)
+            self.assertFalse((workspace / "config").exists())
+            self.assertTrue(generated.exists())  # only this checkout's own build/gen is ever removed
+
+    def test_clearing_refuses_user_directories_and_keeps_foreign_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            rom = root / "stuff" / "game.nds"
+            rom.parent.mkdir()
+            rom.write_bytes(b"image")
+            generated = root / "gen"
+            for dangerous in (build_port.ROOT, build_port.ROOT.parent, Path(build_port.ROOT.anchor), rom.parent):
+                with self.assertRaises(SystemExit, msg=str(dangerous)):
+                    build_port.clear_workspace(dangerous, rom, generated)
+            self.assertTrue(rom.exists() and build_port.ROOT.exists())
+            foreign = root / "other-project"
+            for part in ("config", "build"):
+                (foreign / part).mkdir(parents=True)
+                (foreign / part / "keep.txt").write_text("mine", encoding="utf-8")
+            with self.assertRaises(SystemExit) as refused:
+                build_port.clear_workspace(foreign, rom, generated)
+            self.assertIn("empty directory", str(refused.exception))
+            self.assertTrue((foreign / "config/keep.txt").is_file() and (foreign / "build/keep.txt").is_file())
+            workspace = root / "ws"
+            for part in (*build_port.WORKSPACE_PARTS, "notes"):
+                (workspace / part).mkdir(parents=True)
+            (workspace / build_port.WORKSPACE_MARKER).write_text("x", encoding="utf-8")
+            build_port.clear_workspace(workspace, rom, generated)
+            self.assertTrue((workspace / "notes").is_dir())  # not tool-owned: left alone
+            self.assertFalse(any((workspace / part).exists() for part in build_port.WORKSPACE_PARTS))
+            self.assertFalse((workspace / build_port.WORKSPACE_MARKER).exists())
+
     def test_launch_hints_do_not_enable_debug_tool(self):
         args = [Path("a path/dq9"), Path("my game.nds"), Path("abi.ini")]
         posix = build_port.launch_hint(*args)

@@ -147,6 +147,16 @@ int main() {
     assert(parse_config("gpu3d_scale=0\n").frontend.gpu3d_scale == 1);
     assert(default_config().frontend.gpu3d_scale == 1);
     assert(!default_config().frontend.pause_when_unfocused);
+    assert(default_config().frontend.window_width == 0 && default_config().frontend.window_height == 0);
+    {
+        auto sized = default_config();
+        sized.frontend.window_width = 1111; sized.frontend.window_height = 777;
+        const auto again = parse_config(serialize_config(sized));
+        assert(again.frontend.window_width == 1111 && again.frontend.window_height == 777);
+        assert(parse_config("window_width=99999\nwindow_height=-3\n").frontend.window_width == 16384);
+        assert(parse_config("window_width=99999\nwindow_height=-3\n").frontend.window_height == 0);
+        assert(parse_config("window_width=10\n").frontend.window_width == 256);
+    }
     assert(parse_config("pause_when_unfocused=1\n").frontend.pause_when_unfocused);
     config.key_volume_down = 80; config.key_volume_up = 81; config.key_mute = 82; config.frontend.volume = 40;
     const auto with_volume = parse_config(serialize_config(config));

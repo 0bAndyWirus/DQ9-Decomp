@@ -49,7 +49,22 @@ constexpr int kAudioDeviceBufferSamples = 512;
 constexpr int kTargetAudioQueueMs = 40;
 class SdlFrontend final : public Frontend {
 public:
+    // Remember the windowed size for the next start. Rewrites frontend.conf from the settings this
+    // frontend loaded, changing only the two window keys.
+    void remember_window_size() {
+        if (!window_ || (SDL_GetWindowFlags(window_) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP |
+                                                        SDL_WINDOW_MINIMIZED | SDL_WINDOW_MAXIMIZED)) != 0) return;
+        int w = 0, h = 0;
+        SDL_GetWindowSize(window_, &w, &h);
+        if (w < 256 || h < 192 || (w == config_data_.frontend.window_width && h == config_data_.frontend.window_height)) return;
+        config_data_.frontend.window_width = w;
+        config_data_.frontend.window_height = h;
+        std::error_code ec;
+        std::ofstream out(paths_.config_dir / "frontend.conf", std::ios::trunc);
+        if (out) out << frontend_detail::serialize_config(config_data_);
+    }
     ~SdlFrontend() override {
+        remember_window_size();
         for (SDL_GameController* gamepad : controllers_) SDL_GameControllerClose(gamepad);
         if (audio_metrics_enabled_) emit_audio_metrics(std::chrono::steady_clock::now(), true);
         if (audio_) SDL_CloseAudioDevice(audio_);
@@ -118,8 +133,9 @@ public:
         const Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                              (config_.fullscreen ? static_cast<Uint32>(SDL_WINDOW_FULLSCREEN_DESKTOP) : 0u);
         const int scale = std::max(1, config_.window_scale);
-        const int w = config_.fullscreen && running_on_steam_deck() ? 1280 : 256 * scale;
-        const int h = config_.fullscreen && running_on_steam_deck() ? 800 : 384 * scale;
+        const bool remembered = config_.window_width > 0 && config_.window_height > 0;
+        const int w = config_.fullscreen && running_on_steam_deck() ? 1280 : remembered ? config_.window_width : 256 * scale;
+        const int h = config_.fullscreen && running_on_steam_deck() ? 800 : remembered ? config_.window_height : 384 * scale;
         window_ = SDL_CreateWindow(config_.title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
         if (!window_) return false;
         renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED);
