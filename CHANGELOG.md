@@ -14,6 +14,10 @@ Host and tooling polish on top of v0.2.0.
   byte-identical, and a 28,500-frame input script identical in hashes and audio to the previous
   binary. `tools/build_port.py` now builds `Release` by default: the same output, about 7% faster
   again and a ~10x smaller executable (`--config RelWithDebInfo` keeps symbols).
+- **Verification beyond the boot screens:** the same optimizations and the v0.2.0 3D refactor were
+  replayed on a separate local development build that reaches real 3D gameplay: identical per-frame
+  hashes and WAV over a 28,500-frame input script at scale 1 and at hi-res scale 2, with 2x frames
+  visibly sharper in 3D areas (no hardware-parity claim).
 - **Host:** master volume and mute (`-`, `=`, `M`; `volume` setting), on-screen notices for hotkeys
   (layout, swap, filter, integer scaling, hi-res scale, volume, screenshot) and a FAST-FORWARD badge,
   optional pause when the window loses focus, and automatic save flushing every 30 s while the save
