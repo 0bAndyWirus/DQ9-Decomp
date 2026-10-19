@@ -1,102 +1,65 @@
-# Getting started (plain-language guide)
+# Getting started: build your own local copy
 
-Read this first if you are not a programmer and want to know "how do I play this?".
+This repository does **not** contain the game. You need your own legally obtained copy of the European multilingual release of *Dragon Quest IX: Sentinels of the Starry Skies* (a `.nds` file). The scripts here turn that file into a program that runs on your PC. Everything they create stays on your computer, and you must never upload or share it.
 
-## The short answer
+## Status (verified)
 
-**You cannot yet play Dragon Quest IX with this repository.** There is no download, no installer and no `.exe` to double-click, and nothing built here boots to the title screen. This is a research project: it publishes tools and test code, not a game.
+Built from a fresh clone on Linux with a local EU image, the program starts, plays the Square Enix and video-codec logos, and reaches the opening credits with the **START** prompt in all five languages (checked headless at frame 1,500 with `--language en|fr|de|es|it`). **Not verified:** play beyond that point, Windows, Steam Deck, audio quality, performance, or saves. Treat this as an early experimental build, not a finished port.
 
-The repository deliberately contains no game, no game data, no code generated from the game and no compiled game builds, and it never will (see [LEGAL.md](../LEGAL.md)). Nothing here is a finished PC port, and no claim is made that the game is fully playable natively.
+## What you need
 
-## If you just want to play Dragon Quest IX
+- Linux with a C++20 compiler, CMake 3.20+, Ninja, SDL2 development files, Python 3.10+ (Windows: see [Building on Windows](BUILDING_WINDOWS.md); not verified).
+- Python packages: `PyYAML`, `capstone`, `unicorn`.
+- The `ds-decomp` tool (`dsd`, version 0.12.x) from <https://github.com/AetiasHax/ds-decomp>, downloaded by you.
+- Your own `.nds` file. This project cannot help you obtain one.
 
-Use hardware or software built for it:
+## Build steps
 
-- A Nintendo DS, DS Lite, DSi or 3DS with your own cartridge, or
-- An established Nintendo DS emulator with a dump of a cartridge you own.
+```sh
+sudo apt install build-essential cmake ninja-build git python3 python3-venv libsdl2-dev pkg-config
+git clone https://github.com/0bAndyWirus/DQ9-Decomp.git
+cd DQ9-Decomp
+python3 -m venv .venv && . .venv/bin/activate
+python -m pip install PyYAML capstone unicorn
 
-This project is not a replacement for either, and it does not help you obtain the game.
+python tools/build_port.py --rom "/path/to/your-copy.nds" --dsd /path/to/dsd
+```
+
+The build takes about five minutes. At the end it prints the exact command to start the game, which looks like this:
+
+```sh
+build/game/game/dq9 --rom "/path/to/your-copy.nds" --abi-config build/gen/abi.ini --language en
+```
+
+`--abi-config` is required: without it the game stalls on blank screens. The build creates that file for you (`build/gen/abi.ini`).
+
+What the script does, in plain words: it unpacks your file with `dsd`, translates the game's ARM code into C++ on your machine, works out the game's internal thread layout from your own file, and compiles it with the open-source hardware runtime in this repository. Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
 
 ## Languages
 
-The European release is multilingual: English, French, German, Spanish and Italian. The SDL host accepts `--language en|fr|de|es|it` (`run_game.bat fr --rom ...` on Windows) and sets the emulated console's firmware language, which the game reads at start-up. Only the European multilingual release is targeted; other regional releases are not supported. A language flag is accepted today, but no full-game run exists to confirm each language end to end.
+The European release contains English, French, German, Spanish and Italian. Pass `--language en|fr|de|es|it`. At the opening-credits screen I confirmed the start prompt appears in English ("Begin your adventure."), French ("Commencer l'aventure."), German ("Beginne dein Abenteuer!"), Spanish ("Comenzar la aventura.") and Italian ("Inizia l'avventura."). Only this European release is targeted.
 
-## Build a local host from your own copy (experimental)
+## If something fails
 
-`tools/build_port.py` runs the whole local pipeline: it extracts your image with [ds-decomp](https://github.com/AetiasHax/ds-decomp) (which you install yourself), builds the analysis files, generates host C++, and compiles the `dq9` executable. Everything it creates stays under `build/` and `extracted/` and must never be shared.
+- `dsd: command not found` / wrong version: pass the full path with `--dsd`.
+- Missing Python module: activate the virtual environment and re-run the `pip install` line.
+- Blank screens: you forgot `--abi-config build/gen/abi.ini`.
+- Anything else: open an issue with your OS, compiler version and the last 30 lines of output. **Do not attach game files, saves or screenshots of the game.**
+
+## Developers: runtime tests without a game
 
 ```sh
-python tools/build_port.py --rom "path/to/your-copy.nds" \
-  --dsd path/to/dsd --arm7-metadata path/to/arm7-metadata.json
-build/game/game/dq9 --rom "path/to/your-copy.nds" --save my.sav --language en
+cmake -S . -B build/runtime -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/runtime -j
+ctest --test-dir build/runtime --output-on-failure
+python -m unittest discover -s tests -v
 ```
-
-`arm7-metadata.json` is a private file with the ARM7 autoload callback address (`{"autoload_callback": "0x..."}`); this repository does not publish game addresses. Use `--generate-only` to stop after code generation.
-
-**Honest status of this path:** I ran it end to end on a local copy. Code generation reports 0 unsupported sites for both CPUs, the executable builds, and a 1,500-frame headless run (`--language fr`) exits normally with no fatal error. But both screens stay a single solid colour in every frame I dumped (frames 100, 299, 599, 899, 1499), so **the game does not reach the logos, title or any gameplay, and you still cannot play it this way.** Diagnosis so far (local experiments, same ROM, 900 frames each):
-
-- Swapping the ARM7 generated code between public and private trees changed nothing (still blank), so the ARM7 analysis is not the cause.
-- Running a runtime that has the game's thread layer enabled against the *public* generated code gets past the blank-screen stall and then stops with `no recompiled ARM9 entry` at an address in overlay space, called from main code. That points to the thread layer as the cause of the stall and to protected-module code as the next blocker [INFERENCE for the second part: I did not confirm the failing address belongs to the protected module].
-- The public runtime only enables its thread layer when you pass `--abi-config` with a caller-written INI describing the game's thread structures (see `runtime/core/THREADS.md`). This repository does not publish those values and `tools/derive_abi_config.py` (or `build_port.py --derive-abi`) now derives them from your own extracted binaries by structural analysis, writing `build/gen/abi.ini`. Pass it with `--abi-config build/gen/abi.ini`. Verified from a fresh clone with `build_port.py --derive-abi` (generate, build, derive, run): the derived file gives the identical runtime result as a hand-written one (64 of 70 fields equal; the 6 that differ are unused or diagnostic-only and are set to 0). Without that file the game stalls.
-
-With the derived config the host advances further and then aborts with `no recompiled ARM9 entry` (identical to the hand-written config), before any frame is produced. So today playing is still blocked by code this repository does not generate (the failing address lies inside the code range the generated manifest assigns to the protected module, so protected-module code is the blocker; a protected-code unpacker is deliberately not published). **You still cannot play it this way.**
-
-## What you *can* do here
-
-| You are... | What to do |
-|---|---|
-| Curious | Read the [FAQ](FAQ.md) and [Status](../README.md#status). Press **Watch** on the repository to hear about progress. |
-| A developer | Build the runtime and run the tests (steps below). |
-| A contributor | Read [CONTRIBUTING.md](../CONTRIBUTING.md) and open an issue before large changes. |
-
-## Build the runtime and run its tests (Linux)
-
-This builds the hardware-emulation libraries and checks them with synthetic tests. No game is involved. Success means "the code compiles and its self-tests pass"; it does **not** mean a game runs.
-
-1. Install the tools (Debian/Ubuntu names; use your distribution's equivalents):
-
-   ```sh
-   sudo apt install build-essential cmake git python3 python3-venv libsdl2-dev pkg-config
-   ```
-
-   You need a C++20 compiler, CMake 3.20 or newer, SDL2 development files and Python 3.10 or newer.
-
-2. Get the code:
-
-   ```sh
-   git clone https://github.com/0bAndyWirus/DQ9-Decomp.git
-   cd DQ9-Decomp
-   ```
-
-3. Build and test:
-
-   ```sh
-   cmake -S . -B build/runtime -DCMAKE_BUILD_TYPE=Debug
-   cmake --build build/runtime -j
-   ctest --test-dir build/runtime --output-on-failure
-   ```
-
-4. Optional: run the Python tool tests.
-
-   ```sh
-   python3 -m venv .venv
-   . .venv/bin/activate
-   python -m pip install PyYAML capstone unicorn
-   python3 -m unittest discover -s tests -v
-   ```
-
-Expected result: the build finishes and `ctest` reports the tests as passed. If it fails, open an issue with your OS, compiler version and the last 30 lines of output. Do not attach game files, saves or screenshots of the game.
-
-Windows and Steam Deck notes: [Windows](BUILDING_WINDOWS.md), [Steam Deck](../packaging/steamdeck/README.md). These are build targets, not verified gameplay platforms.
 
 ## Glossary
 
 - **ROM / image**: a file copy of a game cartridge. Not included here.
-- **Decompilation**: rewriting a game's machine code as readable source that compiles back to the same bytes. Progress is *matching coverage*, which says nothing about whether the game is playable.
 - **Static recompilation**: translating the original program into code for a modern PC ahead of time.
 - **Runtime**: the code that imitates the DS hardware (graphics, sound, buttons) on a PC.
-- **Oracle**: an existing emulator used only to compare screenshots against, never shipped.
-
-## Where to go next
+- **Decompilation**: rewriting machine code as readable source. That source is not part of this repository and is not needed to run the game.
 
 [FAQ](FAQ.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Building](BUILDING.md)
