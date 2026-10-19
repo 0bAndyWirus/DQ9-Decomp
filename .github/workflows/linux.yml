@@ -1,0 +1,32 @@
+name: Linux runtime
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev pkg-config
+      - name: Configure ROM-free runtime and tests
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DDQ9_BUILD_SDL=ON -DDQ9_BUILD_GODOT=OFF
+      - name: Build
+        run: cmake --build build/ci -j 4
+      - name: Run CTest
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: ctest --test-dir build/ci --output-on-failure
+
+# Builds and tests the host runtime with synthetic fixtures only; it uploads nothing.
