@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 #include "dsr/machine.h"
 #include "dsr/spu.h"
 
@@ -41,11 +42,22 @@ public:
     std::uint64_t frame_count() const { return frame_count_; }
     std::uint64_t ticks() const { return machine_.ticks(); }
     void flush_save();
+    // Optional hi-res 3D overlay (Gpu3D::set_output_scale(N), N > 1). Writes the screen that
+    // engine A (the 3D engine) drives, per POWCNT1 bit 15, as 256N x 192N 0xFFRRGGBB: pixels the
+    // 2D compositor shows as an unmodified 3D pixel (Gpu2D::three_d_mask) come from the scaled 3D
+    // render, every other pixel is nearest-neighbour from the native screen. `*on_top` receives
+    // which screen that is. Returns false (nothing written) when the scale is 1, differs from the
+    // scale latched at the start of the last step(), or no pixel of the frame is a 3D pixel; present the
+    // native screens then.
+    bool compose_hires(std::uint32_t* out, int scale, bool* on_top) const;
     Machine& machine() { return machine_; }
     const Machine& machine() const { return machine_; }
 
 private:
+    void latch_hires();
     Machine machine_;
+    std::vector<std::uint32_t> hires_latched_; // scaled 3D buffer shown by the last step()
+    int hires_scale_ = 0;
     std::array<std::int16_t, 8192> audio_{};
     std::size_t audio_frames_ = 0;
     std::uint64_t frame_count_ = 0;

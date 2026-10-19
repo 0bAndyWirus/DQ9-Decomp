@@ -73,10 +73,13 @@ Debug actions are active only when **Debug tool** is enabled in the launcher or 
 Debug-consumed keys do not also trigger general frontend hotkeys, even when
 multiple taps arrive in one input poll. With the debug tool enabled, F3/F4
 are exclusively fast-forward/mark (not lid/integer scaling). F5/F6/F7 retain
-filter/layout/swap during normal play with the mixer hidden; while the mixer
+filter/layout/hi-res-scale during normal play with the mixer hidden; while the mixer
 is visible, or with Ctrl+Shift, they exclusively control mixer channels.
 F11 remains fullscreen. Disable the debug tool to use F3/F4 for lid/integer
-scaling, or remap those general hotkeys to unused keys in the config.
+scaling, or remap those general hotkeys to unused keys on the launcher's
+HOTKEYS page (fifth tab) or in `frontend.conf`. Normal-play defaults other than
+these: Tab fast-forward (hold), F12 screenshot, F7 hi-res 3D scale, F8 swap
+(F8 is single-step while the debug tool is on).
 
 The debug menu is the single place to select every debug action. It opens with F10, the toolbar MENU button, or the controller Guide/Steam+Start chord. The game remains paused while the menu is open; closing restores the pause state from before opening it. Navigate with Up/Down and activate with Enter, click a row with the mouse, or use the controller d-pad and A (B closes). Rows are Pause/Resume (Space / Pause), Step 1 frame (F8), Slow 0.5x/0.25x (F2), Fast-forward (F3, ON/OFF), Add note (F9 / Ctrl+Shift+N), Drop marker (F4), Quick bundle now (Menu), Frame-time graph (G, ON/OFF), Audio bar (B, ON/OFF), CPU PC (C, ON/OFF), Texture slots (V, ON/OFF), Audio mixer (M, ON/OFF), Texture inspector (T, ON/OFF), Screenshot only (S), Show debug folder path (O), Help (F1), and Close (Esc / F10). The menu action opens Add note without unpausing; saving or canceling the note restores the original pause state.
 

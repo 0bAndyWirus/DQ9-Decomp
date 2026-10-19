@@ -204,6 +204,7 @@ struct Gpu2D::Impl {
     std::array<std::array<Pixel, kScreenWidth>, 4> bg_line{};
     std::array<Pixel, kScreenWidth> obj_line{};
     std::array<bool, kScreenWidth> obj_window_buffer{};
+    bool obj_buffers_dirty = false; // obj_line / obj_window_buffer differ from their cleared state
     std::array<std::uint8_t, kScreenWidth> window_line_buffer{};
     std::array<std::uint16_t, kScreenWidth> fifo_line{};
     std::array<std::uint16_t, kPixelsPerFrame> fifo{};
@@ -549,6 +550,21 @@ struct Gpu2D::Impl {
         const std::uint32_t next = (target + 1U) % kBankSizes[bank];
         return static_cast<std::uint16_t>(read_lcdc_byte(bank, target)) |
                static_cast<std::uint16_t>(static_cast<std::uint16_t>(read_lcdc_byte(bank, next)) << 8U);
+    }
+
+    // Whole-line form of read_lcdc_half(bank, y * 512 + x * 2) -> direct_color. Banks 0-3 are
+    // 128 KiB, so a 192-line 512-byte stride never wraps and the per-pixel modulo is redundant.
+    void fill_lcdc_line(std::array<Color, kScreenWidth>& output, std::uint8_t bank, int y) const {
+        static_assert(kBankSizes[0] >= 192U * 512U && kBankSizes[1] >= 192U * 512U &&
+                      kBankSizes[2] >= 192U * 512U && kBankSizes[3] >= 192U * 512U);
+        if (bank >= 4U || (vramcnt[bank] & 0x87U) != 0x80U) {
+            output.fill(direct_color(0U));
+            return;
+        }
+        const std::uint8_t* row = vram.data() + bank_offset(bank, static_cast<std::uint32_t>(y) * 512U);
+        for (std::size_t x = 0; x < kScreenWidth; ++x) {
+            output[x] = direct_color(static_cast<std::uint16_t>(row[x * 2U] | (row[x * 2U + 1U] << 8U)));
+        }
     }
 
     std::uint16_t read_ext(bool engine_a_ext, bool object, std::uint32_t slot,
@@ -1232,10 +1248,12 @@ struct Gpu2D::Impl {
         }
         if (!needs_capture && is_a && display_mode >= 2U) {
             const auto bank = static_cast<std::uint8_t>((dispcnt >> 18U) & 3U);
-            for (std::size_t x = 0; x < kScreenWidth; ++x) {
-                output[x] = direct_color(display_mode == 2U
-                    ? read_lcdc_half(bank, static_cast<std::uint32_t>(y * 512 + x * 2))
-                    : next_fifo_pixel());
+            if (display_mode == 2U) {
+                fill_lcdc_line(output, bank, y);
+            } else {
+                for (std::size_t x = 0; x < kScreenWidth; ++x) {
+                    output[x] = direct_color(next_fifo_pixel());
+                }
             }
             return output[0];
         }
@@ -1243,8 +1261,14 @@ struct Gpu2D::Impl {
         auto& bg_pixels = bg_line;
         auto& obj_pixels = obj_line;
         auto& obj_window = obj_window_buffer;
-        obj_pixels.fill(kTransparentPixel);
-        obj_window.fill(false);
+        // add_obj_pixels returns before touching either buffer while OBJ is disabled, so a
+        // buffer that is already clean needs no per-line clear.
+        const bool objects_enabled = (dispcnt & (1U << 12U)) != 0U;
+        if (obj_buffers_dirty) {
+            obj_pixels.fill(kTransparentPixel);
+            obj_window.fill(false);
+        }
+        obj_buffers_dirty = objects_enabled;
         add_obj_pixels(obj_pixels, obj_window, engine, is_a, y, dispcnt);
         // Decode the window registers once for the line, not for every layer.
         auto& masks = window_line_buffer;
@@ -1327,18 +1351,22 @@ struct Gpu2D::Impl {
                 front_order[front_count++] = bg_order[priority][i - 1U];
             }
         }
-        for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
-            const auto xi = static_cast<std::size_t>(x);
-            const std::uint8_t mask = masks[xi];
-            const bool effects_allowed = (mask & (1U << 5U)) != 0U;
-            if (copy_only) {
-                const Pixel& object = obj_pixels[xi];
+        if (copy_only) {
+            std::array<const Pixel*, 4> front_pixels{};
+            std::array<std::uint8_t, 4> front_bits{};
+            for (unsigned i = 0; i < front_count; ++i) {
+                front_pixels[i] = bg_pixels[front_order[i]].data();
+                front_bits[i] = static_cast<std::uint8_t>(1U << front_order[i]);
+            }
+            const Pixel* const object_pixels = obj_pixels.data();
+            for (std::size_t xi = 0; xi < kScreenWidth; ++xi) {
+                const std::uint8_t mask = masks[xi];
+                const Pixel& object = object_pixels[xi];
                 const bool has_object = object.opaque && (mask & (1U << 4U)) != 0U;
                 const Pixel* chosen_source = has_object ? &object : nullptr;
                 for (unsigned i = 0; i < front_count; ++i) {
-                    const auto bg = front_order[i];
-                    const Pixel& pixel = bg_pixels[bg][xi];
-                    if (pixel.opaque && (mask & (1U << bg)) != 0U) {
+                    const Pixel& pixel = front_pixels[i][xi];
+                    if (pixel.opaque && (mask & front_bits[i]) != 0U) {
                         chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
                         break;
                     }
@@ -1346,8 +1374,14 @@ struct Gpu2D::Impl {
                 output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
                 mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
                     chosen_source->three_d && chosen_source->color.alpha == 31U);
-                continue;
             }
+        }
+        // The copy-only case above has already produced the whole line.
+        const int blended_end = copy_only ? 0 : static_cast<int>(kScreenWidth);
+        for (int x = 0; x < blended_end; ++x) {
+            const auto xi = static_cast<std::size_t>(x);
+            const std::uint8_t mask = masks[xi];
+            const bool effects_allowed = (mask & (1U << 5U)) != 0U;
             Color dst = backdrop;
             std::uint8_t dst_layer = kBackdropLayer;
             bool dst_three_d = false;
@@ -1414,10 +1448,12 @@ struct Gpu2D::Impl {
             output.fill({31U, 31U, 31U, 31U});
         } else if (is_a && display_mode >= 2U) {
             const auto bank = static_cast<std::uint8_t>((dispcnt >> 18U) & 3U);
-            for (std::size_t x = 0; x < kScreenWidth; ++x) {
-                output[x] = direct_color(display_mode == 2U
-                    ? read_lcdc_half(bank, static_cast<std::uint32_t>(y * 512 + x * 2))
-                    : next_fifo_pixel());
+            if (display_mode == 2U) {
+                fill_lcdc_line(output, bank, y);
+            } else {
+                for (std::size_t x = 0; x < kScreenWidth; ++x) {
+                    output[x] = direct_color(next_fifo_pixel());
+                }
             }
         }
         return output[0];
@@ -1915,6 +1951,10 @@ std::uint64_t Gpu2D::vram_generation() const {
 
 const std::uint8_t* Gpu2D::three_d_mask() const {
     return impl_->three_d_mask_buffer.data();
+}
+
+std::uint8_t Gpu2D::expand_color5(std::uint32_t value) {
+    return static_cast<std::uint8_t>(color5_to_8(value & 31U));
 }
 
 const std::uint32_t* Gpu2D::screen_top() const {

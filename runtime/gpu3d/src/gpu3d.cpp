@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #include <immintrin.h>
@@ -187,6 +188,15 @@ struct FramePixel {
     std::uint8_t facing = 0; // 0 = nothing drawn yet, 1 = front-facing polygon, 2 = back-facing
 };
 
+struct Target {
+    FramePixel* fb;
+    std::uint32_t* out;
+    int scale;
+    int width;
+    int height;
+    int band_height;
+};
+
 struct DirectPacket {
     std::uint8_t code = 0;
     std::uint8_t count = 0;
@@ -345,7 +355,15 @@ struct Gpu3D::Impl {
 
     std::array<FramePixel, kScreenPixels> framebuffer{};
     std::array<std::uint32_t, kScreenPixels> output{};
-    // Optional capture is specialized out of the default per-fragment path.
+    Target tgt_{framebuffer.data(), output.data(), 1,
+                static_cast<int>(kScreenWidth), static_cast<int>(kScreenHeight), kBandHeight};
+    int output_scale = 1;
+    int rendered_scale = 1;
+    std::vector<FramePixel> hires_fb;
+    std::vector<std::uint32_t> hires_out;
+    // Capture and its per-pixel scratch are native-only; the hi-res pass always
+    // instantiates Capture=false. Polygon IDs, depth, stencil and fog used by
+    // both passes live in each target's FramePixel storage.
     bool capture_opaque_only = false;
     bool opaque_only_valid = false;
     std::array<std::uint8_t, kScreenPixels> opaque_only{};
@@ -700,6 +718,9 @@ struct Gpu3D::Impl {
         vector_result = {};
         framebuffer.fill({});
         output.fill(0);
+        std::fill(hires_fb.begin(), hires_fb.end(), FramePixel{});
+        std::fill(hires_out.begin(), hires_out.end(), 0);
+        rendered_scale = 1;
         opaque_only_valid = false;
         put32(0x04000350U, 0);
         put32(0x04000354U, 0x7fffU);
@@ -1578,6 +1599,8 @@ struct Gpu3D::Impl {
         const float y_base = y1 > 191.0F ? y1 - 255.0F : y1;
         result.x = x1 + (ndc_x + 1.0F) * width * 0.5F;
         result.y = 192.0F - (y_base + (ndc_y + 1.0F) * height * 0.5F);
+        result.x *= static_cast<float>(tgt_.scale);
+        result.y *= static_cast<float>(tgt_.scale);
         result.z = vertex.clip[2] * inv_w;
         result.inv_w = inv_w;
         result.u_over_w = vertex.u * inv_w;
@@ -1598,16 +1621,17 @@ struct Gpu3D::Impl {
         return static_cast<std::uint16_t>(raw >> ((addr & 2U) * 8U));
     }
 
-    template<bool Capture = false>
+    template<bool Capture = false, bool Scaled = false>
     void clear_framebuffer(int y_begin, int y_end) {
+        static_assert(!Capture || !Scaled, "debug capture is native-only");
         if constexpr (Capture) {
-            std::fill(opaque_only.begin() + y_begin * kScreenWidth,
-                      opaque_only.begin() + y_end * kScreenWidth, 1);
-            std::fill(capture_data->causes.begin() + y_begin * kScreenWidth,
-                      capture_data->causes.begin() + y_end * kScreenWidth, 0);
-            std::fill(capture_data->partial_seen.begin() + y_begin * kScreenWidth,
-                      capture_data->partial_seen.begin() + y_end * kScreenWidth, false);
-            for (int band = y_begin / kBandHeight; band < (y_end + kBandHeight - 1) / kBandHeight; ++band)
+            std::fill(opaque_only.begin() + y_begin * tgt_.width,
+                      opaque_only.begin() + y_end * tgt_.width, 1);
+            std::fill(capture_data->causes.begin() + y_begin * tgt_.width,
+                      capture_data->causes.begin() + y_end * tgt_.width, 0);
+            std::fill(capture_data->partial_seen.begin() + y_begin * tgt_.width,
+                      capture_data->partial_seen.begin() + y_end * tgt_.width, false);
+            for (int band = y_begin / tgt_.band_height; band < (y_end + tgt_.band_height - 1) / tgt_.band_height; ++band)
                 capture_data->polygon_touches[band].fill(0);
         }
         const auto clear_color = get32(0x04000350U);
@@ -1621,8 +1645,8 @@ struct Gpu3D::Impl {
         const auto blue = expand6(color5(static_cast<std::uint16_t>(clear_color), 10));
         const bool bitmap = (disp3d & (1U << 14)) != 0U;
         if (!bitmap) {
-            std::fill(framebuffer.begin() + y_begin * kScreenWidth,
-                      framebuffer.begin() + y_end * kScreenWidth,
+            std::fill(tgt_.fb + y_begin * tgt_.width,
+                      tgt_.fb + y_end * tgt_.width,
                       FramePixel{red, green, blue, alpha, clear_depth, id, fog});
             return;
         }
@@ -1633,10 +1657,15 @@ struct Gpu3D::Impl {
         const auto y_offset = (scroll >> 8) & 0xffU;
         for (std::size_t y = static_cast<std::size_t>(y_begin);
              y < static_cast<std::size_t>(y_end); ++y) {
-            for (std::size_t x = 0; x < kScreenWidth; ++x) {
+            const auto source_y = Scaled ? y / tgt_.scale : y;
+            for (std::size_t x = 0; x < static_cast<std::size_t>(tgt_.width); ++x) {
                 auto pixel = FramePixel{red, green, blue, alpha, clear_depth, id, fog};
                 if (bitmap) {
-                    const auto bitmap_index = (((y + y_offset) & 0xffU) * 256U + ((x + x_offset) & 0xffU)) * 2U;
+                    // Rear-plane VRAM stays at native resolution. Specializing
+                    // this division away preserves the native clear-image path.
+                    const auto source_x = Scaled ? x / tgt_.scale : x;
+                    const auto bitmap_index = (((source_y + y_offset) & 0xffU) * 256U +
+                                               ((source_x + x_offset) & 0xffU)) * 2U;
                     // Unmapped texture slots read zero independently, including the rear plane.
                     const auto packed_color = color_slot == nullptr
                         ? texture_source.texture_half(0x40000U + bitmap_index)
@@ -1653,7 +1682,7 @@ struct Gpu3D::Impl {
                     pixel.depth = depth15_to24(static_cast<std::uint16_t>(packed_depth & 0x7fffU));
                     pixel.fog = (packed_depth & 0x8000U) != 0U;
                 }
-                framebuffer[y * kScreenWidth + x] = pixel;
+                tgt_.fb[y * tgt_.width + x] = pixel;
             }
         }
     }
@@ -1988,7 +2017,7 @@ struct Gpu3D::Impl {
                                            : (polygon.attr & (1U << 6)) != 0U;
         if (!surface_enabled) return;
         const auto min_x = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
-        const auto max_x = std::min(255, static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
+        const auto max_x = std::min(tgt_.width - 1, static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
         const auto min_y = std::max(y_begin, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
         const auto max_y = std::min(y_end - 1, static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
         if (max_x < min_x || max_y < min_y) return;
@@ -2037,9 +2066,9 @@ struct Gpu3D::Impl {
                         int x, int y, const std::array<float, 3>& vertex_color, float u, float v,
                         std::uint32_t depth) {
         const auto polygon_id = static_cast<std::uint8_t>((polygon.attr >> 24) & 63U);
-        const auto pixel_index = static_cast<std::size_t>(y) * kScreenWidth + static_cast<std::size_t>(x);
+        const auto pixel_index = static_cast<std::size_t>(y) * tgt_.width + static_cast<std::size_t>(x);
         if constexpr (Capture) capture_fragment(polygon, shading, pixel_index, u, v);
-        auto& destination = framebuffer[pixel_index];
+        auto& destination = tgt_.fb[pixel_index];
         const bool depth_equal = (polygon.attr & (1U << 14)) != 0U;
         const auto depth_delta = depth > destination.depth
             ? depth - destination.depth : destination.depth - depth;
@@ -2133,8 +2162,10 @@ struct Gpu3D::Impl {
         const float screen_y = 192.0F - (y01 * height + (y1 > 191.0F ? y1 - 255.0F : y1));
         constexpr float kLimit = 1.0e6F;
         RasterVertex result;
-        result.x = static_cast<std::int32_t>(std::clamp(16.0F * screen_x, -kLimit, kLimit));
-        result.y = static_cast<std::int32_t>(std::clamp(16.0F * screen_y, -kLimit, kLimit));
+        // Quantize after scaling: the DDA still uses 16 subpixels per output
+        // pixel, so coverage and attribute steps share the scaled row units.
+        result.x = static_cast<std::int32_t>(std::clamp(16.0F * (screen_x * tgt_.scale), -kLimit, kLimit));
+        result.y = static_cast<std::int32_t>(std::clamp(16.0F * (screen_y * tgt_.scale), -kLimit, kLimit));
         result.attribute = {1.0F / w, z01, vertex.u / w, vertex.v / w,
                             vertex.color[0] / w, vertex.color[1] / w, vertex.color[2] / w};
         return result;
@@ -2210,11 +2241,11 @@ struct Gpu3D::Impl {
         capture_data->causes[index] |= causes;
         if ((causes & 3U) != 0U) {
             const auto polygon_index = static_cast<std::size_t>(&polygon - render_polygons.data());
-            ++capture_data->polygon_touches[index / (kScreenWidth * kBandHeight)][polygon_index];
+            ++capture_data->polygon_touches[index / (tgt_.width * tgt_.band_height)][polygon_index];
         }
         if ((disp3d & 4U) != 0U && alpha < (get32(0x04000340U) & 31U) &&
             (causes & (4U | 8U)) == 0U) return;
-        const auto& destination = framebuffer[index];
+        const auto& destination = tgt_.fb[index];
         if (!gpu3d_detail::capture_single_layer(alpha, polygon.attr, disp3d,
                 destination.alpha, destination.fog, capture_data->partial_seen[index]))
             opaque_only[index] = 0;
@@ -2265,7 +2296,7 @@ struct Gpu3D::Impl {
                 depths = _mm_slli_epi32(_mm_cvttps_epi32(
                     _mm_mul_ps(z, _mm_set1_ps(4194303.0F))), 2);
             }
-            auto* destination = framebuffer.data() + y * kScreenWidth + x;
+            auto* destination = tgt_.fb + y * tgt_.width + x;
             const __m128i old_depths = _mm_setr_epi32(
                 destination[0].depth, destination[1].depth,
                 destination[2].depth, destination[3].depth);
@@ -2362,7 +2393,7 @@ struct Gpu3D::Impl {
                    bool is_translucent_polygon, bool front_facing,
                    const RasterEdge& left, const RasterEdge& right) {
         const int y = left.y;
-        if (y < 0 || y >= static_cast<int>(kScreenHeight)) return;
+        if (y < 0 || y >= tgt_.height) return;
         int x = static_cast<int>(left.x);
         int width = static_cast<int>(right.x) - x;
         if (width <= 0) return;
@@ -2377,7 +2408,7 @@ struct Gpu3D::Impl {
             width += x;
             x = 0;
         }
-        if (x + width > static_cast<int>(kScreenWidth)) width = static_cast<int>(kScreenWidth) - x;
+        if (x + width > tgt_.width) width = tgt_.width - x;
         if (width <= 0) return;
 #if DSR_X86_SPANS
         if constexpr (Batch && !Capture) {
@@ -2416,7 +2447,7 @@ struct Gpu3D::Impl {
     void draw_span(const Polygon& polygon, PolygonShading& shading,
                    bool is_translucent_polygon, bool front_facing,
                    const RasterEdge& left, const RasterEdge& right, int y_begin, int y_end) {
-        if (left.y < 0 || left.y >= static_cast<int>(kScreenHeight) ||
+        if (left.y < 0 || left.y >= tgt_.height ||
             left.y < y_begin || left.y >= y_end) return;
         if (shading.mode == 0U && shading.alpha_attr == 31U) {
             if (!shading.textured)
@@ -2510,7 +2541,7 @@ struct Gpu3D::Impl {
         const auto screen = to_screen(vertex, polygon.viewport);
         const auto x = static_cast<int>(std::floor(screen.x));
         const auto y = static_cast<int>(std::floor(screen.y));
-        if (x < 0 || x >= 256 || y < 0 || y >= 192 || y < y_begin || y >= y_end) return;
+        if (x < 0 || x >= tgt_.width || y < 0 || y >= tgt_.height || y < y_begin || y >= y_end) return;
         const auto polygon_id = static_cast<std::uint8_t>((polygon.attr >> 24) & 63U);
         const auto shaded = shade_pixel(polygon, shading, vertex.color, vertex.u, vertex.v);
         auto alpha = shaded.alpha;
@@ -2520,9 +2551,9 @@ struct Gpu3D::Impl {
                 static_cast<int>(std::floor(vertex.clip[3] * 4096.0F)), 0, 0x00ffffff))
             : static_cast<std::uint32_t>(std::floor(
                 std::clamp((screen.z + 1.0F) * 0.5F, 0.0F, 1.0F) * 4194303.0F)) << 2;
-        const auto index = static_cast<std::size_t>(y) * kScreenWidth + static_cast<std::size_t>(x);
+        const auto index = static_cast<std::size_t>(y) * tgt_.width + static_cast<std::size_t>(x);
         if constexpr (Capture) capture_fragment(polygon, shading, index, vertex.u, vertex.v);
-        auto& destination = framebuffer[index];
+        auto& destination = tgt_.fb[index];
         const auto depth_delta = depth > destination.depth
             ? depth - destination.depth : destination.depth - depth;
         if ((polygon.attr & (1U << 14)) != 0U
@@ -2594,7 +2625,7 @@ struct Gpu3D::Impl {
             prepared.dot = {first.clip, first.u, first.v, first.color};
             // The dot path uses the original first vertex, not a clipped one.
             const int y = static_cast<int>(std::floor(to_screen(prepared.dot, polygon.viewport).y));
-            if (y < 0 || y >= static_cast<int>(kScreenHeight)) return;
+            if (y < 0 || y >= tgt_.height) return;
             prepared.y_begin = y;
             prepared.y_end = y + 1;
             prepared.shape = PolygonShape::Dot;
@@ -2602,7 +2633,7 @@ struct Gpu3D::Impl {
         }
         if (((polygon.attr >> 16) & 31U) != 0U) {
             if (!prepare_raster_polygon(polygon, clipped, prepared)) return;
-            int first_row = static_cast<int>(kScreenHeight);
+            int first_row = tgt_.height;
             int end_row = 0;
             for (std::size_t i = 0; i < count; ++i) {
                 const int row = ceil_fixed(prepared.raster[i].y);
@@ -2610,13 +2641,13 @@ struct Gpu3D::Impl {
                 end_row = std::max(end_row, row);
             }
             prepared.y_begin = std::max(0, first_row);
-            prepared.y_end = std::min(static_cast<int>(kScreenHeight), end_row);
+            prepared.y_end = std::min(tgt_.height, end_row);
             prepared.shape = PolygonShape::Filled;
         } else {
             // Wire triangles have inclusive floor/ceil bounds, unlike the
             // filled polygon edge walk's half-open fixed-point row interval.
             prepared.y_begin = std::max(0, static_cast<int>(std::floor(min_y)));
-            prepared.y_end = std::min(static_cast<int>(kScreenHeight),
+            prepared.y_end = std::min(tgt_.height,
                                      static_cast<int>(std::ceil(max_y)) + 1);
             prepared.shape = PolygonShape::Wire;
         }
@@ -2649,15 +2680,15 @@ struct Gpu3D::Impl {
                 capture_data->polygon_totals[i] += band[i];
         // Serial after the band barrier: read raw rows, write a separate result,
         // so diagonal neighbours and band borders dilate exactly once.
-        for (int y = 0; y < static_cast<int>(kScreenHeight); ++y) {
-            for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+        for (int y = 0; y < tgt_.height; ++y) {
+            for (int x = 0; x < tgt_.width; ++x) {
                 std::uint8_t eligible = 1;
                 for (int row = std::max(0, y - 1);
-                     row <= std::min(static_cast<int>(kScreenHeight) - 1, y + 1); ++row)
+                     row <= std::min(tgt_.height - 1, y + 1); ++row)
                     for (int column = std::max(0, x - 1);
-                         column <= std::min(static_cast<int>(kScreenWidth) - 1, x + 1); ++column)
-                        eligible &= opaque_only[row * kScreenWidth + column];
-                opaque_only_dilated[y * kScreenWidth + x] = eligible;
+                         column <= std::min(tgt_.width - 1, x + 1); ++column)
+                        eligible &= opaque_only[row * tgt_.width + column];
+                opaque_only_dilated[y * tgt_.width + x] = eligible;
             }
         }
         opaque_only_valid = true;
@@ -2672,26 +2703,26 @@ struct Gpu3D::Impl {
         const auto edge_alpha = static_cast<std::uint8_t>((disp3d & (1U << 4)) != 0U ? 16U : 31U);
         const auto edge_alpha_plus_one = static_cast<unsigned>(edge_alpha) + 1U;
         const auto inverse_alpha = 32U - edge_alpha_plus_one;
-        for (std::size_t y = 0; y < kScreenHeight; ++y) {
-            for (std::size_t x = 0; x < kScreenWidth; ++x) {
-                const auto index = y * kScreenWidth + x;
-                auto& pixel = framebuffer[index];
+        for (std::size_t y = 0; y < static_cast<std::size_t>(tgt_.height); ++y) {
+            for (std::size_t x = 0; x < static_cast<std::size_t>(tgt_.width); ++x) {
+                const auto index = y * tgt_.width + x;
+                auto& pixel = tgt_.fb[index];
                 if (pixel.is_translucent_polygon) continue;
                 const bool is_clear_edge = pixel.polygon_id != clear_id && pixel.depth < clear_depth;
                 bool marked = false;
                 std::uint8_t edge_id = pixel.polygon_id;
                 const auto mark_from_neighbor = [&](std::size_t neighbor_index) {
-                    const auto& neighbor = framebuffer[neighbor_index];
+                    const auto& neighbor = tgt_.fb[neighbor_index];
                     if (pixel.polygon_id == neighbor.polygon_id || pixel.depth < neighbor.depth)
                         return false;
                     edge_id = neighbor.polygon_id;
                     return true;
                 };
-                if (x + 1U == kScreenWidth) marked = is_clear_edge;
+                if (x + 1U == static_cast<std::size_t>(tgt_.width)) marked = is_clear_edge;
                 else marked = mark_from_neighbor(index + 1U);
                 if (!marked) {
-                    if (y + 1U == kScreenHeight) marked = is_clear_edge;
-                    else marked = mark_from_neighbor(index + kScreenWidth);
+                    if (y + 1U == static_cast<std::size_t>(tgt_.height)) marked = is_clear_edge;
+                    else marked = mark_from_neighbor(index + tgt_.width);
                 }
                 if (!marked) {
                     if (x == 0U) marked = is_clear_edge;
@@ -2699,7 +2730,7 @@ struct Gpu3D::Impl {
                 }
                 if (!marked) {
                     if (y == 0U) marked = is_clear_edge;
-                    else marked = mark_from_neighbor(index - kScreenWidth);
+                    else marked = mark_from_neighbor(index - tgt_.width);
                 }
                 if (!marked) continue;
                 const auto color = edge_color(edge_id);
@@ -2724,12 +2755,12 @@ struct Gpu3D::Impl {
 
     template<bool Capture>
     void pack_rows(int y_begin, int y_end) {
-        const auto first = static_cast<std::size_t>(y_begin) * kScreenWidth;
-        const auto end = static_cast<std::size_t>(y_end) * kScreenWidth;
+        const auto first = static_cast<std::size_t>(y_begin) * tgt_.width;
+        const auto end = static_cast<std::size_t>(y_end) * tgt_.width;
         for (auto i = first; i < end; ++i) {
-            auto& pixel = framebuffer[i];
+            auto& pixel = tgt_.fb[i];
             if (pixel.fog) apply_fog(pixel, pixel.depth);
-            output[i] = pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha);
+            tgt_.out[i] = pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha);
 #ifdef DSR_GPU_CAPTURE_IDS
             if constexpr (Capture) capture_data->polygon_ids[i] = pixel.polygon_id;
 #endif
@@ -2762,23 +2793,45 @@ struct Gpu3D::Impl {
         if ((swap_mode & 1U) == 0U)
             std::sort(render_translucent_order.begin(),
                       render_translucent_order.begin() + static_cast<std::ptrdiff_t>(render_translucent_count), by_y);
+        render_target<Capture>();
+        if (output_scale > 1) {
+            // Sorting, texture-cache preparation and optional capture happen
+            // exactly once above. This presentation pass only reads geometry,
+            // IO and the pinned decoded textures; it cannot advance GX state.
+            const auto native = tgt_;
+            struct RestoreTarget {
+                Target& target;
+                Target saved;
+                ~RestoreTarget() { target = saved; }
+            } restore{tgt_, native};
+            const int width = static_cast<int>(kScreenWidth) * output_scale;
+            const int height = static_cast<int>(kScreenHeight) * output_scale;
+            tgt_ = {hires_fb.data(), hires_out.data(), output_scale, width, height, height / kRenderBands};
+            rendered_scale = 1;
+            render_target<false, true>();
+            rendered_scale = output_scale;
+        }
+    }
+
+    template<bool Capture, bool Scaled = false>
+    void render_target() {
         if (pool->worker_count() <= 1) {
             // Inline means one full-frame pass, not eight serialized bands.
             // No pool submission, worker, or band preparation storage is needed.
-            clear_framebuffer<Capture>(0, static_cast<int>(kScreenHeight));
+            clear_framebuffer<Capture, Scaled>(0, tgt_.height);
             PreparedPolygon prepared;
             auto& shading = band_shading[0];
             const auto draw = [this, &prepared, &shading](std::uint16_t index, bool translucent) {
                 const auto& polygon = render_polygons[index];
                 prepare_polygon(polygon, prepared);
                 draw_prepared_polygon<Capture>(polygon, translucent, prepared, shading,
-                                      0, static_cast<int>(kScreenHeight));
+                                      0, tgt_.height);
             };
             for (std::size_t i = 0; i < render_opaque_count; ++i) draw(render_opaque_order[i], false);
             for (std::size_t i = 0; i < render_translucent_count; ++i) draw(render_translucent_order[i], true);
             if constexpr (Capture) dilate_opaque_only();
             apply_edges();
-            pack_rows<Capture>(0, static_cast<int>(kScreenHeight));
+            pack_rows<Capture>(0, tgt_.height);
             return;
         }
         if (render_polygon_count != 0U && !band_polygons)
@@ -2788,9 +2841,9 @@ struct Gpu3D::Impl {
         for (std::size_t i = 0; i < render_polygon_count; ++i)
             prepare_polygon(render_polygons[i], (*band_polygons)[i]);
         pool->run(kRenderBands, [this](int band) {
-            const int y_begin = band * kBandHeight;
-            const int y_end = y_begin + kBandHeight;
-            clear_framebuffer<Capture>(y_begin, y_end);
+            const int y_begin = band * tgt_.band_height;
+            const int y_end = y_begin + tgt_.band_height;
+            clear_framebuffer<Capture, Scaled>(y_begin, y_end);
             auto& shading = band_shading[static_cast<std::size_t>(band)];
             for (std::size_t i = 0; i < render_opaque_count; ++i) {
                 const auto index = render_opaque_order[i];
@@ -2808,7 +2861,7 @@ struct Gpu3D::Impl {
         if constexpr (Capture) dilate_opaque_only();
         apply_edges();
         pool->run(kRenderBands, [this](int band) {
-            pack_rows<Capture>(band * kBandHeight, (band + 1) * kBandHeight);
+            pack_rows<Capture>(band * tgt_.band_height, (band + 1) * tgt_.band_height);
         });
     }
 
@@ -3011,6 +3064,27 @@ void Gpu3D::render_start() {
 const std::uint32_t* Gpu3D::line(int y) const {
     if (y < 0 || y >= static_cast<int>(kScreenHeight)) return nullptr;
     return impl_->output.data() + static_cast<std::size_t>(y) * kScreenWidth;
+}
+
+void Gpu3D::set_output_scale(int n) {
+    n = std::clamp(n, 1, 4);
+    if (n == impl_->output_scale) return;
+    if (n > 1) {
+        const auto pixels = kScreenPixels * static_cast<std::size_t>(n * n);
+        impl_->hires_fb.resize(pixels);
+        impl_->hires_out.resize(pixels);
+    }
+    impl_->output_scale = n;
+    impl_->rendered_scale = 1;
+}
+
+int Gpu3D::output_scale() const { return impl_->output_scale; }
+
+const std::uint32_t* Gpu3D::scaled_line(int y) const {
+    const int scale = impl_->output_scale;
+    if (scale == 1 || impl_->rendered_scale != scale ||
+        y < 0 || y >= static_cast<int>(kScreenHeight) * scale) return nullptr;
+    return impl_->hires_out.data() + static_cast<std::size_t>(y) * kScreenWidth * scale;
 }
 
 Gpu3DGeometryView Gpu3D::geometry_view() const {

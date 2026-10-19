@@ -47,6 +47,28 @@ jobs:
           SDL_AUDIODRIVER: dummy
         run: ctest --test-dir build/win-ci --output-on-failure
 
+  kit-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install kit build dependencies
+        run: python -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
+      - name: Build and test ROM-free runtime with the kit toolchain
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: python tools/build_port.py --runtime-only
+      - name: Audit source-only Windows kit
+        run: python tools/package_windows_kit.py --tag ci
+
 # This workflow builds and tests the host runtime only; it uploads nothing.
 # A generated-game build requires a separately supplied generated-code directory.
 # See docs/BUILDING_WINDOWS.md for local build configuration.

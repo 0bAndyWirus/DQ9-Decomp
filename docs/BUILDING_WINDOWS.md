@@ -4,9 +4,73 @@ The SDL host and Godot 4.5 GDExtension share the original native runtime. The cr
 
 Targets are Windows 10/11 x64. Images, saves, generated game sources, captures, and game builds remain private. Game-host packages are local-only and must never be uploaded to CI, releases, or issue attachments.
 
+## Source build kit on Windows (start here)
+
+The Windows kit contains **source and scripts only: no game or binary is included**.
+The first ROM run on Windows is unverified by the author. The `kit-smoke` CI job
+(a `windows-latest` runner) builds and tests the ROM-free runtime using Zig and
+packages the kit; it passed for v0.2.0. That is evidence for the toolchain and
+runtime tests, not for Windows gameplay.
+
+Requirements: Windows 10/11 x64, Python 3.10+ from
+[python.org](https://www.python.org/downloads/windows/) with **Add python.exe to PATH**
+enabled, internet access, about 5 GB free disk space, and your own legally obtained
+European multilingual `.nds` dump. Extract the kit to a writable directory.
+From Command Prompt in that directory:
+
+```bat
+BUILD-DQ9.bat "C:\path\game.nds"
+PLAY-DQ9.bat "C:\path\game.nds" en
+```
+
+In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead.
+The language is optional (default `en`); `fr`, `de`, `es` and `it` are also supported.
+The build creates `.venv`, installs the Python dependencies and Zig, downloads
+ds-decomp with a pinned SHA-256 check and the official SDL2 SDK, then generates
+and compiles code from your own dump. It can take 30–90 minutes; this Windows
+build time has not been measured by the author. The launcher supplies the generated
+`build\gen\abi.ini` and does not enable the debug tool.
+
+In a source checkout, the launchers are `tools\windows\BUILD-DQ9.bat` and
+`tools\windows\PLAY-DQ9.bat`. Alternatively, from the repository root:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
+.\.venv\Scripts\python.exe tools\build_port.py --rom "C:\path\game.nds"
+```
+
+The Windows-hosted flow pins `ziglang==0.16.0` because PyPI publishes no Windows wheel for
+0.17.0, the version used by the Linux-hosted cross build below. `--dsd PATH` selects an existing ds-decomp executable instead of the pinned
+download. `--sdk-deps DIR` selects the SDL SDK download directory (default
+`build/win-deps`). All extracted data, generated sources, ABI metadata, game
+binaries and saves remain local-only; never upload them or add them to the kit.
+The executable embeds game-generated code and is not a redistributable release.
+
+Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
+
+For a ROM-free runtime check using the same toolchain:
+
+```powershell
+.\.venv\Scripts\python.exe tools\build_port.py --runtime-only
+```
+
+This configures `build/win-zig` without generated game code, builds all runtime
+targets and runs CTest with dummy SDL video/audio drivers. The independent SWI
+formula checks need no external BIOS-reference source. `--build-dir DIR` selects
+another build tree.
+
+Maintainers create the public source kit with
+`python tools/package_windows_kit.py --tag TAG`. It archives `HEAD`, copies the
+root launchers and instructions from the checkout, and audits the staged tree.
+It warns about uncommitted tracked changes; commit the intended release first.
+The source-aware audit permits HEAD-tracked original C++ sources, but still
+rejects generated-source names and image/save/binary files. This public source
+kit is different from the private binary packages described below.
+
 ## Build inputs
 
-Game hosts require a separately supplied generated-code directory selected through `DQ9_GENERATED_DIR` or the wrapper's `--gen` option. No end-to-end generator workflow is shipped; these instructions do not explain how to produce that directory.
+The kit's `tools/build_port.py` generates the game sources locally from your own dump. The lower-level cross-build and MSVC paths below take that separately generated directory through `DQ9_GENERATED_DIR` or the wrapper's `--gen` option.
 
 Runtime-only builds omit `DQ9_GENERATED_DIR` and need no game image. The SWI differential CTest target uses independent formula checks by default. Its external reference-table mode requires a separately available reference-emulator source tree: configure `DQ9_BIOS_REFERENCE_SOURCE` with the path to public DeSmuME HLE `src/bios.cpp`. This is not a Nintendo BIOS and is not bundled. Wine uses its `Z:` mapping when reading the supplied external host path.
 

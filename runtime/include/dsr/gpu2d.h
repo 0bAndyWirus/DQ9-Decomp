@@ -123,6 +123,9 @@ public:
     // 3D pixels in normal display. Brightness-transformed or scrolled lines
     // stay software (0); the GPU overlay does not replay per-line 2D effects.
     const std::uint8_t* three_d_mask() const;
+    // The display's 5-bit -> 8-bit channel expansion, for host code that composes pixels
+    // outside the 2D compositor (for example the optional hi-res 3D overlay).
+    static std::uint8_t expand_color5(std::uint32_t value);
 
     struct Impl;
 

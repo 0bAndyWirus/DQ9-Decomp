@@ -736,6 +736,25 @@ bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& mac
     return true;
 }
 
+std::filesystem::path save_screenshot(const std::filesystem::path& directory, dsr::Machine& machine) {
+    constexpr std::size_t pixels_per_screen =
+        static_cast<std::size_t>(kScreenWidth) * kScreenHeight;
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec) return {};
+    std::vector<std::uint32_t> both;
+    both.reserve(pixels_per_screen * 2);
+    both.insert(both.end(), machine.gpu2d().screen_top(),
+                machine.gpu2d().screen_top() + pixels_per_screen);
+    both.insert(both.end(), machine.gpu2d().screen_bottom(),
+                machine.gpu2d().screen_bottom() + pixels_per_screen);
+    const std::string stem = "dq9-" + timestamp_now();
+    std::filesystem::path path = directory / (stem + ".png");
+    for (int n = 1; std::filesystem::exists(path, ec) && n < 1000; ++n)
+        path = directory / (stem + "-" + std::to_string(n) + ".png");
+    return write_png_rgb(path, kScreenWidth, kScreenHeight * 2, both) ? path : std::filesystem::path{};
+}
+
 bool DebugSession::screenshot_only(dsr::Machine& machine, std::uint64_t frame) {
     constexpr std::size_t pixels_per_screen =
         static_cast<std::size_t>(kScreenWidth) * kScreenHeight;
