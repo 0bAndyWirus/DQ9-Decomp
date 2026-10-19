@@ -193,6 +193,23 @@ class BuildPortTests(unittest.TestCase):
             self.assertFalse(any((workspace / part).exists() for part in build_port.WORKSPACE_PARTS))
             self.assertFalse((workspace / build_port.WORKSPACE_MARKER).exists())
 
+    def test_clearing_never_deletes_an_image_stored_in_the_generated_directory(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            generated = root / "build" / "gen"
+            generated.mkdir(parents=True)
+            rom = generated / "game.nds"
+            rom.write_bytes(b"image")
+            workspace = root / "ws"
+            (workspace / "config").mkdir(parents=True)
+            (workspace / build_port.WORKSPACE_MARKER).write_text("x", encoding="utf-8")
+            with mock.patch.object(build_port, "ROOT", root):
+                with self.assertRaises(SystemExit) as refused:
+                    build_port.clear_workspace(workspace, rom, generated)
+            self.assertIn("contains the image", str(refused.exception))
+            self.assertTrue(rom.is_file())
+            self.assertTrue((workspace / "config").is_dir())  # nothing was deleted before the refusal
+
     def test_launch_hints_do_not_enable_debug_tool(self):
         args = [Path("a path/dq9"), Path("my game.nds"), Path("abi.ini")]
         posix = build_port.launch_hint(*args)

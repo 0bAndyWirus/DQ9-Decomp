@@ -76,7 +76,7 @@ Pad combos never pass the combo buttons to the game while held. With `--debug-to
 
 ## Saves
 
-The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written atomically on exit and, in a window, automatically every 30 seconds while it has unsaved changes (`--autosave-frames N`, 0 disables; default off with `--headless`). A crash, kill or power loss therefore costs at most about 30 seconds of progress instead of the whole session. This is not a save state; see the limits below.
+The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written atomically on exit and, in a window, automatically every 30 seconds while it has unsaved changes (`--autosave-frames N`, 0 disables; default off with `--headless`). A crash, kill or power loss therefore costs at most about 30 seconds of progress instead of the whole session. The save as it was before the run is kept once as `dq9.sav.bak` next to it (written before the first overwrite of each run), so a bad session can be rolled back by copying it over `dq9.sav` while the game is closed. This is not a save state; see the limits below.
 
 ## Known limits
 
@@ -114,4 +114,4 @@ python -m unittest discover -s tests -v
 - **Runtime**: the code that imitates the DS hardware (graphics, sound, buttons) on a PC.
 - **Decompilation**: rewriting machine code as readable source. That source is not part of this repository and is not needed to run the game.
 
-[FAQ](FAQ.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Building](BUILDING.md)
+[FAQ](FAQ.md) · [Configuration](CONFIGURATION.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Building](BUILDING.md)

@@ -186,6 +186,10 @@ def clear_workspace(workspace: Path, rom: Path, generated: Path) -> None:
         raise SystemExit(f"Refusing to clear {workspace}: it is the repository or one of its parent directories.")
     if rom == workspace or workspace in rom.parents:
         raise SystemExit(f"Refusing to clear {workspace}: it contains the image {rom}.")
+    clear_generated = generated.resolve() == (ROOT / "build" / "gen").resolve() and generated.is_dir()
+    if clear_generated and (rom == generated.resolve() or generated.resolve() in rom.parents):
+        raise SystemExit(f"Refusing to clear {generated}: it contains the image {rom}. Move the image elsewhere.")
+    # (All refusals above and below happen before anything is deleted.)
     # Generic folder names prove nothing: only this checkout's default workspace, or one carrying
     # our fingerprint file, is known to be ours. Anything else that already has such folders is
     # somebody else's project; point at a new, empty directory instead.
@@ -199,7 +203,7 @@ def clear_workspace(workspace: Path, rom: Path, generated: Path) -> None:
     for part in existing:
         shutil.rmtree(workspace / part)
     (workspace / WORKSPACE_MARKER).unlink(missing_ok=True)
-    if generated.resolve() == (ROOT / "build" / "gen").resolve() and generated.is_dir():
+    if clear_generated:
         shutil.rmtree(generated)  # stale chunks from the old image must not be compiled
 
 

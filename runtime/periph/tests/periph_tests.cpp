@@ -217,6 +217,40 @@ void test_backup_eeprom(const std::filesystem::path& rom,
     }
 }
 
+std::string slurp(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// The save as it was before a run survives as <save>.bak: written once, before the first overwrite.
+void test_previous_save_backup(const std::filesystem::path& rom, const std::filesystem::path& save) {
+    {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        (void)aux_transfer(card, {0x06});
+        (void)aux_transfer(card, {0x02, 0x01, 0x11});
+        card.flush_save();
+    }
+    const std::string first_session = slurp(save);
+    assert(first_session.size() == 512);
+    std::filesystem::path backup = save;
+    backup += ".bak";
+    assert(!std::filesystem::exists(backup)); // nothing to back up before the first save
+    {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        (void)aux_transfer(card, {0x06});
+        (void)aux_transfer(card, {0x02, 0x01, 0x22});
+        card.flush_save();
+        const std::string second_session = slurp(save);
+        assert(second_session != first_session);
+        assert(slurp(backup) == first_session); // the previous run's save
+        (void)aux_transfer(card, {0x06});
+        (void)aux_transfer(card, {0x02, 0x01, 0x33});
+        card.flush_save();                      // later flushes of the same run keep the first backup
+        assert(slurp(backup) == first_session);
+        assert(slurp(save) != second_session);
+    }
+}
+
 void test_larger_eeproms(const std::filesystem::path& rom,
                          const std::filesystem::path& save_dir) {
     const auto check = [&](dsr::BackupType type, const std::vector<std::uint8_t>& write,
@@ -432,6 +466,7 @@ int main() {
     test_card_low_address_alias(card_alias_rom, temp.path / "card-alias.sav");
     test_backup_eeprom(rom, temp.path / "eeprom.sav");
     test_larger_eeproms(rom, temp.path);
+    test_previous_save_backup(rom, temp.path / "previous.sav");
     test_backup_flash_round_trip(rom, temp.path / "saves" / "nested" / "flash.sav");
     test_dsv_import(rom, temp.path / "import.dsv");
     test_explicit_backup_selection(rom, temp.path / "explicit-backup.sav");
