@@ -177,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--build-dir", type=Path, help="default: build/game, or build/win-zig with --runtime-only")
     p.add_argument("--sdk-deps", type=Path, default=ROOT / "build" / "win-deps")
     p.add_argument("--runtime-only", action="store_true", help="build/test the public runtime without any image")
-    p.add_argument("--config", default="RelWithDebInfo")
+    # Release: the same generated code is ~7% faster and the executable ~10x smaller than with
+    # RelWithDebInfo (outputs identical); pass --config RelWithDebInfo when you need symbols.
+    p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
     args = p.parse_args(argv)
     if not args.runtime_only and args.rom is None:
