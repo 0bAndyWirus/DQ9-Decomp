@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string_view>
 #include "dsr/periph.h"
 
 namespace dsr {
@@ -58,6 +59,10 @@ struct GuestAbiConfig {
 // An empty path or missing file returns an unconfigured layout (missing files
 // log a warning). Existing unreadable, malformed, or incomplete files throw.
 GuestAbiConfig load_guest_abi_config(const std::filesystem::path& path);
+
+// Parses a backup chip name as used by [cartridge] backup_type: auto, eeprom512b, eeprom8k, eeprom64k,
+// eeprom128k, flash256k, flash512k, flash1m, flash8m. Throws std::invalid_argument otherwise.
+BackupType parse_backup_type(std::string_view name);
 std::filesystem::path guest_abi_config_path_from_environment();
 
 } // namespace dsr

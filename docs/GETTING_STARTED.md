@@ -4,7 +4,7 @@ This repository does **not** contain the game. You need your own legally obtaine
 
 ## Status (verified)
 
-Built from a fresh clone on Linux with a local EU image, the program starts, plays the Square Enix and video-codec logos, and reaches the opening credits with the **START** prompt in all five languages (checked headless at frame 1,500 with `--language en|fr|de|es|it`). **Not verified:** play beyond that point, Windows (a build kit exists and is built by CI, but the author has not run a game on Windows), Steam Deck, audio quality, or saves. Treat this as an early experimental build, not a finished port.
+Built from a fresh clone on Linux with a local EU image, the program starts, plays the Square Enix and video-codec logos, and reaches the opening credits with the **START** prompt in all five languages (checked headless at frame 1,500 with `--language en|fr|de|es|it`). With the cartridge backup chip set correctly (see [If something fails](#if-something-fails): `--backup-type eeprom64k` for this release), a scripted 28,500-frame headless run goes on past the title menu through the opening sequence into a field scene, and its per-frame output was identical to a separate local development build (an observation about scripted runs, not a playability claim). **Not verified:** interactive play, play beyond that point, Windows (a build kit exists and is built by CI, but the author has not run a game on Windows), Steam Deck, audio quality, or saves. Treat this as an early experimental build, not a finished port.
 
 ## What you need
 
@@ -75,7 +75,7 @@ Pad combos never pass the combo buttons to the game while held. With `--debug-to
 
 ## Optional hi-res 3D (experimental, off by default)
 
-`--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is covered by unit tests, and was also run on a separate local development build that reaches real 3D scenes: over a 28,500-frame input script the native frame hashes were identical at scales 1 and 2, and sampled 2x frames were visibly sharper in 3D areas (about +50% frame time at 2x on the author's machine). The public build here reaches only the opening credits, so you will not see 3D scenes in it yet, and hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm`.
+`--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is covered by unit tests. With the cartridge backup chip set correctly (see below) the public build reaches real 3D scenes in a scripted run: over 28,500 frames the native frame hashes are identical at scales 1 and 2, and sampled 2x frames differ from a plain upscale of the native frame in 3D areas (both when the 3D engine drives the top screen and when it drives the bottom screen); inspection showed visibly sharper edges and textures, at about +50% frame time at 2x on the author's machine. Hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm` and `frame_NNNN_bottom_hires.ppm`.
 
 ## Saves
 
@@ -84,7 +84,7 @@ The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written 
 ## Known limits
 
 - No save states: guest threads run on host fibers, which cannot be serialized. In-game saves use the cartridge save file only.
-- Hi-res 3D has no hardware parity claim and has been inspected only on a separate development build (not reachable in the public build yet); edge marking and dots stay one output pixel wide at higher scales.
+- Hi-res 3D has no hardware parity claim; edge marking and dots stay one output pixel wide at higher scales.
 - Windows: the kit's ROM run is unverified; Steam Deck is unverified; play beyond the opening credits is unverified.
 - Performance figures in the release notes are from one machine and one headless run; they are not general claims.
 
@@ -98,6 +98,7 @@ The European release contains English, French, German, Spanish and Italian. Pass
 - Missing Python module: activate the virtual environment and re-run the `pip install` line.
 - `cannot use ...: does not look like a Nintendo DS image` / `image is truncated`: the file is not a complete DS image (wrong file, partial copy). The launcher shows the same warning next to Launch.
 - `The existing workspace ... was extracted from a different image` (or `has no record of the image`): the build keeps the extracted data of one image under `extracted/workspace`. To build a different image, or one extracted by an older script version, run the printed `python tools/build_port.py --rebuild-workspace --rom ...` command; it removes only the tool's own `extract`, `config` and `build` folders there and the generated code, never your image or other folders.
+- Title screen says **"The quick save log is corrupted"** on a fresh save: the emulated cartridge backup chip does not match the one the game expects. Without a hint the runtime assumes a 512 KB flash chip (or infers the chip from the size of an existing save file). For this release use the 64 KB EEPROM setting: run `dq9 ... --backup-type eeprom64k`, or add `[cartridge]` / `backup_type = eeprom64k` to `build/gen/abi.ini` (or build with `python tools/build_port.py --rom ... --backup-type eeprom64k`). The save file size changes with the chip, so the old save is ignored and kept as `dq9.sav.bak` on the next save. Valid names: `auto`, `eeprom512b`, `eeprom8k`, `eeprom64k`, `eeprom128k`, `flash256k`, `flash512k`, `flash1m`, `flash8m`.
 - Blank screens: you forgot `--abi-config build/gen/abi.ini`.
 - Anything else: open an issue with your OS, compiler version and the last 30 lines of output. **Do not attach game files, saves or screenshots of the game.**
 
