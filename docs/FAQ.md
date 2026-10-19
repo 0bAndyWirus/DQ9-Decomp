@@ -16,7 +16,7 @@ The European multilingual release of *Dragon Quest IX: Sentinels of the Starry S
 
 ## Is the game supported on Linux, Windows or Steam Deck?
 
-Those are host targets, not validated compatibility claims. Linux desktop is the immediate development target. Windows has native and cross-build configurations, but neither cross-linking nor generic desktop tests establish Windows or Steam Deck hardware compatibility; Steam Deck still needs separate device, controller, display, audio and performance validation. Details: [charter](PROJECT_CHARTER.md#host-targets), [Windows](BUILDING_WINDOWS.md), [Steam Deck](../packaging/steamdeck/README.md).
+Those are host targets, not validated compatibility claims. Linux desktop is the immediate development target. Windows has native and cross-build configurations, but neither cross-linking nor generic desktop tests establish Windows or Steam Deck hardware compatibility; Steam Deck still needs separate device, controller, display, audio and performance validation. Windows has a source build kit (`BUILD-DQ9.bat` / `PLAY-DQ9.bat`, no game or binary included) that builds on your own PC from your own `.nds`; CI builds its ROM-free runtime with the same Zig toolchain, but the author has not run a game on Windows. Details: [charter](PROJECT_CHARTER.md#host-targets), [Windows](BUILDING_WINDOWS.md), [Steam Deck](../packaging/steamdeck/README.md).
 
 ## What can I build or test without game data?
 
