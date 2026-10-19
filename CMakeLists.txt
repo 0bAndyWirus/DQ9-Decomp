@@ -39,10 +39,19 @@ function(dsr_copy_sdl2_runtime target)
     if(NOT DSR_SDL2_RUNTIME_DLL OR NOT EXISTS "${DSR_SDL2_RUNTIME_DLL}")
       message(FATAL_ERROR "Set DSR_SDL2_RUNTIME_DLL to the matching SDL2.dll")
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${DSR_SDL2_RUNTIME_DLL}"
-              "$<TARGET_FILE_DIR:${target}>"
-      VERBATIM)
+    # Several executables in one directory used to run copy_if_different on the same SDL2.dll
+    # concurrently, which intermittently failed ("file in use") under parallel builds. One copy
+    # target per directory, built before every executable that lives there.
+    string(MD5 dsr_dir_key "${CMAKE_CURRENT_BINARY_DIR}")
+    set(dsr_copy_target dsr_sdl2_runtime_${dsr_dir_key})
+    if(NOT TARGET ${dsr_copy_target})
+      add_custom_target(${dsr_copy_target}
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${target}>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${DSR_SDL2_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:${target}>"
+        VERBATIM)
+    endif()
+    add_dependencies(${target} ${dsr_copy_target})
   endif()
 endfunction()
 # A separately supplied generated-code directory (never committed).
