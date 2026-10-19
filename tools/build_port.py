@@ -354,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
     exe = args.build_dir / "game" / executable_name("dq9")
     print(f"built {exe} (local only; never distribute)")
     print("run: " + launch_hint(exe, rom, abi))
+    if args.backup_type == "auto":
+        print("note: if a fresh save shows \"The quick save log is corrupted\" on the title screen, the cartridge backup chip "
+              "guess is wrong: add --backup-type eeprom64k to the run command (see docs/GETTING_STARTED.md).")
     return 0
 
 
