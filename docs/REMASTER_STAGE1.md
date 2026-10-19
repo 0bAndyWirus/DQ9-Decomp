@@ -8,7 +8,7 @@ Keep `dsr::Machine` as the simulation owner. Presentation can display native sof
 
 Capture a coherent frame on the Machine-owner thread after `run_frame()`. Existing GPU arrays are live storage, not immutable cross-thread objects. Copy any data that must outlive its view into preallocated renderer-owned slots. A bounded frame handoff may drop/coalesce presentation frames; it must never advance simulation faster or stall guest execution for GPU readback.
 
-A game host requires a separately supplied generated-code directory and an already locally available compatible image. No end-to-end generator workflow or game binaries are shipped.
+A game host requires a separately supplied generated-code directory and an already locally available compatible image. `tools/build_port.py` runs the local pipeline (currently not bootable); no game binaries are shipped.
 
 ## 2. Existing draw-data APIs
 

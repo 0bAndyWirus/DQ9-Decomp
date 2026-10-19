@@ -36,6 +36,35 @@ The supplied fields cover:
 `auto` infers capacity from a supported existing save size and otherwise defaults
 to flash. There is no cartridge-title signature database.
 
+### Local structural analysis
+
+`tools/derive_abi_config.py` analyzes the extracted images and generated manifests
+with Capstone. It recognizes register-frame save/restore behavior, IRQ alarm and
+ready-list handling, and transfers to the Nintendo DS math registers. Names in
+the manifest are not treated as evidence. Run it after manifest generation:
+
+```sh
+python tools/derive_abi_config.py --report build/gen/abi-report.json
+```
+
+`tools/build_port.py --derive-abi` requests the same optional analysis. A successful
+run writes `build/gen/abi.ini` and prints its exact `--abi-config` argument; it
+never launches or configures the host automatically. Generated configurations
+and evidence are private image-derived data and must not be published.
+
+The analyzer deliberately fails without writing an INI when any required active
+field is unresolved or a structural match is ambiguous. The optional JSON report
+identifies each unresolved field; active layout values are never guessed.
+
+Two explicit host policies are documented in comments in the generated INI.
+Both stack-bound offsets are zero, disabling optional bounds checks. This loses
+the ARM9 stack-range and overlap diagnostics available with an independently
+verified stack layout; it does not change guest scheduling. When math-state
+preservation is disabled, all required-but-unused math-layout offsets are zero.
+Neither policy claims to recover a guest structure layout. Generating a complete
+configuration also does not guarantee boot or gameplay: unavailable compiled
+entries and other independent runtime limitations can still prevent progress.
+
 ## Supported override contract
 
 Ordinary ready/blocked scheduling, priorities, and mutexes remain guest code.
