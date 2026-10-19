@@ -72,6 +72,10 @@ Pad combos never pass the combo buttons to the game while held. With `--debug-to
 
 `--gpu3d-scale N` (1-4), the `gpu3d_scale` setting or F7 re-renders the 3D scene at N times the native resolution and composes it over the top screen (or over the bottom screen when the DS routes the 3D engine there). Scale 1 is the default and its output is bit-identical to builds without this feature (checked on 3,000-frame headless runs in all five languages and a 28,500-frame input script; hash files identical). The scaled render is verified by unit tests only: the public build currently does not reach a scene with 3D, so no hi-res game frame has been inspected, and hi-res output is not claimed to match the hardware. Headless runs with `--dump-frames` also write `frame_NNNN_top_hires.ppm`.
 
+## Saves
+
+The cartridge save (`dq9.sav` in your data folder, or `--save PATH`) is written atomically on exit and, in a window, automatically every 30 seconds while it has unsaved changes (`--autosave-frames N`, 0 disables; default off with `--headless`). A crash, kill or power loss therefore costs at most about 30 seconds of progress instead of the whole session. This is not a save state; see the limits below.
+
 ## Known limits
 
 - No save states: guest threads run on host fibers, which cannot be serialized. In-game saves use the cartridge save file only.

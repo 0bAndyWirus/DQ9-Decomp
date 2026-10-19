@@ -75,6 +75,9 @@ struct Options {
     bool debug_selftest = false;
     bool debug_workflow_selftest = false;
     bool capture_memory_dumps = true;
+    // Flush the cartridge save every N emulated frames (a no-op while it is unchanged), so a crash,
+    // kill or power loss costs at most N frames of progress. -1: 30 s interactively, off headless.
+    std::int64_t autosave_frames = -1;
     int gpu3d_scale = 1; // optional hi-res 3D overlay scale, 1-4 (1 = off)
     bool gpu3d_scale_given = false;
 };
@@ -99,6 +102,8 @@ struct Options {
                  "--gpu3d-scale N (1-4, default 1 = off) re-renders the 3D scene at N times the native\n"
                  "resolution and composes it over the top screen; with --dump-frames it also writes\n"
                  "frame_NNNN_top_hires.ppm. Hash files and the native frame dumps stay 256x192.\n"
+                 "--autosave-frames N flushes the save every N emulated frames (default 1800 = 30 s in a\n"
+                 "window, off with --headless; 0 disables). The save is also written on exit.\n"
                  "--pause-at-frame N replays through zero-based frame N without pacing/audio, then pauses (or stops headless).\n"
                  "--rtc-epoch seconds and --rtc-timezone-offset minutes freeze RTC to emulated time.\n");
     std::exit(code);
@@ -207,6 +212,10 @@ Options parse_args(int argc, char** argv) {
             if (n < 1 || n > 4) usage(2);
             o.gpu3d_scale = static_cast<int>(n);
             o.gpu3d_scale_given = true;
+        }
+        else if (a == "--autosave-frames") {
+            o.autosave_frames = std::stoll(std::string(value()));
+            if (o.autosave_frames < 0) usage(2);
         }
         else if (a == "--launcher") o.launcher = true;
         else if (a == "--debug-tool") o.debug_tool = true;
@@ -719,6 +728,8 @@ int main(int argc, char** argv) {
             frontend->present(machine.gpu2d().screen_top(), machine.gpu2d().screen_bottom());
         }
     };
+    const std::int64_t autosave_every = opt.autosave_frames >= 0 ? opt.autosave_frames
+                                       : (opt.headless ? 0 : 1800);
     bool held_fast_forward_was_active = false;
     bool focus_pause_was_active = false;
     const std::filesystem::path screenshot_dir =
@@ -1379,6 +1390,7 @@ int main(int argc, char** argv) {
             if (wanted != machine.gpu3d().output_scale()) machine.gpu3d().set_output_scale(wanted);
         }
         session.step(in);
+        if (autosave_every > 0 && (frame + 1) % autosave_every == 0) session.flush_save();
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)
                 workflow_fail("scripted input replaced the live DS A press after the replay target");
