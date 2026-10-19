@@ -181,6 +181,18 @@ public:
                     refresh_controllers();
                     continue;
                 }
+                if (event.type == SDL_DROPFILE) {
+                    // Dropping an image file on the window sets the ROM path.
+                    if (event.drop.file != nullptr) {
+                        config_.rom_path = event.drop.file;
+                        rom_text_.set(config_.rom_path);
+                        text_field_ = -1;
+                        page_ = 2;
+                        focus_ = 0;
+                        SDL_free(event.drop.file);
+                    }
+                    continue;
+                }
                 if (event.type == SDL_TEXTINPUT && text_field_ >= 0) {
                     text_buffer(text_field_).insert(event.text.text);
                     continue;

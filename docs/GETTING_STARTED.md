@@ -55,7 +55,7 @@ Defaults for the SDL window (rebind them on the launcher's HOTKEYS page or in `f
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Fast-forward (4x, unpaced) | hold **Tab** (`key_fast_forward`) | hold Select + R |
-| Screenshot (both screens, PNG in `<save folder>/screenshots/`) | **F12** (`key_screenshot`) | Select + Start |
+| Screenshot (both screens, PNG in `<save folder>/screenshots/`; at the hi-res size while the hi-res 3D overlay is showing) | **F12** (`key_screenshot`) | Select + Start |
 | Hi-res 3D scale 1x -> 2x -> 3x -> 4x -> 1x | **F7** (`key_gpu3d_scale`) | - |
 | Volume down / up (10% steps) | **-** / **=** (`key_volume_down`, `key_volume_up`; setting `volume=0-100`, also on the Options page) | - |
 | Mute / unmute | **M** (`key_mute`) | - |

@@ -76,6 +76,33 @@ bool Session::compose_hires(std::uint32_t* out, int scale, bool* on_top) const {
     return true;
 }
 
+bool Session::compose_both_hires(std::uint32_t* out, int scale) const {
+    constexpr int kWidth = 256, kHeight = 192;
+    if (scale <= 1) return false;
+    const std::size_t width = static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(scale);
+    const std::size_t rows = static_cast<std::size_t>(kHeight) * static_cast<std::size_t>(scale);
+    std::vector<std::uint32_t> scaled(width * rows);
+    bool on_top = true;
+    if (!compose_hires(scaled.data(), scale, &on_top)) return false;
+    const Gpu2D& gpu2d = machine_.gpu2d();
+    std::uint32_t* const top_out = out;
+    std::uint32_t* const bottom_out = out + width * rows;
+    const auto upscale = [&](const std::uint32_t* native, std::uint32_t* destination) {
+        for (std::size_t y = 0; y < rows; ++y)
+            for (std::size_t x = 0; x < width; ++x)
+                destination[y * width + x] = native[(y / static_cast<std::size_t>(scale)) * kWidth +
+                                                    x / static_cast<std::size_t>(scale)];
+    };
+    if (on_top) {
+        std::copy(scaled.begin(), scaled.end(), top_out);
+        upscale(gpu2d.screen_bottom(), bottom_out);
+    } else {
+        upscale(gpu2d.screen_top(), top_out);
+        std::copy(scaled.begin(), scaled.end(), bottom_out);
+    }
+    return true;
+}
+
 void Session::flush_save() {
     if (GameCard* card = machine_.game_card()) card->flush_save();
 }

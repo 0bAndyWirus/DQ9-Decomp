@@ -50,6 +50,9 @@ public:
     // scale latched at the start of the last step(), or no pixel of the frame is a 3D pixel; present the
     // native screens then.
     bool compose_hires(std::uint32_t* out, int scale, bool* on_top) const;
+    // Both screens stacked (top above bottom) at 256N x 384N: the 3D screen from compose_hires, the other
+    // one nearest-neighbour from the native frame. Same return contract as compose_hires.
+    bool compose_both_hires(std::uint32_t* out, int scale) const;
     Machine& machine() { return machine_; }
     const Machine& machine() const { return machine_; }
 

@@ -1034,6 +1034,13 @@ struct Gpu2D::Impl {
             if (object_y >= 192) {
                 object_y -= 256;
             }
+            // Most objects miss this line; reject them before the affine matrix reads and the
+            // bitmap/tile setup below. Same wrapped-row test as the per-row loop.
+            if (!((screen_y - object_y >= 0 && screen_y - object_y < bound_height) ||
+                  (screen_y - 256 - object_y >= 0 && screen_y - 256 - object_y < bound_height) ||
+                  (screen_y + 256 - object_y >= 0 && screen_y + 256 - object_y < bound_height))) {
+                continue;
+            }
             const bool bitmap = mode == 3;
             const bool color256 = (attr0 & (1U << 13U)) != 0U;
             const std::uint32_t tile_number = attr2 & 0x3FFU;
@@ -1449,6 +1456,9 @@ struct Gpu2D::Impl {
                 dst_three_d = source.three_d && source.color.alpha == 31U && !blends &&
                               (brightness == 0U || evy == 0U);
             };
+            const Pixel& object = obj_pixels[xi];
+            const bool object_visible = object.opaque && (mask & (1U << 4U)) != 0U;
+            const int object_priority = object.priority;
             for (int priority = 3; priority >= 0; --priority) {
                 for (std::uint8_t i = 0; i < bg_order_count[priority]; ++i) {
                     const std::uint8_t bg = bg_order[priority][i];
@@ -1457,8 +1467,7 @@ struct Gpu2D::Impl {
                         composite(pixel, bg);
                     }
                 }
-                const Pixel& object = obj_pixels[xi];
-                if (object.opaque && object.priority == priority && (mask & (1U << 4U)) != 0U) {
+                if (object_visible && object_priority == priority) {
                     composite(object, kObjLayer);
                 }
             }

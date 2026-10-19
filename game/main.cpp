@@ -1373,7 +1373,16 @@ int main(int argc, char** argv) {
             if (held_fast_forward_was_active && !frontend_input.fast_forward) frontend->clear_audio_queue();
             held_fast_forward_was_active = frontend_input.fast_forward;
             if (frontend_input.screenshot_requested) {
-                const auto saved = dq9::save_screenshot(screenshot_dir, machine);
+                // With the hi-res 3D overlay active the screenshot matches what the window shows.
+                const int shot_scale = machine.gpu3d().output_scale();
+                std::vector<std::uint32_t> hires_shot;
+                if (shot_scale > 1) {
+                    hires_shot.resize(static_cast<std::size_t>(256 * shot_scale) * (384 * shot_scale));
+                    if (!session.compose_both_hires(hires_shot.data(), shot_scale)) hires_shot.clear();
+                }
+                const auto saved = hires_shot.empty()
+                    ? dq9::save_screenshot(screenshot_dir, machine)
+                    : dq9::save_screenshot_pixels(screenshot_dir, hires_shot, 256 * shot_scale, 384 * shot_scale);
                 if (saved.empty()) std::fprintf(stderr, "Screenshot failed: %s\n", screenshot_dir.string().c_str());
                 else {
                     std::fprintf(stderr, "Screenshot saved: %s\n", saved.string().c_str());
