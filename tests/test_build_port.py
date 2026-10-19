@@ -155,6 +155,11 @@ class BuildPortTests(unittest.TestCase):
             # --rebuild-workspace clears the extraction and the generated code of the old image.
             generated.mkdir()
             (generated / "chunk_999.cpp").write_text("old", encoding="utf-8")
+            # A custom workspace without our fingerprint is not provably ours: even --rebuild refuses.
+            with self.assertRaises(SystemExit):
+                build_port.ensure_workspace_matches_rom(workspace, rom_b, True, generated)
+            self.assertTrue((workspace / "config/arm9/config.yaml").is_file())
+            (workspace / build_port.WORKSPACE_MARKER).write_text(digest_a + "\n", encoding="utf-8")
             digest_b = build_port.ensure_workspace_matches_rom(workspace, rom_b, True, generated)
             self.assertNotEqual(digest_a, digest_b)
             self.assertFalse((workspace / "config").exists())
