@@ -4,6 +4,12 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## Unreleased
+
+- **Verification note:** after replaying the scripted input into the first in-game area, a short live windowed session on a
+  virtual display responded to keyboard input (the in-game menu opened and closed, the character moved). Key presses must last
+  at least a few frames, as on the DS itself, which polls its keys periodically; a synthetic tap shorter than one frame is missed.
+
 ## v0.2.3
 
 - **Godot host:** the bottom bar is a dark toolbar with tooltips and a hotkey hint, and the on-screen statistics have an outline so they stay readable over bright scenes.
