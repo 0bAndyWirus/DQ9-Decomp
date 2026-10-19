@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
+#include <bit>
+#include <type_traits>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -35,6 +38,11 @@ constexpr std::uint32_t kScreenHeight = 192U;
 constexpr std::uint32_t kPixelsPerFrame = kScreenWidth * kScreenHeight;
 
 constexpr std::uint32_t load_le(const std::uint8_t* p, int width) {
+    if (!std::is_constant_evaluated() && std::endian::native == std::endian::little) {
+        // One unaligned load instead of a byte-assembly loop the optimizer may not merge.
+        if (width == 16) { std::uint16_t v; std::memcpy(&v, p, sizeof v); return v; }
+        if (width == 32) { std::uint32_t v; std::memcpy(&v, p, sizeof v); return v; }
+    }
     std::uint32_t value = 0;
     for (int i = 0; i < width / 8; ++i) {
         value |= static_cast<std::uint32_t>(p[i]) << (i * 8);
@@ -755,6 +763,11 @@ struct Gpu2D::Impl {
             const unsigned local_y = (source_y & 7U) ^ ((entry & 0x800U) != 0U ? 7U : 0U);
             const auto row = source.text_row<Color256>(
                 char_base + (entry & 0x3FFU) * (row_bytes * 8U) + local_y * row_bytes);
+            if (row == 0U) {
+                // A fully transparent tile row (every index 0) writes nothing.
+                x += count;
+                continue;
+            }
             const unsigned flip_x = (entry & 0x400U) != 0U ? 7U : 0U;
             const unsigned palette_base = Color256 && !Extended ? 0U
                 : (entry >> 12U) * (Color256 ? 256U : 16U);
@@ -1359,21 +1372,33 @@ struct Gpu2D::Impl {
                 front_bits[i] = static_cast<std::uint8_t>(1U << front_order[i]);
             }
             const Pixel* const object_pixels = obj_pixels.data();
-            for (std::size_t xi = 0; xi < kScreenWidth; ++xi) {
-                const std::uint8_t mask = masks[xi];
-                const Pixel& object = object_pixels[xi];
-                const bool has_object = object.opaque && (mask & (1U << 4U)) != 0U;
-                const Pixel* chosen_source = has_object ? &object : nullptr;
-                for (unsigned i = 0; i < front_count; ++i) {
-                    const Pixel& pixel = front_pixels[i][xi];
-                    if (pixel.opaque && (mask & front_bits[i]) != 0U) {
-                        chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
-                        break;
+            // Without windows every layer is visible everywhere (masks are all 0x3F), and with
+            // OBJ disabled the object line is clear; both tests can be compiled away.
+            const auto compose_line = [&](auto windowed, auto with_objects) {
+                for (std::size_t xi = 0; xi < kScreenWidth; ++xi) {
+                    const std::uint8_t mask = windowed ? masks[xi] : static_cast<std::uint8_t>(0x3FU);
+                    const Pixel& object = object_pixels[xi];
+                    const bool has_object = with_objects && object.opaque && (mask & (1U << 4U)) != 0U;
+                    const Pixel* chosen_source = has_object ? &object : nullptr;
+                    for (unsigned i = 0; i < front_count; ++i) {
+                        const Pixel& pixel = front_pixels[i][xi];
+                        if (pixel.opaque && (!windowed || (mask & front_bits[i]) != 0U)) {
+                            chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
+                            break;
+                        }
                     }
+                    output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
+                    mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
+                        chosen_source->three_d && chosen_source->color.alpha == 31U);
                 }
-                output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
-                mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
-                    chosen_source->three_d && chosen_source->color.alpha == 31U);
+            };
+            const bool windowed = (dispcnt & 0xE000U) != 0U;
+            using Yes = std::true_type;
+            using No = std::false_type;
+            if (windowed) {
+                if (objects_enabled) compose_line(Yes{}, Yes{}); else compose_line(Yes{}, No{});
+            } else {
+                if (objects_enabled) compose_line(No{}, Yes{}); else compose_line(No{}, No{});
             }
         }
         // The copy-only case above has already produced the whole line.

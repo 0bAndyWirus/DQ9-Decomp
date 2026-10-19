@@ -25,8 +25,10 @@ constexpr int kW = 1024;
 constexpr int kTabPitch = 186; // five tabs across the 928 px panel
 constexpr int kH = 720;
 constexpr UiRect kLaunchButton{758, 642, 218, 50};
-constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM AND SAVE", "OPTIONS", "HOTKEYS"};
+constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM / SAVE", "OPTIONS", "HOTKEYS"};
 constexpr int kHotkeyPage = 4;
+constexpr int kOptionCount = 14;
+constexpr int kOptionPitch = 33;
 // Keyboard hotkeys handled by the SDL frontend outside the DS button map.
 struct HotkeyRow { std::string_view name; int frontend_detail::ConfigData::*field; };
 constexpr std::array<HotkeyRow, 9> kHotkeyRows{{
@@ -248,7 +250,8 @@ private:
     TextBuffer& text_buffer(int field) { return field == 0 ? rom_text_ : save_text_; }
     void move_focus(int delta) {
         if (text_field_ >= 0) return;
-        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 3 : page_ == kHotkeyPage ? kHotkeyCount + 1 : 13;
+        if (page_ == 0) { adjust(delta); return; } // the language page is a single choice list
+        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 3 : page_ == kHotkeyPage ? kHotkeyCount + 1 : kOptionCount;
         focus_ = (focus_ + delta + count) % count;
     }
     void adjust(int delta) {
@@ -264,6 +267,7 @@ private:
             case 5: config_.frontend.audio_buffer_ms = std::clamp(config_.frontend.audio_buffer_ms + delta * 20, 20, 500); break;
             case 9: config_.frontend.stick_deadzone = std::clamp(config_.frontend.stick_deadzone + delta * 1000, 0, 30000); break;
             case 11: cycle_controller(delta); break;
+            case 13: config_.frontend.gpu3d_scale = (config_.frontend.gpu3d_scale - 1 + delta + 4) % 4 + 1; break;
             default: toggle_option(); break;
             }
         } else if (page_ == 2 && focus_ == 2) detect_paths();
@@ -355,7 +359,10 @@ private:
             x >= kLaunchButton.x && x < kLaunchButton.x + kLaunchButton.w) {
             accepted = true; running = false; return;
         }
-        if (page_ == 0 && y >= 250 && y < 400) { adjust(x < kW / 2 ? -1 : 1); return; }
+        if (page_ == 0 && y >= 250 && y < 250 + 5 * 50) {
+            config_.language = std::string(kLanguages[static_cast<std::size_t>((y - 250) / 50)]);
+            return;
+        }
         if (page_ == 1 && y >= 172 && y < 172 + 12 * 34) {
             const int row = (y - 172) / 34;
             focus_ = row;
@@ -378,8 +385,8 @@ private:
         if (page_ == 2 && y >= 186 && y < 244) { focus_ = 0; activate(); return; }
         if (page_ == 2 && y >= 298 && y < 356) { focus_ = 1; activate(); return; }
         if (page_ == 2 && y >= 405 && y < 465) { focus_ = 2; detect_paths(); return; }
-        if (page_ == 3 && y >= 147 && y < 147 + 13 * 35) {
-            focus_ = (y - 147) / 35;
+        if (page_ == 3 && y >= 147 && y < 147 + kOptionCount * kOptionPitch) {
+            focus_ = (y - 147) / kOptionPitch;
             if (focus_ == 2 || focus_ == 3 || focus_ == 4 || focus_ == 6 || focus_ == 7 ||
                 focus_ == 8 || focus_ == 10 || focus_ == 12)
                 toggle_option();
@@ -399,6 +406,7 @@ private:
         else if (page_ == kHotkeyPage) draw_hotkeys();
         else draw_options();
         canvas_.text(48, 633, "F1-F4 PAGES   TAB NEXT PAGE (5: HOTKEYS)   ARROWS NAVIGATE   ENTER SELECT   ESC CANCEL", kMuted, 1);
+        draw_rom_status();
         canvas_.button(kLaunchButton, "LAUNCH (F5)", false);
         const char* capture_path = std::getenv("DSR_LAUNCHER_CAPTURE");
         if (!capture_done_ && capture_path && *capture_path) {
@@ -417,10 +425,13 @@ private:
     void draw_language() {
         canvas_.text(86, 174, "CHOOSE THE LANGUAGE USED BY THE GAME.", kWhite, 2);
         canvas_.text(86, 220, "LANGUAGE", kMuted, 1);
-        canvas_.button({86, 262, 852, 72}, language_name(config_.language), focus_ == 0);
-        canvas_.text(86, 370, "LANGUAGES: ENGLISH / FRENCH / GERMAN / SPANISH / ITALIAN", kWhite, 1);
-        canvas_.text(86, 422, "LEFT/RIGHT OR D-PAD CHANGES THE SELECTION.", kMuted, 1);
-        canvas_.text(86, 478, "FIRST RUN USES DEFAULT KEYS, VERTICAL SCREENS, AND AUTOMATIC ROM DETECTION.", kMuted, 1);
+        for (int i = 0; i < 5; ++i) {
+            const bool selected = language_index(config_.language) == i;
+            canvas_.button({86, 250 + i * 50, 852, 42}, language_name(kLanguages[static_cast<std::size_t>(i)]) +
+                           (selected ? "   (selected)" : ""), selected);
+        }
+        canvas_.text(86, 522, "CLICK A LANGUAGE, OR USE UP/DOWN/LEFT/RIGHT OR THE D-PAD.", kMuted, 1);
+        canvas_.text(86, 550, "FIRST RUN USES DEFAULT KEYS, VERTICAL SCREENS, AND AUTOMATIC ROM DETECTION.", kMuted, 1);
     }
     void draw_controls() {
         canvas_.text(72, 151, "DS BUTTON", kMuted, 1);
@@ -468,8 +479,26 @@ private:
         canvas_.text(86, 518, "THE DEFAULT SAVE IS <USER DATA DIRECTORY>/dq9.sav.", kMuted, 1);
         if (text_field_ >= 0) canvas_.text(86, 566, "EDIT TEXT; ENTER TO ACCEPT; ESC TO CANCEL.", UiColor{134, 216, 255, 255}, 1);
     }
+    // One-line readiness check next to the Launch button, so a missing ROM is visible before
+    // launching rather than as an error afterwards. Re-checked only when the path changes.
+    void draw_rom_status() {
+        const std::string& path = text_field_ == 0 ? rom_text_.value() : config_.rom_path;
+        if (path != rom_checked_path_) {
+            rom_checked_path_ = path;
+            std::error_code ec;
+            rom_found_ = !path.empty() &&
+                std::filesystem::is_regular_file(launcher_rom_path(host::path_from_utf8(path)), ec);
+        }
+        if (rom_found_) {
+            canvas_.text(48, 668, "ROM FOUND: " + elide_middle(path, 60), UiColor{120, 220, 140, 255}, 1);
+        } else {
+            canvas_.text(48, 660, rom_checked_path_.empty() ? "NO ROM SET." : "ROM NOT FOUND: " + elide_middle(rom_checked_path_, 56),
+                         UiColor{255, 176, 96, 255}, 1);
+            canvas_.text(48, 676, "OPEN THE ROM / SAVE PAGE (F3) TO SET ITS PATH OR AUTO-DETECT.", UiColor{255, 176, 96, 255}, 1);
+        }
+    }
     void draw_options() {
-        const std::array<std::string, 13> values{
+        const std::array<std::string, kOptionCount> values{
             layout_name(config_.frontend.layout),
             std::to_string(config_.frontend.window_scale) + "x",
             config_.frontend.fullscreen ? "ON" : "OFF",
@@ -482,18 +511,21 @@ private:
             std::to_string(config_.frontend.stick_deadzone),
             config_.frontend.dpad_from_stick ? "ON" : "OFF",
             selected_controller(),
-            config_.frontend.mouse_touch_enabled ? "ON" : "OFF"
+            config_.frontend.mouse_touch_enabled ? "ON" : "OFF",
+            config_.frontend.gpu3d_scale == 1 ? std::string("OFF (native 3D)")
+                                              : std::to_string(config_.frontend.gpu3d_scale) + "x (experimental)"
         };
-        constexpr std::array<std::string_view, 13> labels{
+        constexpr std::array<std::string_view, kOptionCount> labels{
             "Screen layout", "Window scale", "Fullscreen", "Integer scaling", "Linear filter",
             "Audio queue limit", "Debug annotation tool", "Frame-time overlay", "Capture RAM/VRAM dumps",
-            "Stick dead zone", "D-pad from left stick", "Controller device", "Mouse/touch input"
+            "Stick dead zone", "D-pad from left stick", "Controller device", "Mouse/touch input",
+            "Hi-res 3D scale"
         };
-        for (int i = 0; i < 13; ++i) {
-            const int y = 147 + i * 35;
-            canvas_.fill({72, y, 872, 33}, focus_ == i ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
-            canvas_.text(86, y + 9, labels[static_cast<std::size_t>(i)], kWhite, 1);
-            canvas_.text(684, y + 9, values[static_cast<std::size_t>(i)], UiColor{134, 216, 255, 255}, 1);
+        for (int i = 0; i < kOptionCount; ++i) {
+            const int y = 147 + i * kOptionPitch;
+            canvas_.fill({72, y, 872, kOptionPitch - 2}, focus_ == i ? UiColor{33, 70, 103, 255} : UiColor{20, 28, 42, 255});
+            canvas_.text(86, y + 8, labels[static_cast<std::size_t>(i)], kWhite, 1);
+            canvas_.text(684, y + 8, values[static_cast<std::size_t>(i)], UiColor{134, 216, 255, 255}, 1);
         }
     }
     static std::string layout_name(ScreenLayout layout) {
@@ -518,6 +550,8 @@ private:
     TextBuffer save_text_{4096};
     int text_field_ = -1;
     bool capture_done_ = false;
+    std::string rom_checked_path_;
+    bool rom_found_ = false;
 };
 } // namespace
 
@@ -589,7 +623,7 @@ bool capture_launcher_screenshots(const std::filesystem::path& directory) {
     if (SDL_Init(SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) return false;
     bool success = true;
     constexpr std::array<std::array<int, 2>, 4> sizes{{{{1024, 720}}, {{1280, 800}}, {{800, 600}}, {{3072, 1920}}}};
-    constexpr std::array<std::string_view, 4> pages{"language", "controls", "rom-save", "options"};
+    constexpr std::array<std::string_view, 5> pages{"language", "controls", "rom-save", "options", "hotkeys"};
     for (const auto& size : sizes) {
         const int width = size[0], height = size[1];
         SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_ARGB8888);
@@ -602,7 +636,7 @@ bool capture_launcher_screenshots(const std::filesystem::path& directory) {
         SDL_RenderSetLogicalSize(renderer, kW, kH);
         auto config = frontend_detail::default_config();
         Launcher launcher(renderer, config);
-        for (int page = 0; page < 4; ++page) {
+        for (int page = 0; page < static_cast<int>(pages.size()); ++page) {
             launcher.render_capture(page, false);
             const auto path = directory / "launcher" /
                 (std::to_string(width) + "x" + std::to_string(height)) /

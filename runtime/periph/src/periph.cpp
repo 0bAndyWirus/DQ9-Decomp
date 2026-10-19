@@ -865,6 +865,13 @@ void GameCard::reset() { impl_->reset(); }
 std::uint32_t GameCard::io_read(std::uint32_t addr, int width) {
     const int count = width_bytes(width);
     if (addr == kCardData) return impl_->read_card_data(count) & width_mask(count);
+    if (addr == kRomCtrl && count == 4) {
+        // The guest polls ROMCTRL for BUSY/DATA_READY; skip the bytewise loop for the full word.
+        std::uint32_t ctrl = impl_->rom_control_ & ~(kRomBusy | kRomDataReady);
+        if (impl_->transfer_active_) ctrl |= kRomBusy;
+        if (impl_->transfer_data_ready_) ctrl |= kRomDataReady;
+        return ctrl;
+    }
     std::uint32_t result = 0;
     for (int i = 0; i < count; ++i) {
         const std::uint32_t at = addr + static_cast<std::uint32_t>(i);
