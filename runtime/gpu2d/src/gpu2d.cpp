@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
+#include <bit>
 #include <type_traits>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +38,11 @@ constexpr std::uint32_t kScreenHeight = 192U;
 constexpr std::uint32_t kPixelsPerFrame = kScreenWidth * kScreenHeight;
 
 constexpr std::uint32_t load_le(const std::uint8_t* p, int width) {
+    if (!std::is_constant_evaluated() && std::endian::native == std::endian::little) {
+        // One unaligned load instead of a byte-assembly loop the optimizer may not merge.
+        if (width == 16) { std::uint16_t v; std::memcpy(&v, p, sizeof v); return v; }
+        if (width == 32) { std::uint32_t v; std::memcpy(&v, p, sizeof v); return v; }
+    }
     std::uint32_t value = 0;
     for (int i = 0; i < width / 8; ++i) {
         value |= static_cast<std::uint32_t>(p[i]) << (i * 8);
