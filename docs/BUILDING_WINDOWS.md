@@ -8,8 +8,9 @@ Targets are Windows 10/11 x64. Images, saves, generated game sources, captures, 
 
 The Windows kit contains **source and scripts only: no game or binary is included**.
 The first ROM run on Windows is unverified by the author. The `kit-smoke` CI job
-builds and tests the ROM-free runtime using Zig; only an actual green workflow
-run is evidence that those checks passed, not evidence of Windows gameplay.
+(a `windows-latest` runner) builds and tests the ROM-free runtime using Zig and
+packages the kit; it passed for v0.2.0. That is evidence for the toolchain and
+runtime tests, not for Windows gameplay.
 
 Requirements: Windows 10/11 x64, Python 3.10+ from
 [python.org](https://www.python.org/downloads/windows/) with **Add python.exe to PATH**

@@ -36,9 +36,10 @@ Protection-step legal note (from docs/GETTING_STARTED.md):
 Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
 The root copy of this note is accompanied by LEGAL.md in this kit.
 
-The first ROM run on Windows is unverified. The Windows kit's CI job builds
-and tests the ROM-free runtime with Zig; check the actual CI result before
-claiming that it passed. The author has not run a game on Windows.
+The first ROM run on Windows is unverified. The kit-smoke CI job on a GitHub
+windows-latest runner built and tested the ROM-free runtime with Zig and
+packaged this kit (it passed for this release). The author has not run a game
+on Windows.
 A cross-build or runtime test does not establish Windows game compatibility.
 
 See docs/BUILDING_WINDOWS.md for the Python build flow, Linux cross-builds,
