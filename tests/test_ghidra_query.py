@@ -18,6 +18,11 @@ class GhidraQueryTests(unittest.TestCase):
         (extract / "arm9").mkdir(parents=True)
         (extract / "arm9" / "arm9.bin").write_bytes(b"\0" * 16)
         (extract / "arm9" / "arm9.yaml").write_text("base_address: 0x08000000\n", encoding="utf-8")
+        # run() prepares a real PyGhidra environment from a local Ghidra install; these tests use
+        # a mocked Popen, so keep them independent of whether Ghidra is installed on this machine.
+        env_patcher = mock.patch.object(ghidra_query, "pyghidra_environment", return_value={})
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
         for target in ("EXTRACT", "SYMBOLS_ROOT"):
             patcher = mock.patch.object(ghidra_query, target, extract if target == "EXTRACT" else Path(temp.name) / "symbols")
             patcher.start()

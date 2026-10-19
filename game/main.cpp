@@ -252,6 +252,10 @@ Options parse_args(int argc, char** argv) {
             usage(2);
         }
     }
+    // Started without a ROM (for example by double-clicking the program): open the launcher, which
+    // remembers the ROM path and shows whether it can be used. Headless runs still need --rom.
+    if (o.rom.empty() && !o.launcher && !o.headless && !o.debug_selftest && !o.debug_workflow_selftest)
+        o.launcher = true;
     if (o.rom.empty() && !o.launcher && !o.debug_selftest && !o.debug_workflow_selftest) {
         std::fprintf(stderr, "dq9: no ROM given (--rom or $DQ9_ROM)\n");
         usage(2);
@@ -509,6 +513,11 @@ int main(int argc, char** argv) {
             dq9::workflow_test::close_virtual_controller(workflow_controller);
             SDL_Quit();
             return 77;
+        }
+        if (opt.rom.empty()) {
+            std::fprintf(stderr, "dq9: no ROM selected. Set its path on the launcher's ROM / SAVE page (or use Auto-detect), "
+                         "or pass --rom /absolute/path/to/game.nds.\n");
+            return 2;
         }
         std::fprintf(stderr, "dq9: ROM not found or not a regular file: %s\n"
                      "Relative ROM paths are searched in the working directory, config directory (%s), "

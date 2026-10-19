@@ -92,6 +92,10 @@ std::uint64_t guest_region_hash(Cpu* cpu, const DispatchRegionEntry& region) {
                  "[dsr] fatal: no recompiled %s entry for 0x%08x (caller 0x%08x, image FNV-1a64 0x%016llx)\n",
                  cpu->id == CpuId::Arm9 ? "ARM9" : "ARM7", target, caller,
                  static_cast<unsigned long long>(memory_hash));
+    std::fprintf(stderr,
+                 "[dsr] hint: the program reached code its generated tables do not contain. This usually means the image "
+                 "differs from the one tools/build_port.py was run on (another region or revision, or a modified file); "
+                 "rebuild with the exact file you are running.\n");
     std::fprintf(stderr, "[dsr] registers:");
     for (unsigned i = 0; i < 15; ++i)
         std::fprintf(stderr, " r%u=%08x", i, cpu->r[i]);

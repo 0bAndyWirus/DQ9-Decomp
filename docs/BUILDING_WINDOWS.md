@@ -23,7 +23,7 @@ BUILD-DQ9.bat "C:\path\game.nds"
 PLAY-DQ9.bat "C:\path\game.nds" en
 ```
 
-In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead.
+In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead. `PLAY-DQ9.bat` without arguments opens the launcher, which remembers your ROM path, language and options.
 The language is optional (default `en`); `fr`, `de`, `es` and `it` are also supported.
 The build creates `.venv`, installs the Python dependencies and Zig, downloads
 ds-decomp with a pinned SHA-256 check and the official SDL2 SDK, then generates
