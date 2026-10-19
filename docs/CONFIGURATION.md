@@ -61,6 +61,7 @@ Hotkeys (SDL scancodes; `0` to 511, anything else is ignored; see
 | `key_gpu3d_scale` | `64` (F7) | Cycle hi-res 3D scale |
 | `key_volume_down`, `key_volume_up` | `45`, `46` (`-`, `=`) | Volume in 10% steps |
 | `key_mute` | `16` (M) | Mute / unmute |
+| `key_pause` | `19` (P) | Pause / resume |
 
 If both `hotkey_swap` and `key_gpu3d_scale` are `64` (an older file that predates the hi-res key),
 the swap moves to F8.
