@@ -81,6 +81,17 @@ void run_abi_config_tests() {
                                     "[arm7]\n" + kSyntheticFields +
                                     "[cartridge]\n backup_type = eeprom64k ; explicit device\n");
     assert(config.arm9 && config.arm7 && config.backup_type == BackupType::Eeprom64K);
+    // The command-line override uses the same names as [cartridge] backup_type.
+    assert(parse_backup_type("auto") == BackupType::Auto && parse_backup_type("eeprom512b") == BackupType::Eeprom512B);
+    assert(parse_backup_type("eeprom8k") == BackupType::Eeprom8K && parse_backup_type("eeprom64k") == BackupType::Eeprom64K);
+    assert(parse_backup_type("eeprom128k") == BackupType::Eeprom128K && parse_backup_type("flash256k") == BackupType::Flash256K);
+    assert(parse_backup_type("flash512k") == BackupType::Flash512K && parse_backup_type("flash1m") == BackupType::Flash1M);
+    assert(parse_backup_type("flash8m") == BackupType::Flash8M);
+    for (const char* bad : {"", "EEPROM64K", "eeprom", "flash"}) {
+        bool rejected = false;
+        try { (void)parse_backup_type(bad); } catch (const std::invalid_argument&) { rejected = true; }
+        assert(rejected);
+    }
     for (const ThreadAbi* a : {&*config.arm9, &*config.arm7}) {
         assert(a->save == 0x02110000 && a->restore == 0x02110100 && a->continuation == 0x02110200);
         assert(a->irq_switch == 0x02120100 && a->irq_callback_lr == 0x02120200);

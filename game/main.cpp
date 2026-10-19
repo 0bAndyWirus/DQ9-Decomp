@@ -78,6 +78,7 @@ struct Options {
     // Flush the cartridge save every N emulated frames (a no-op while it is unchanged), so a crash,
     // kill or power loss costs at most N frames of progress. -1: 30 s interactively, off headless.
     std::int64_t autosave_frames = -1;
+    std::optional<std::string> backup_type; // overrides the abi config's [cartridge] backup_type
     int gpu3d_scale = 1; // optional hi-res 3D overlay scale, 1-4 (1 = off)
     bool gpu3d_scale_given = false;
 };
@@ -92,6 +93,8 @@ struct Options {
         "  --language en|fr|de|es|it\n"
         "  --abi-config PATH       INI written by tools/build_port.py (or $DQ9_ABI_CONFIG); without it the\n"
         "                          game stalls on blank screens\n"
+        "  --backup-type TYPE      cartridge backup chip: auto (default), eeprom512b, eeprom8k, eeprom64k,\n"
+        "                          eeprom128k, flash256k, flash512k, flash1m, flash8m; overrides the abi config\n"
         "  --launcher              show the settings launcher first\n"
         "  --gpu3d-scale N         experimental hi-res 3D overlay, 1-4 (default 1 = off)\n"
         "  --autosave-frames N     flush the save every N frames (default 1800 = 30 s in a window, off with\n"
@@ -208,6 +211,7 @@ Options parse_args(int argc, char** argv) {
         if (a == "--rom") o.rom = dsr::host::path_from_utf8(value());
         else if (a == "--save") o.save = dsr::host::path_from_utf8(value());
         else if (a == "--abi-config") o.abi_config = dsr::host::path_from_utf8(value());
+        else if (a == "--backup-type") o.backup_type = std::string(value());
         else if (a == "--language") o.language = parse_language(value());
         else if (a == "--headless") o.headless = true;
         else if (a == "--pause-at-frame") {
@@ -597,6 +601,7 @@ int main(int argc, char** argv) {
     mc.arm7_regions = dsr::gen_dispatch_regions_arm7();
     try {
         mc.guest_abi = dsr::load_guest_abi_config(opt.abi_config);
+        if (opt.backup_type) mc.guest_abi.backup_type = dsr::parse_backup_type(*opt.backup_type);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "dq9: %s\n", error.what());
         if (opt.debug_workflow_selftest) dq9::workflow_test::close_virtual_controller(workflow_controller);

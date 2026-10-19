@@ -20,6 +20,9 @@ import capstone
 from capstone.arm import ARM_OP_IMM, ARM_OP_MEM, ARM_OP_REG
 
 ROOT = Path(__file__).resolve().parent.parent
+# Names accepted by the runtime's [cartridge] backup_type (runtime/core/src/abi_config.cpp).
+BACKUP_TYPES = ('auto', 'eeprom512b', 'eeprom8k', 'eeprom64k', 'eeprom128k',
+                'flash256k', 'flash512k', 'flash1m', 'flash8m')
 FIELDS = (
     'save restore continuation irq_switch save_module restore_module irq_module '
     'thread_info alarm_queue irq_callback_lr context_cpsr_offset context_regs_offset '
@@ -295,6 +298,9 @@ def main(argv=None):
     parser.add_argument('--arm7-manifest', type=Path, default=ROOT / 'build/gen/arm7.manifest.json')
     parser.add_argument('--out', type=Path, default=ROOT / 'build/gen/abi.ini')
     parser.add_argument('--report', type=Path, help='optional private JSON evidence, including unresolved fields')
+    parser.add_argument('--backup-type', choices=BACKUP_TYPES, default='auto',
+                        help='cartridge backup chip to emulate; "auto" (default) writes no [cartridge] section and '
+                             'the runtime then infers it from an existing save file, else assumes flash512k')
     args = parser.parse_args(argv)
     report = {}
     try:
@@ -311,6 +317,8 @@ def main(argv=None):
         config = configparser.ConfigParser()
         for cpu, evidence in report.items():
             config[cpu] = {key: str(evidence['values'][key]) for key in FIELDS}
+        if args.backup_type != 'auto':
+            config['cartridge'] = {'backup_type': args.backup_type}
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.open('w') as stream:
             stream.write('; Host policy: stack_top_offset = stack_bottom_offset = 0 disables stack checks.\n')

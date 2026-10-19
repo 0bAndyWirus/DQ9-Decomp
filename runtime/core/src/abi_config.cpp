@@ -95,17 +95,26 @@ std::int32_t parse_signed(std::string_view text, std::size_t line) {
     return result;
 }
 
+constexpr std::array kBackupNames{"auto", "eeprom512b", "eeprom8k", "eeprom64k",
+                                  "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"};
+constexpr std::array kBackupTypes{BackupType::Auto, BackupType::Eeprom512B, BackupType::Eeprom8K,
+                                  BackupType::Eeprom64K, BackupType::Eeprom128K, BackupType::Flash256K,
+                                  BackupType::Flash512K, BackupType::Flash1M, BackupType::Flash8M};
+
 BackupType parse_backup(std::string_view text, std::size_t line) {
-    constexpr std::array names{"auto", "eeprom512b", "eeprom8k", "eeprom64k",
-                               "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"};
-    constexpr std::array types{BackupType::Auto, BackupType::Eeprom512B, BackupType::Eeprom8K,
-                              BackupType::Eeprom64K, BackupType::Eeprom128K, BackupType::Flash256K,
-                              BackupType::Flash512K, BackupType::Flash1M, BackupType::Flash8M};
-    for (std::size_t i = 0; i < names.size(); ++i)
-        if (text == names[i]) return types[i];
+    for (std::size_t i = 0; i < kBackupNames.size(); ++i)
+        if (text == kBackupNames[i]) return kBackupTypes[i];
     fail(line, "unknown backup_type");
 }
 } // namespace
+
+BackupType parse_backup_type(std::string_view name) {
+    for (std::size_t i = 0; i < kBackupNames.size(); ++i)
+        if (name == kBackupNames[i]) return kBackupTypes[i];
+    std::string expected;
+    for (const char* known : kBackupNames) expected += std::string(expected.empty() ? "" : ", ") + known;
+    throw std::invalid_argument("unknown backup type '" + std::string(name) + "' (expected one of: " + expected + ")");
+}
 
 GuestAbiConfig load_guest_abi_config(const std::filesystem::path& path) {
     if (path.empty()) return {};

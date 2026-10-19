@@ -1,4 +1,5 @@
 """Synthetic ARM encodings only; no extracted instructions or title layouts."""
+import configparser
 import contextlib
 import io
 import json
@@ -134,6 +135,28 @@ class ContextPatterns(unittest.TestCase):
             self.assertIn('disables stack checks', out.read_text())
             self.assertIn('unused math-layout offsets are explicitly 0', out.read_text())
             self.assertIn(str(out.resolve()), output.getvalue())
+
+    def test_backup_type_is_written_only_when_chosen(self):
+        values = {field: 0 for field in abi.FIELDS}
+        with tempfile.TemporaryDirectory() as directory:
+            plain, chosen = Path(directory) / 'plain.ini', Path(directory) / 'chosen.ini'
+            with patch.object(abi, 'load_functions', return_value=[]), patch.object(
+                abi, 'derive', return_value=(values, {})
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(abi.main(['--out', str(plain)]), 0)
+                self.assertEqual(abi.main(['--out', str(chosen), '--backup-type', 'eeprom64k']), 0)
+            self.assertNotIn('cartridge', plain.read_text())  # auto: the runtime infers it
+            parsed = configparser.ConfigParser()
+            parsed.read(chosen)
+            self.assertEqual(parsed['cartridge']['backup_type'], 'eeprom64k')
+            self.assertIn('arm9', parsed)  # the thread sections are unaffected
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                abi.main(['--out', str(plain), '--backup-type', 'floppy'])
+
+    def test_backup_names_match_the_runtime_parser(self):
+        source = (Path(__file__).resolve().parents[1] / 'runtime/core/src/abi_config.cpp').read_text()
+        for name in abi.BACKUP_TYPES:
+            self.assertIn(f'"{name}"', source, name)
 
     def test_unmapped_literal_is_rejected(self):
         fn = function([load(0, 15, 100)])

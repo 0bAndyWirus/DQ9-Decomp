@@ -55,6 +55,8 @@ DSD_SHA256 = {
 # PyPI publishes no Windows wheel for ziglang 0.17.0; 0.16.0 is the newest release with a
 # win_amd64 wheel. (Linux-hosted cross builds via tools/build_windows.sh use 0.17.0.)
 ZIG_WINDOWS_REQUIREMENT = "ziglang==0.16.0"
+BACKUP_TYPE_CHOICES = ("auto", "eeprom512b", "eeprom8k", "eeprom64k", "eeprom128k",
+                       "flash256k", "flash512k", "flash1m", "flash8m")  # keep in sync with tools/derive_abi_config.py
 WORKSPACE_MARKER = "rom.sha256"  # local-only fingerprint of the image the workspace was extracted from
 SDL_VERSION = "2.30.12"
 SDL_URL = (
@@ -251,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     # RelWithDebInfo (outputs identical); pass --config RelWithDebInfo when you need symbols.
     p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
+    p.add_argument("--backup-type", choices=BACKUP_TYPE_CHOICES, default="auto",
+                   help="cartridge backup chip written to the local abi.ini (default auto: inferred from an existing "
+                        "save file, else flash512k). Try eeprom64k if a fresh save reports a corrupt quick-save log.")
     p.add_argument("--rebuild-workspace", action="store_true",
                    help="discard the extracted workspace and generated code first (use when switching to a different image)")
     p.add_argument("--check", action="store_true", help="only report whether this machine and image are ready, then exit")
@@ -334,7 +339,8 @@ def main(argv: list[str] | None = None) -> int:
         "--autoload-callback", hex(arm7_meta["autoload_callback"]))
 
     abi = GEN / "abi.ini"
-    run(py, tools / "derive_abi_config.py", "--workspace", args.workspace, "--out", abi, "--report", GEN / "abi-report.json")
+    run(py, tools / "derive_abi_config.py", "--workspace", args.workspace, "--out", abi, "--report", GEN / "abi-report.json",
+        "--backup-type", args.backup_type)
 
     run(py, "-m", "recomp", "--manifest", manifest9, "--out", GEN / "arm9")
     run(py, "-m", "recomp", "--manifest", GEN / "arm7.manifest.json", "--out", GEN / "arm7")
