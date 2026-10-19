@@ -479,10 +479,24 @@ struct GameCard::Impl {
             std::copy_n(bytes.begin(), backup_.size(), backup_.begin());
     }
 
+    // Keeps the save as it was before this run as <save>.bak, once per run and before the first
+    // overwrite, so a bad session (or a corrupted write) can be rolled back by hand. Best effort:
+    // a failed copy never blocks the real save.
+    void backup_previous_save_once() {
+        if (previous_save_backed_up_) return;
+        previous_save_backed_up_ = true;
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(save_path_, ec)) return;
+        std::filesystem::path backup = save_path_;
+        backup += ".bak";
+        std::filesystem::copy_file(save_path_, backup, std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
     void flush_save() {
         if (!save_dirty_ || save_path_.empty()) return;
         const auto parent = save_path_.parent_path();
         if (!parent.empty()) std::filesystem::create_directories(parent);
+        backup_previous_save_once();
 #if defined(_WIN32)
         std::filesystem::path temp_path = save_path_;
         temp_path += L".tmp.";
@@ -810,6 +824,7 @@ struct GameCard::Impl {
     BackupType backup_type_ = BackupType::Flash512K;
     std::vector<std::uint8_t> backup_;
     bool save_dirty_ = false;
+    bool previous_save_backed_up_ = false;
     std::uint16_t aux_control_ = 0;
     std::uint8_t aux_data_ = 0xff;
     std::uint32_t rom_control_ = 0;
