@@ -4,7 +4,7 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
-## Unreleased
+## v0.2.2
 
 - **Speed (output-identical):** OBJ rejection before affine/tile setup and a hoisted object test in the 2D
   compositor; on a separate local development build the 28,500-frame gameplay script (3D scenes) ran about
@@ -19,6 +19,13 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Window:** the windowed size is remembered between runs.
 - **Launcher:** drop a `.nds` file on the window to set the ROM path.
 - **Screenshots:** F12 follows the hi-res 3D overlay (saved at the hi-res size while it is showing).
+- **Linux:** `python tools/install_desktop_entry.py` adds an application-menu entry that starts the launcher
+  (`--uninstall` removes it); CI now also builds and tests the runtime on Linux.
+- **Docs:** `docs/CONFIGURATION.md` lists every `frontend.conf` key with defaults and folders.
+- **Godot host:** the settings and pause panels are centered and bounded to the window (the pause panel used to
+  open off-center and run past the bottom edge).
+- **Windows build:** fixed an intermittent parallel-build race when several executables copied `SDL2.dll` into the
+  same folder (seen in CI).
 
 ## v0.2.1
 
