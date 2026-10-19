@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <string>
 
@@ -36,7 +37,9 @@ Uint32 sequence(Uint32 interval, void* data) {
         assert(SDL_JoystickSetVirtualButton(state.joystick, 9, 0) == 0);
         for (int i = 0; i < 12; ++i) key(SDL_SCANCODE_DOWN);
         key(SDL_SCANCODE_F4);
-        for (int i = 0; i < 6; ++i) key(SDL_SCANCODE_DOWN);
+        key(SDL_SCANCODE_DOWN);
+        key(SDL_SCANCODE_RIGHT); // Options row 1: window scale 3x -> 4x clears the remembered window size
+        for (int i = 0; i < 5; ++i) key(SDL_SCANCODE_DOWN);
         key(SDL_SCANCODE_RETURN); // Debug tool, not a stale Controls row.
         {
             SDL_Event mouse{};
@@ -111,12 +114,19 @@ int main() {
     assert(joystick);
     Sequence state{joystick};
     assert(SDL_AddTimer(150, sequence, &state) != 0);
+    {
+        const auto conf_dir = std::filesystem::path(directory) / "dq9-decomp";
+        std::filesystem::create_directories(conf_dir);
+        std::ofstream(conf_dir / "frontend.conf") << "window_width=800\nwindow_height=900\nscale=3\n";
+    }
     dsr::LauncherOptions options;
     options.rom_path = "unavailable-test-rom.nds";
     const bool accepted = dsr::run_sdl_launcher(options);
     assert(accepted); // Start arrives only if launcher opens a controller handle.
     assert(options.language == "fr");
     assert(options.debug_tool); // F4 must reset focus after Controls row 12.
+    assert(options.frontend.window_scale == 4);
+    assert(options.frontend.window_width == 0 && options.frontend.window_height == 0);
     assert(state.phase >= 8); // Outside-button clicks must not launch early.
     assert(options.rom_path == std::filesystem::path("/dq9-dropped/Game Image.nds"));
     assert(options.frontend.keycodes[11] == 22); // the abandoned rebind of row 11 changed nothing
