@@ -280,7 +280,11 @@ private:
         } else if (page_ == 3) {
             switch (focus_) {
             case 0: config_.frontend.layout = static_cast<ScreenLayout>((static_cast<int>(config_.frontend.layout) + delta + 6) % 6); break;
-            case 1: config_.frontend.window_scale = std::clamp(config_.frontend.window_scale + delta, 1, 8); break;
+            case 1:
+                config_.frontend.window_scale = std::clamp(config_.frontend.window_scale + delta, 1, 8);
+                // A remembered window size would otherwise override the scale just chosen.
+                config_.frontend.window_width = config_.frontend.window_height = 0;
+                break;
             case 5: config_.frontend.audio_buffer_ms = std::clamp(config_.frontend.audio_buffer_ms + delta * 20, 20, 500); break;
             case 9: config_.frontend.stick_deadzone = std::clamp(config_.frontend.stick_deadzone + delta * 1000, 0, 30000); break;
             case 11: cycle_controller(delta); break;

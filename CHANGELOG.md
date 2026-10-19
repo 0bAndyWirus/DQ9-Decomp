@@ -16,7 +16,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Benchmarking:** headless runs end with `dq9: N frames in S s (X FPS, Yx real time)`, a line to paste into reports.
 - **Controllers:** hot-plugging a controller shows a short on-screen notice.
 - **No audio device:** the game now starts and plays silently (with an on-screen notice) when SDL cannot open an audio device, instead of refusing to start.
-- **Window:** the windowed size is remembered between runs.
+- **Window:** the windowed size is remembered between runs (choosing a window scale in the launcher forgets it, so the scale you pick wins).
 - **Launcher:** drop a `.nds` file on the window to set the ROM path.
 - **Screenshots:** F12 follows the hi-res 3D overlay (saved at the hi-res size while it is showing).
 - **Linux:** `python tools/install_desktop_entry.py` adds an application-menu entry that starts the launcher
