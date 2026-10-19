@@ -252,6 +252,23 @@ int main() {
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
     }
+    {
+        // No usable audio driver: the frontend still starts and silently drops audio.
+        frontend.reset();
+        SDL_setenv("SDL_AUDIODRIVER", "nonexistent-driver", 1);
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+        std::array<std::int16_t, 1600> pcm{};
+        frontend->queue_audio(pcm.data(), 800, 33000.0);
+        assert(frontend->audio_backlog() == 0);
+        frontend->clear_audio_queue();
+        std::array<std::uint32_t, 256 * 192> blank{};
+        frontend->present(blank.data(), blank.data());
+        frontend.reset();
+        SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+    }
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);
