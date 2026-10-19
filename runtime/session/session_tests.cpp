@@ -29,6 +29,20 @@ static void test_compose_hires(int scale, std::uint32_t powcnt1, bool engine_a_o
     assert(session.compose_hires(out.data(), scale, &on_top));
     assert(on_top == engine_a_on_top);
     for (const std::uint32_t pixel : out) assert(pixel == 0xFFFF0000U);
+    {
+        // Stacked variant: the 3D screen is all red, the other screen is the native frame upscaled.
+        std::vector<std::uint32_t> both(out.size() * 2, 0U);
+        assert(session.compose_both_hires(both.data(), scale));
+        const std::size_t half = out.size();
+        const std::uint32_t* three_d_screen = engine_a_on_top ? both.data() : both.data() + half;
+        const std::uint32_t* other_screen = engine_a_on_top ? both.data() + half : both.data();
+        for (std::size_t i = 0; i < half; ++i) assert(three_d_screen[i] == 0xFFFF0000U);
+        const std::uint32_t* native_other = engine_a_on_top ? session.screen_bottom() : session.screen_top();
+        for (std::size_t y = 0; y < static_cast<std::size_t>(192 * scale); ++y)
+            for (std::size_t x = 0; x < static_cast<std::size_t>(256 * scale); ++x)
+                assert(other_screen[y * 256 * scale + x] == native_other[(y / scale) * 256 + x / scale]);
+        assert(!session.compose_both_hires(both.data(), 1));
+    }
     // A different requested scale than the latched one is refused, never reinterpreted.
     assert(!session.compose_hires(out.data(), scale % 4 + 1, &on_top));
     gpu3d.set_output_scale(1);

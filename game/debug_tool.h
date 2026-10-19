@@ -26,6 +26,10 @@ struct DebugCaptureOptions {
 // Writes both screens, stacked, as <directory>/<stem>.png (creating the directory). Returns the
 // written path, or an empty path on failure. `stem` gains a "-N" suffix rather than overwriting.
 std::filesystem::path save_screenshot(const std::filesystem::path& directory, dsr::Machine& machine);
+// Same naming and collision rules for an already composed image (0xFFRRGGBB, width x height).
+std::filesystem::path save_screenshot_pixels(const std::filesystem::path& directory,
+                                             const std::vector<std::uint32_t>& pixels, std::uint32_t width,
+                                             std::uint32_t height);
 
 class DebugSession {
 public:

@@ -736,6 +736,19 @@ bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& mac
     return true;
 }
 
+std::filesystem::path save_screenshot_pixels(const std::filesystem::path& directory,
+                                             const std::vector<std::uint32_t>& pixels, std::uint32_t width,
+                                             std::uint32_t height) {
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec) return {};
+    const std::string stem = "dq9-" + timestamp_now();
+    std::filesystem::path path = directory / (stem + ".png");
+    for (int n = 1; std::filesystem::exists(path, ec) && n < 1000; ++n)
+        path = directory / (stem + "-" + std::to_string(n) + ".png");
+    return write_png_rgb(path, width, height, pixels) ? path : std::filesystem::path{};
+}
+
 std::filesystem::path save_screenshot(const std::filesystem::path& directory, dsr::Machine& machine) {
     constexpr std::size_t pixels_per_screen =
         static_cast<std::size_t>(kScreenWidth) * kScreenHeight;
