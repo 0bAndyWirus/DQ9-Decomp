@@ -25,6 +25,8 @@ from typing import Iterable, Sequence
 # Filename patterns that may indicate local images or generated guest C++.
 FORBIDDEN_PATTERNS = (
     "*.nds", "*.srl", "*.dsi", "*.ids",
+    # Cartridge saves and what the host derives from them: <save>.bak (previous run), .tmp.<pid> (atomic write).
+    "*.sav", "*.sav.*", "*.dsv", "*.dsv.*",
     "arm9.bin", "arm7.bin", "*.arm9", "*.arm7",
     "fn_table*.cpp", "*.manifest.json",
     "*.cpp", "*.cc", "*.cxx",

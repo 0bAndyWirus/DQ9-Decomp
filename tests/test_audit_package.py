@@ -13,6 +13,13 @@ class ClassifyTests(unittest.TestCase):
         for name in ("game.nds", "Rom/DQ9.SRL", "gen/arm9/fn_table.cpp", "arm9.bin", "arm9.manifest.json", "x/y.cpp"):
             self.assertIsNotNone(classify(name, 10), name)
 
+    def test_saves_and_their_derivatives_are_forbidden_in_every_mode(self):
+        names = ("dq9.sav", "dq9.sav.bak", "dq9.sav.tmp.4242", "slot.dsv", "slot.dsv.bak", "A/B/DQ9.SAV.BAK")
+        for name in names:
+            self.assertIsNotNone(classify(name, 10), name)
+            self.assertIsNotNone(classify(name, 10, {"runtime/ok.cpp"}), name)
+        self.assertIsNone(classify("savings.md", 10))  # only real save extensions are matched
+
     def test_ordinary_package_files_are_allowed(self):
         for name in ("dq9", "dq9.exe", "SDL2.dll", "README.md", "dq9.sh", "dq9.desktop"):
             self.assertIsNone(classify(name, 10), name)
