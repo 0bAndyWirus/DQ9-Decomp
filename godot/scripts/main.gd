@@ -116,7 +116,6 @@ func _build_ui() -> void:
 	settings_overlay.z_index = 10
 	add_child(settings_overlay)
 	settings_panel = _make_settings()
-	settings_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	settings_overlay.add_child(settings_panel)
 	settings_panel.hide()
 	var pause_overlay := Control.new()
@@ -125,9 +124,7 @@ func _build_ui() -> void:
 	pause_overlay.z_index = 10
 	add_child(pause_overlay)
 	pause_panel = _make_pause()
-	pause_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	pause_overlay.add_child(pause_panel)
-	pause_panel.custom_minimum_size=Vector2(520,660)
 	pause_panel.hide()
 	var reviewer_overlay := Control.new()
 	reviewer_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -145,6 +142,8 @@ func _build_ui() -> void:
 	issue_reviewer.closed.connect(_close_issue_reviewer)
 	issue_reviewer.preferences_changed.connect(func(value): settings.issue_show_auto = value; _persist())
 	get_viewport().size_changed.connect(_layout_screens)
+	get_viewport().size_changed.connect(_fit_panels)
+	_fit_panels()
 	game_panel.resized.connect(_layout_screens)
 	_layout_screens()
 
@@ -156,11 +155,6 @@ func _screen_frame(title: String) -> PanelContainer:
 
 func _make_settings() -> PanelContainer:
 	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	panel.offset_left=-360
-	panel.offset_right=360
-	panel.offset_top=-320
-	panel.offset_bottom=320
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.055, 0.07, 0.1, 1.0)
 	style.border_color = Color(0.3, 0.65, 0.95, 1.0)
@@ -172,7 +166,7 @@ func _make_settings() -> PanelContainer:
 	var outer:=VBoxContainer.new(); outer.add_theme_constant_override("separation", 6); panel.add_child(outer)
 	var title:=Label.new(); title.text="DQ9-Decomp — Start / Settings"; title.add_theme_font_size_override("font_size",26); outer.add_child(title)
 	var subtitle:=Label.new(); subtitle.text="Choose your ROM and language, then press Start."; subtitle.add_theme_color_override("font_color",Color(0.62,0.7,0.8)); outer.add_child(subtitle)
-	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; scroll.custom_minimum_size=Vector2(0,510); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(scroll)
+	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; scroll.custom_minimum_size=Vector2(0,120); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(scroll)
 	var col:=VBoxContainer.new(); col.add_theme_constant_override("separation", 6); col.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(col)
 	_section(col,"Game")
 	var pathrow:=HBoxContainer.new(); col.add_child(pathrow)
@@ -291,11 +285,6 @@ func _refresh_binding_buttons() -> void:
 
 func _make_pause() -> PanelContainer:
 	var p:=PanelContainer.new()
-	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	p.offset_left=-240
-	p.offset_right=240
-	p.offset_top=-310
-	p.offset_bottom=310
 	var pstyle := StyleBoxFlat.new()
 	pstyle.bg_color = Color(0.055, 0.07, 0.1, 1.0)
 	pstyle.border_color = Color(0.3, 0.65, 0.95, 1.0)
@@ -303,7 +292,9 @@ func _make_pause() -> PanelContainer:
 	pstyle.set_corner_radius_all(10)
 	pstyle.set_content_margin_all(14)
 	p.add_theme_stylebox_override("panel", pstyle)
-	var c:=VBoxContainer.new(); p.add_child(c); var title:=Label.new(); title.text="Paused / Debug"; title.add_theme_font_size_override("font_size",26); c.add_child(title)
+	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; p.add_child(scroll)
+	var c:=VBoxContainer.new(); c.add_theme_constant_override("separation",6); c.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(c)
+	var title:=Label.new(); title.text="Paused / Debug"; title.add_theme_font_size_override("font_size",26); c.add_child(title)
 	var pause:=Button.new(); pause.text="Resume / Pause"; pause.pressed.connect(func():machine.set_paused(not machine.is_paused())); c.add_child(pause)
 	var step:=Button.new(); step.text="Step one frame"; step.pressed.connect(func():machine.set_paused(true);machine.step_once()); c.add_child(step)
 	var speeds:=OptionButton.new()
@@ -712,17 +703,29 @@ func _replace_binding(event: InputEvent) -> void:
 
 func _toggle_pause() -> void:
 	if not machine: _show_settings(); return
+	_fit_panels()
 	pause_panel.visible=not pause_panel.visible; machine.set_paused(pause_panel.visible)
 func _persist() -> void:
 	settings.overlay_rect = _overlay_rect
 	Logic.save_settings("user://settings.cfg", settings)
 
-func _show_settings() -> void: settings_panel.show()
+func _show_settings() -> void: _fit_panels(); settings_panel.show()
 func _hide_settings() -> void: settings_panel.hide(); _persist()
 func _set_layout(index: int) -> void: layout=index; settings.layout=index; _layout_screens()
 func _apply_filter() -> void:
 	var mode:=CanvasItem.TEXTURE_FILTER_NEAREST if settings.nearest else CanvasItem.TEXTURE_FILTER_LINEAR
 	top_rect.texture_filter=mode; bottom_rect.texture_filter=mode
+# Centers the modal panels and keeps them inside the window (they scroll instead of overflowing).
+func _fit_panels() -> void:
+	var view := get_viewport_rect().size
+	for item in [[settings_panel, Vector2(720, 640)], [pause_panel, Vector2(520, 660)]]:
+		var panel: PanelContainer = item[0]
+		if panel == null or not is_instance_valid(panel): continue
+		var wanted: Vector2 = item[1]
+		panel.custom_minimum_size = Vector2.ZERO
+		panel.size = Vector2(clampf(view.x - 24.0, 280.0, wanted.x), clampf(view.y - 24.0, 240.0, wanted.y))
+		panel.position = ((view - panel.size) * 0.5).floor()
+
 func _layout_screens() -> void:
 	if not is_instance_valid(game_panel): return
 	var rects:=Logic.layout_rects(game_panel.size,layout,_overlay_rect,settings.integer_scale)
