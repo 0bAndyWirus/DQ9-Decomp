@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <type_traits>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1364,21 +1365,33 @@ struct Gpu2D::Impl {
                 front_bits[i] = static_cast<std::uint8_t>(1U << front_order[i]);
             }
             const Pixel* const object_pixels = obj_pixels.data();
-            for (std::size_t xi = 0; xi < kScreenWidth; ++xi) {
-                const std::uint8_t mask = masks[xi];
-                const Pixel& object = object_pixels[xi];
-                const bool has_object = object.opaque && (mask & (1U << 4U)) != 0U;
-                const Pixel* chosen_source = has_object ? &object : nullptr;
-                for (unsigned i = 0; i < front_count; ++i) {
-                    const Pixel& pixel = front_pixels[i][xi];
-                    if (pixel.opaque && (mask & front_bits[i]) != 0U) {
-                        chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
-                        break;
+            // Without windows every layer is visible everywhere (masks are all 0x3F), and with
+            // OBJ disabled the object line is clear; both tests can be compiled away.
+            const auto compose_line = [&](auto windowed, auto with_objects) {
+                for (std::size_t xi = 0; xi < kScreenWidth; ++xi) {
+                    const std::uint8_t mask = windowed ? masks[xi] : static_cast<std::uint8_t>(0x3FU);
+                    const Pixel& object = object_pixels[xi];
+                    const bool has_object = with_objects && object.opaque && (mask & (1U << 4U)) != 0U;
+                    const Pixel* chosen_source = has_object ? &object : nullptr;
+                    for (unsigned i = 0; i < front_count; ++i) {
+                        const Pixel& pixel = front_pixels[i][xi];
+                        if (pixel.opaque && (!windowed || (mask & front_bits[i]) != 0U)) {
+                            chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
+                            break;
+                        }
                     }
+                    output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
+                    mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
+                        chosen_source->three_d && chosen_source->color.alpha == 31U);
                 }
-                output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
-                mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
-                    chosen_source->three_d && chosen_source->color.alpha == 31U);
+            };
+            const bool windowed = (dispcnt & 0xE000U) != 0U;
+            using Yes = std::true_type;
+            using No = std::false_type;
+            if (windowed) {
+                if (objects_enabled) compose_line(Yes{}, Yes{}); else compose_line(Yes{}, No{});
+            } else {
+                if (objects_enabled) compose_line(No{}, Yes{}); else compose_line(No{}, No{});
             }
         }
         // The copy-only case above has already produced the whole line.
