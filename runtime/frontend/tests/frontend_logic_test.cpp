@@ -131,6 +131,8 @@ int main() {
     config.key_layout = 66;
     config.key_fast_forward = 77;
     config.key_screenshot = 78;
+    config.key_gpu3d_scale = 79;
+    config.frontend.gpu3d_scale = 3;
     const auto decoded = parse_config(serialize_config(config));
     assert(decoded.frontend.layout == config.frontend.layout);
     assert(decoded.frontend.window_scale == 4 && decoded.frontend.linear_filter);
@@ -140,6 +142,15 @@ int main() {
     assert(decoded.language == "fr" && decoded.rom_path == config.rom_path && decoded.save_path == config.save_path);
     assert(decoded.debug_tool && decoded.frame_time_overlay && !decoded.capture_memory_dumps);
     assert(decoded.key_fast_forward == 77 && decoded.key_screenshot == 78);
+    assert(decoded.key_gpu3d_scale == 79 && decoded.frontend.gpu3d_scale == 3);
+    assert(parse_config("gpu3d_scale=9\n").frontend.gpu3d_scale == 4);
+    assert(parse_config("gpu3d_scale=0\n").frontend.gpu3d_scale == 1);
+    assert(default_config().frontend.gpu3d_scale == 1);
+    // F7 is the hi-res scale key; a pre-existing file that bound the swap to F7 moves the swap.
+    assert(default_config().key_gpu3d_scale == 64 &&
+           default_config().key_swap != default_config().key_gpu3d_scale);
+    assert(parse_config("hotkey_swap=64\n").key_swap == default_config().key_swap);
+    assert(parse_config("hotkey_swap=70\n").key_swap == 70);
     // The named key_* settings must not be swallowed by the numeric key_<N> branch, and a
     // legacy file without them keeps the defaults (Tab held, F12).
     const auto defaults = default_config();

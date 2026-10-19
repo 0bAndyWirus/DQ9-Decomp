@@ -36,6 +36,7 @@
 #include "dsr/spu.h"
 
 #include <vector>
+#include "dsr/gpu3d.h"
 #include "debug_tool.h"
 #include "debug_workflow_test.h"
 
@@ -74,6 +75,8 @@ struct Options {
     bool debug_selftest = false;
     bool debug_workflow_selftest = false;
     bool capture_memory_dumps = true;
+    int gpu3d_scale = 1; // optional hi-res 3D overlay scale, 1-4 (1 = off)
+    bool gpu3d_scale_given = false;
 };
 
 [[noreturn]] void usage(int code) {
@@ -93,6 +96,9 @@ struct Options {
                  "RGB bytes of each screen, the same digest the oracle's --hashes option produces).\n"
                  "--record-input FILE logs the input of every frame that has any (same grammar as\n"
                  "--input-script) so an interactive session can be replayed headless with the same save.\n"
+                 "--gpu3d-scale N (1-4, default 1 = off) re-renders the 3D scene at N times the native\n"
+                 "resolution and composes it over the top screen; with --dump-frames it also writes\n"
+                 "frame_NNNN_top_hires.ppm. Hash files and the native frame dumps stay 256x192.\n"
                  "--pause-at-frame N replays through zero-based frame N without pacing/audio, then pauses (or stops headless).\n"
                  "--rtc-epoch seconds and --rtc-timezone-offset minutes freeze RTC to emulated time.\n");
     std::exit(code);
@@ -196,6 +202,12 @@ Options parse_args(int argc, char** argv) {
             o.rtc_timezone_offset_minutes = static_cast<int>(offset);
         }
         else if (a == "--frames") o.frames = std::stoll(std::string(value()));
+        else if (a == "--gpu3d-scale") {
+            const long long n = std::stoll(std::string(value()));
+            if (n < 1 || n > 4) usage(2);
+            o.gpu3d_scale = static_cast<int>(n);
+            o.gpu3d_scale_given = true;
+        }
         else if (a == "--launcher") o.launcher = true;
         else if (a == "--debug-tool") o.debug_tool = true;
         else if (a == "--frame-time-overlay") o.frame_time_overlay = true;
@@ -285,10 +297,10 @@ void write_wav(const std::filesystem::path& path, const std::vector<std::int16_t
     for (const std::int16_t s : pcm) put16(static_cast<std::uint16_t>(s));
 }
 
-void write_ppm(const std::filesystem::path& path, const std::uint32_t* px) {
+void write_ppm(const std::filesystem::path& path, const std::uint32_t* px, int width = 256, int height = 192) {
     std::ofstream out(path, std::ios::binary);
-    out << "P6\n256 192\n255\n";
-    for (int i = 0; i < 256 * 192; ++i) {
+    out << "P6\n" << width << ' ' << height << "\n255\n";
+    for (int i = 0; i < width * height; ++i) {
         const char rgb[3] = {static_cast<char>((px[i] >> 16) & 0xFF), static_cast<char>((px[i] >> 8) & 0xFF),
                              static_cast<char>(px[i] & 0xFF)};
         out.write(rgb, 3);
@@ -350,6 +362,8 @@ public:
     bool init(const dsr::FrontendConfig&) override { return true; }
     void poll(dsr::InputState&) override {}
     void present(const std::uint32_t*, const std::uint32_t*) override {}
+    void present_hires(const std::uint32_t*, int, const std::uint32_t*, int) override {}
+    int requested_gpu3d_scale() const override { return 1; }
     void queue_audio(const std::int16_t*, std::size_t, double) override {}
     std::size_t audio_backlog() const override { return 0; }
     void pace_frame() override {}
@@ -491,6 +505,10 @@ int main(int argc, char** argv) {
         if (!opt.launcher) fc.fullscreen = dsr::running_on_steam_deck();
         fc.debug_tool_enabled = opt.debug_tool;
         fc.frame_time_overlay_enabled = opt.frame_time_overlay;
+        if (opt.gpu3d_scale_given) {
+            fc.gpu3d_scale = opt.gpu3d_scale;
+            fc.gpu3d_scale_explicit = true;
+        }
         if (!frontend->init(fc)) {
             if (opt.debug_workflow_selftest) {
                 dq9::workflow_test::close_virtual_controller(workflow_controller);
@@ -688,6 +706,19 @@ int main(int argc, char** argv) {
     // The frontend updates pen and lid only on events, so its state must
     // persist across frames; scripted input is rebuilt per frame below.
     dsr::InputState frontend_input;
+    // Hi-res 3D overlay: the scale in effect on the 3D engine, and the composed screen.
+    std::vector<std::uint32_t> hires_screen;
+    auto present_frame = [&]() {
+        const int scale = machine.gpu3d().output_scale();
+        bool on_top = true;
+        if (scale > 1) hires_screen.resize(static_cast<std::size_t>(256 * scale) * (192 * scale));
+        if (scale > 1 && session.compose_hires(hires_screen.data(), scale, &on_top)) {
+            if (on_top) frontend->present_hires(hires_screen.data(), scale, machine.gpu2d().screen_bottom(), 1);
+            else frontend->present_hires(machine.gpu2d().screen_top(), 1, hires_screen.data(), scale);
+        } else {
+            frontend->present(machine.gpu2d().screen_top(), machine.gpu2d().screen_bottom());
+        }
+    };
     bool held_fast_forward_was_active = false;
     const std::filesystem::path screenshot_dir =
         (save_path.has_parent_path() ? save_path.parent_path() : std::filesystem::path{}) / "screenshots";
@@ -1306,7 +1337,7 @@ int main(int argc, char** argv) {
         if (paused && !step_requested) {
             update_overlay(frame > 0 ? static_cast<std::uint64_t>(frame - 1) : 0);
             if (frontend) {
-                frontend->present(machine.gpu2d().screen_top(), machine.gpu2d().screen_bottom());
+                present_frame();
                 frontend->pace_frame();
             }
             continue;
@@ -1333,6 +1364,12 @@ int main(int argc, char** argv) {
                        << ' ' << (in.pen_down ? in.pen_y : -1) << std::endl;
         }
         const auto frame_start = opt.debug_tool ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        // Between frames, on the machine thread: follow the scale the frontend (hotkey/config)
+        // or --gpu3d-scale asks for. 1 keeps every native path untouched.
+        {
+            const int wanted = frontend ? frontend->requested_gpu3d_scale() : opt.gpu3d_scale;
+            if (wanted != machine.gpu3d().output_scale()) machine.gpu3d().set_output_scale(wanted);
+        }
         session.step(in);
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)
@@ -1391,7 +1428,7 @@ int main(int argc, char** argv) {
         if (opt.pause_at_frame == frame) paused = true;
         update_overlay(static_cast<std::uint64_t>(frame));
         if (frontend && !replay_seeking) {
-            frontend->present(machine.gpu2d().screen_top(), machine.gpu2d().screen_bottom());
+            present_frame();
             if (samples != 0 && !paused) {
                 frontend->queue_audio(audio, samples, dsr::Session::audio_rate());
             }
@@ -1423,6 +1460,22 @@ int main(int argc, char** argv) {
             write_ppm(opt.dump_dir / name, machine.gpu2d().screen_top());
             std::snprintf(name, sizeof name, "frame_%04" PRId64 "_bottom.ppm", frame);
             write_ppm(opt.dump_dir / name, machine.gpu2d().screen_bottom());
+            if (opt.gpu3d_scale > 1) {
+                // Top screen at hi-res: the composed 3D overlay when engine A drives it, else a
+                // nearest-neighbour upscale of the native frame.
+                const int scale = opt.gpu3d_scale;
+                const int w = 256 * scale, h = 192 * scale;
+                hires_screen.resize(static_cast<std::size_t>(w) * h);
+                bool on_top = true;
+                if (!session.compose_hires(hires_screen.data(), scale, &on_top) || !on_top) {
+                    const std::uint32_t* native = machine.gpu2d().screen_top();
+                    for (int y = 0; y < h; ++y)
+                        for (int x = 0; x < w; ++x)
+                            hires_screen[static_cast<std::size_t>(y) * w + x] = native[(y / scale) * 256 + x / scale];
+                }
+                std::snprintf(name, sizeof name, "frame_%04" PRId64 "_top_hires.ppm", frame);
+                write_ppm(opt.dump_dir / name, hires_screen.data(), w, h);
+            }
             // I/O registers for oracle comparison (read at the frame boundary).
             std::snprintf(name, sizeof name, "frame_%04" PRId64 "_regs.txt", frame);
 #if defined(_WIN32)

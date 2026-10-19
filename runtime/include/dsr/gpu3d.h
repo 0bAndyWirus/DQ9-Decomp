@@ -140,6 +140,18 @@ public:
     void render_start();
     // Packed DS 6-bit RGB + 5-bit alpha row.
     const std::uint32_t* line(int y) const;
+    // Optional host-only second render at an integer scale, clamped to 1..4.
+    // Call on the Machine owner thread between frames; the new scale is drawn
+    // at the next render_start(). Scale 1 (the default) disables the extra pass.
+    // Native line(), geometry, draw order and capture buffers are unaffected.
+    void set_output_scale(int n);
+    int output_scale() const;
+    // Hi-res row index y in [0, 192 * output_scale()), stride 256 * scale.
+    // Packing: r6 bits 0..5, g6 6..11, b6 12..17, alpha5 24..28.
+    // Returns nullptr at scale 1, for an out-of-range row, or until a render has
+    // completed at the requested scale. Scale changes and reset invalidate all
+    // borrowed rows; output_scale() reports the requested scale immediately.
+    const std::uint32_t* scaled_line(int y) const;
     Gpu3DGeometryView geometry_view() const;
     Gpu3DDrawOrderView draw_order_view() const;
     Gpu3DRasterView raster_view() const;

@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <string>
 #include <thread>
@@ -149,6 +150,38 @@ int main() {
     assert(SDL_RenderGetIntegerScale(ordinary_renderer) == SDL_TRUE);
     tap(SDL_SCANCODE_F4);
     assert(SDL_RenderGetIntegerScale(ordinary_renderer) == SDL_FALSE);
+    frontend.reset();
+    // Rebound hotkeys (the launcher HOTKEYS page writes these keys): the configured scancode
+    // acts and the old default does not. F9 = fullscreen, F10 = integer scaling.
+    {
+        const auto conf_dir = directory / "dq9-decomp";
+        std::filesystem::create_directories(conf_dir);
+        std::ofstream(conf_dir / "frontend.conf") << "hotkey_fullscreen=66\nhotkey_integer=67\nkey_screenshot=68\n";
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+        SDL_Window* rebound_window = SDL_GetWindowFromID(1);
+        SDL_Renderer* rebound_renderer = SDL_GetRenderer(rebound_window);
+        const auto fullscreen = [&] { return (SDL_GetWindowFlags(rebound_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0; };
+        hotkey_input = {};
+        tap(SDL_SCANCODE_F11);
+        assert(!fullscreen());
+        tap(SDL_SCANCODE_F9);
+        assert(fullscreen());
+        tap(SDL_SCANCODE_F9);
+        assert(!fullscreen());
+        tap(SDL_SCANCODE_F4);
+        assert(SDL_RenderGetIntegerScale(rebound_renderer) == SDL_FALSE);
+        tap(SDL_SCANCODE_F10);
+        assert(SDL_RenderGetIntegerScale(rebound_renderer) == SDL_TRUE);
+        tap(SDL_SCANCODE_F12);
+        assert(!hotkey_input.screenshot_requested);
+        tap(SDL_SCANCODE_F11);
+        assert(hotkey_input.screenshot_requested);
+        std::filesystem::remove(conf_dir / "frontend.conf");
+        frontend.reset();
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+    }
     // Screenshot hotkey (F12) is a one-shot that works without the debug tool.
     tap(SDL_SCANCODE_F12);
     assert(hotkey_input.screenshot_requested && hotkey_input.debug_actions == 0);

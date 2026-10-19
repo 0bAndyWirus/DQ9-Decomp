@@ -2983,6 +2983,301 @@ void test_band_parallel_identity() {
               << " (all output words and framebuffer fields; retained rerenders also identical)\n";
 }
 
+void test_hires_full_viewport_quad() {
+    constexpr std::uint16_t color = 0x56b2U;
+    const auto expected = reference_clear_pixel((31U << 16) | color, 0U)[0];
+    bool ok = true;
+    for (int threads : {0, 6}) {
+        for (int scale : {2, 3}) {
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.set_output_scale(scale);
+            quad(gpu, color, (31U << 16) | (7U << 24));
+            submit_frame(gpu);
+            const auto* first = gpu.scaled_line(0);
+            ok &= check(first != nullptr, "hi-res full-viewport quad has an output buffer");
+            for (int y = 0; y < 192 * scale; ++y) {
+                const auto* row = gpu.scaled_line(y);
+                ok &= check(row == first + y * 256 * scale,
+                            "hi-res rows use the scaled width as their stride");
+                if (!check(std::all_of(row, row + 256 * scale,
+                                      [expected](std::uint32_t pixel) { return pixel == expected; }),
+                           "hi-res quad covers every pixel with exact RGB6 and alpha5"))
+                    std::exit(1);
+            }
+            ok &= check(gpu.scaled_line(-1) == nullptr &&
+                        gpu.scaled_line(192 * scale) == nullptr,
+                        "hi-res row bounds reject negative and past-end rows");
+        }
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_hires_clipped_offset_viewport() {
+    bool ok = true;
+    for (int scale : {2, 3}) {
+        Gpu3D gpu;
+        gpu.set_output_scale(scale);
+        send(gpu, 0x60, {(170U << 24) | (236U << 16) | (23U << 8) | 17U});
+        send(gpu, 0x20, {0x001fU});
+        send(gpu, 0x29, {(31U << 16) | 0xc0U});
+        send(gpu, 0x40, {1U});
+        position16(gpu, -8192, -8192, 0);
+        position16(gpu, 8192, -8192, 0);
+        position16(gpu, 8192, 8192, 0);
+        position16(gpu, -8192, 8192, 0);
+        send(gpu, 0x41);
+        submit_frame(gpu);
+        for (int y = 0; y < 192 * scale; ++y) {
+            const auto* row = gpu.scaled_line(y);
+            for (int x = 0; x < 256 * scale; ++x) {
+                const bool inside = x >= 17 * scale && x < 237 * scale &&
+                                    y >= 21 * scale && y < 169 * scale;
+                ok &= row[x] == (inside ? ((31U << 24U) | 63U) : 0U);
+            }
+        }
+    }
+    if (!check(ok, "clipping and inclusive offset viewport bounds scale in output-pixel units"))
+        std::exit(1);
+}
+
+void test_hires_clear_bitmap_sampling() {
+    TestTextureSource source;
+    fill_band_textures(source);
+    Gpu3D gpu;
+    dsr::gpu3d_detail::Gpu3DTestAccess::attach_texture_source(gpu, source.readonly_view());
+    gpu.io_write(0x04000060U, 1U << 14, 32);
+    gpu.io_write(0x04000356U, 0xf3e7U, 16);
+    bool ok = true;
+    for (int scale : {2, 3}) {
+        gpu.set_output_scale(scale);
+        gpu.render_start();
+        for (int y = 0; y < 192 * scale; ++y) {
+            const auto* row = gpu.scaled_line(y);
+            const auto* native = gpu.line(y / scale);
+            for (int x = 0; x < 256 * scale; ++x) ok &= row[x] == native[x / scale];
+        }
+    }
+    if (!check(ok, "hi-res rear-plane color/depth bitmap samples retain native texel coordinates"))
+        std::exit(1);
+}
+
+void test_hires_triangle_coverage() {
+    bool ok = true;
+    for (int threads : {0, 6}) {
+        Gpu3D gpu;
+        gpu.set_render_threads(threads);
+        gpu.set_output_scale(2);
+        triangle(gpu, 0x001fU, (31U << 16) | (7U << 24), 0, 0, 0);
+        submit_frame(gpu);
+        const auto covered = [](std::uint32_t pixel) { return (pixel >> 24U) != 0U; };
+        const auto native = std::count_if(gpu.line(0), gpu.line(0) + 256U * 192U, covered);
+        const auto hires = std::count_if(gpu.scaled_line(0),
+                                        gpu.scaled_line(0) + 512U * 384U, covered);
+        ok &= check(native > 0 && hires * 10 >= native * 36 && hires * 10 <= native * 44,
+                    "scale-2 triangle covers between 3.6 and 4.4 times the native pixels");
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_hires_native_identity_and_capture() {
+    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
+    bool ok = true;
+    for (int threads : {0, 6}) {
+        for (bool capture : {false, true}) {
+            Gpu3D native;
+            Gpu3D scaled;
+            int native_callbacks = 0;
+            int scaled_callbacks = 0;
+            native.on_render_complete = [&] { ++native_callbacks; };
+            scaled.on_render_complete = [&] { ++scaled_callbacks; };
+            scaled.set_output_scale(2);
+            for (auto* gpu : {&native, &scaled}) {
+                gpu->set_render_threads(threads);
+                gpu->set_capture_opaque_only(capture);
+                gpu->io_write(0x04000060U, (1U << 3) | (1U << 4) | (1U << 5), 32);
+                gpu->io_write(0x04000330U, 0x001f7c00U, 32);
+                quad(*gpu, 0x7c00U, (31U << 16) | (24U << 24), 2048);
+                edge_triangle(*gpu);
+                triangle(*gpu, 0x001fU, (17U << 16) | (2U << 24), -1, -1, -1);
+                gpu->run(100000);
+                const auto counts = gpu->io_read(0x04000604U, 32);
+                ok &= check((counts & 0xfffU) == 3U && (counts >> 16U) == 10U,
+                            "hi-res configuration does not change polygon/vertex RAM counts");
+                submit_frame(*gpu);
+            }
+            for (int scale : {2, 1, 2, 3, 1, 4, 2, 1}) {
+                scaled.set_output_scale(scale);
+                native.render_start();
+                scaled.render_start();
+                ok &= check(std::equal(native.line(0), native.line(0) + 256U * 192U, scaled.line(0)),
+                            "mixed opaque/translucent/edge native output survives scale changes");
+                bool metadata_equal = true;
+                for (unsigned i = 0; i < 256U * 192U; ++i)
+                    metadata_equal &= Access::framebuffer_pixel(native, i) ==
+                                      Access::framebuffer_pixel(scaled, i);
+                ok &= check(metadata_equal, "hi-res pass leaves all native framebuffer metadata untouched");
+                const auto a = native.geometry_view(), b = scaled.geometry_view();
+                ok &= check(a.generation == b.generation && a.vertex_count == b.vertex_count &&
+                            a.polygon_count == b.polygon_count && a.swap_mode == b.swap_mode &&
+                            native.io_read(0x04000604U, 32) == scaled.io_read(0x04000604U, 32) &&
+                            native.io_read(0x04000600U, 32) == scaled.io_read(0x04000600U, 32) &&
+                            native_callbacks == scaled_callbacks,
+                            "hi-res pass does not double-count GX state or render callbacks");
+                const auto order_a = native.draw_order_view(), order_b = scaled.draw_order_view();
+                ok &= check(order_a.opaque_count == order_b.opaque_count &&
+                            order_a.translucent_count == order_b.translucent_count &&
+                            std::equal(order_a.opaque, order_a.opaque + order_a.opaque_count, order_b.opaque) &&
+                            std::equal(order_a.translucent, order_a.translucent + order_a.translucent_count,
+                                       order_b.translucent),
+                            "hi-res preparation preserves native draw order");
+                if (capture) {
+                    const auto raster_a = native.raster_view(), raster_b = scaled.raster_view();
+                    ok &= check(raster_a.opaque_only_mask != nullptr && raster_b.opaque_only_mask != nullptr &&
+                                std::equal(raster_a.opaque_only_mask, raster_a.opaque_only_mask + 256U * 192U,
+                                           raster_b.opaque_only_mask) &&
+                                std::equal(raster_a.capture_causes, raster_a.capture_causes + 256U * 192U,
+                                           raster_b.capture_causes) &&
+                                std::equal(raster_a.capture_polygon_touches,
+                                           raster_a.capture_polygon_touches + a.polygon_count,
+                                           raster_b.capture_polygon_touches),
+                                "hi-res pass neither overwrites nor double-counts native capture scratch");
+                    if (raster_a.capture_polygon_ids != nullptr)
+                        ok &= check(raster_b.capture_polygon_ids != nullptr &&
+                                    std::equal(raster_a.capture_polygon_ids,
+                                               raster_a.capture_polygon_ids + 256U * 192U,
+                                               raster_b.capture_polygon_ids),
+                                    "hi-res pass preserves captured native polygon IDs");
+                }
+                ok &= check(scale != 1 || scaled.scaled_line(0) == nullptr,
+                            "returning to native scale disables hi-res rows");
+            }
+        }
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_hires_scale_clamp() {
+    Gpu3D gpu;
+    bool ok = check(gpu.output_scale() == 1 && gpu.scaled_line(0) == nullptr,
+                    "hi-res rendering defaults off");
+    gpu.set_output_scale(9);
+    ok &= check(gpu.output_scale() == 4, "hi-res scale clamps above four");
+    gpu.set_output_scale(0);
+    ok &= check(gpu.output_scale() == 1 && gpu.scaled_line(0) == nullptr,
+                "hi-res zero scale clamps to one");
+    gpu.set_output_scale(-3);
+    ok &= check(gpu.output_scale() == 1, "hi-res negative scale clamps to one");
+    gpu.set_output_scale(2);
+    quad(gpu, 0x001fU, 31U << 16);
+    submit_frame(gpu);
+    gpu.reset();
+    ok &= check(gpu.output_scale() == 2 && gpu.scaled_line(0) == nullptr,
+                "reset retains host scale configuration but invalidates hi-res output");
+    gpu.render_start();
+    ok &= check(gpu.scaled_line(0) != nullptr &&
+                std::all_of(gpu.scaled_line(0), gpu.scaled_line(0) + 512U * 384U,
+                            [](std::uint32_t pixel) { return pixel == 0U; }),
+                "next render publishes the reset clear plane at the retained scale");
+    if (!ok) std::exit(1);
+}
+
+void test_hires_scale_change_invalidates_rows() {
+    Gpu3D gpu;
+    gpu.set_output_scale(4);
+    bool ok = check(gpu.scaled_line(0) == nullptr,
+                    "enabling hi-res waits for the first completed render");
+    quad(gpu, 0x001fU, 31U << 16);
+    submit_frame(gpu);
+    ok &= check(gpu.scaled_line(0) != nullptr &&
+                gpu.scaled_line(767) == gpu.scaled_line(0) + 767U * 1024U,
+                "completed scale-four output has a 1024-pixel row stride");
+    gpu.set_output_scale(2);
+    for (int y = -1; y <= 768; ++y)
+        ok &= check(gpu.scaled_line(y) == nullptr,
+                    "scale change never exposes stale scale-four rows at scale two");
+    gpu.render_start();
+    for (int y = 0; y < 384; ++y) {
+        const auto* row = gpu.scaled_line(y);
+        ok &= check(row != nullptr && row == gpu.scaled_line(0) + y * 512U &&
+                    std::all_of(row, row + 512U,
+                                [](std::uint32_t pixel) { return pixel == ((31U << 24U) | 63U); }),
+                    "next completed render publishes valid 512-wide scale-two rows");
+    }
+    gpu.set_output_scale(4);
+    gpu.set_output_scale(2);
+    ok &= check(gpu.scaled_line(0) == nullptr,
+                "changing away and back before rendering still invalidates borrowed rows");
+    if (!ok) std::exit(1);
+}
+
+void test_hires_shared_decoded_texture_state() {
+    bool ok = true;
+    for (int threads : {0, 6}) {
+        TestTextureSource source;
+        source.textures[0][0] = 1U;
+        palette_color(source, 2U, 0x03e0U);
+        Gpu3D gpu;
+        gpu.set_render_threads(threads);
+        gpu.set_output_scale(2);
+        dsr::gpu3d_detail::Gpu3DTestAccess::attach_texture_source(gpu, source.versioned_view());
+        gpu.io_write(0x04000060U, 1U, 32);
+        send(gpu, 0x2a, {4U << 26U});
+        triangle(gpu, 0x7fffU, (31U << 16) | (1U << 24), 0, 0, 0);
+        submit_frame(gpu);
+        ok &= check(source.texture_slot_zero_lookups.load(std::memory_order_relaxed) == 1U &&
+                    gpu.scaled_line(192)[256] == ((31U << 24) | (63U << 6)),
+                    "native and hi-res passes share one pinned decoded texture snapshot");
+        palette_color(source, 2U, 0x001fU);
+        ++source.generation;
+        gpu.render_start();
+        ok &= check(source.texture_slot_zero_lookups.load(std::memory_order_relaxed) == 2U &&
+                    gpu.line(96)[128] == ((31U << 24) | 63U) &&
+                    gpu.scaled_line(192)[256] == ((31U << 24) | 63U),
+                    "one texture invalidation updates both passes without a second cache preparation");
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_hires_band_parallel_identity() {
+    constexpr int scale = 2;
+    constexpr std::array<int, 9> variants{3, 10, 1, 2, 3, 1, 1, 1, 4};
+    constexpr std::size_t pixels = 256U * 192U * scale * scale;
+    std::array<std::vector<std::uint32_t>, 2> expected{
+        std::vector<std::uint32_t>(pixels), std::vector<std::uint32_t>(pixels)};
+    bool ok = true;
+    for (std::size_t scene = 0; scene < kBandSceneNames.size(); ++scene) {
+        for (int threads : {0, 2, 6}) {
+            TestTextureSource source;
+            fill_band_textures(source);
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.set_output_scale(scale);
+            band_scene(gpu, source, static_cast<BandScene>(scene), variants[scene]);
+            for (int frame = 0; frame < 2; ++frame) {
+                if (frame != 0) {
+                    source.textures[0][0] ^= 0x3fU;
+                    source.palettes[0][18] ^= 0x17U;
+                    gpu.io_write(0x04000350U, (13U << 16) | 0x03e0U | (19U << 24), 32);
+                    gpu.render_start();
+                }
+                const auto* output = gpu.scaled_line(0);
+                if (threads == 0) std::copy_n(output, pixels, expected[frame].begin());
+                else if (!std::equal(expected[frame].begin(), expected[frame].end(), output)) {
+                    std::cerr << "FAIL: hi-res band identity scene=" << kBandSceneNames[scene]
+                              << " threads=" << threads << " frame=" << frame << '\n';
+                    std::exit(1);
+                }
+                gpu.render_start();
+                ok &= check(std::equal(expected[frame].begin(), expected[frame].end(), gpu.scaled_line(0)),
+                            "retained hi-res scene matches inline and threaded renders");
+            }
+        }
+    }
+    if (!ok) std::exit(1);
+    std::cout << "PASS: hi-res band identity 9 scenes x 3 thread modes x 2 frames x 196608 pixels\n";
+}
+
 void opaque_mask_quad(Gpu3D& gpu, std::uint32_t attr, std::int16_t z) {
     send(gpu, 0x20, {0x001fU});
     send(gpu, 0x29, {attr | 0xc0U | (9U << 24U)});
@@ -3233,6 +3528,15 @@ int main() {
     test_box_test_and_near_clipping();
     test_vtx16_q4_12_coordinates();
     test_triangle_raster_and_ram_counts();
+    test_hires_full_viewport_quad();
+    test_hires_clipped_offset_viewport();
+    test_hires_clear_bitmap_sampling();
+    test_hires_triangle_coverage();
+    test_hires_native_identity_and_capture();
+    test_hires_scale_clamp();
+    test_hires_scale_change_invalidates_rows();
+    test_hires_shared_decoded_texture_state();
+    test_hires_band_parallel_identity();
     test_polygon_surface_enable_bits();
     test_texture_formats();
     test_texture_addressing_and_transparency();

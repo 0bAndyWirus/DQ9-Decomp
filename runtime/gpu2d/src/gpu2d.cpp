@@ -1953,6 +1953,10 @@ const std::uint8_t* Gpu2D::three_d_mask() const {
     return impl_->three_d_mask_buffer.data();
 }
 
+std::uint8_t Gpu2D::expand_color5(std::uint32_t value) {
+    return static_cast<std::uint8_t>(color5_to_8(value & 31U));
+}
+
 const std::uint32_t* Gpu2D::screen_top() const {
     return impl_->screen_top_buffer.data();
 }

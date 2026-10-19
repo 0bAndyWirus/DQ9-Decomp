@@ -93,6 +93,8 @@ public:
         // hotkeys when the direct CLI has not created a debug session.
         config_.debug_tool_enabled = requested.debug_tool_enabled;
         config_.frame_time_overlay_enabled = requested.frame_time_overlay_enabled;
+        if (requested.gpu3d_scale_explicit) config_.gpu3d_scale = requested.gpu3d_scale;
+        config_.gpu3d_scale = std::clamp(config_.gpu3d_scale, 1, 4);
         if (running_on_steam_deck()) config_.fullscreen = true;
         if (config_.debug_tool_enabled) {
             const char* inject = std::getenv("DSR_DEBUG_INJECT");
@@ -125,10 +127,8 @@ public:
         if (!renderer_) return false;
         SDL_RenderSetLogicalSize(renderer_, 0, 0);
         if (config_.integer_scaling) SDL_RenderSetIntegerScale(renderer_, SDL_TRUE);
-        for (auto& texture : textures_) {
-            texture = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, kScreenW, kScreenH);
-            if (!texture) return false;
-            SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+        for (std::size_t i = 0; i < textures_.size(); ++i) {
+            if (!create_screen_texture(i, 1)) return false;
         }
         SDL_AudioSpec want{};
         want.freq = config_.audio_rate; want.format = AUDIO_S16SYS; want.channels = 2;
@@ -342,13 +342,14 @@ public:
                     state.debug_actions &= kDebugAnnotate;
                     continue;
                 }
-                if (key == SDL_SCANCODE_F11 || (key == SDL_SCANCODE_RETURN && (event.key.keysym.mod & KMOD_ALT))) toggle_fullscreen();
+                if (key == config_data_.key_fullscreen || (key == SDL_SCANCODE_RETURN && (event.key.keysym.mod & KMOD_ALT))) toggle_fullscreen();
                 else if (key == config_data_.key_layout) cycle_layout();
                 else if (key == config_data_.key_swap) swap_screens();
                 else if (key == config_data_.key_filter) toggle_filter();
                 else if (key == config_data_.key_integer) { config_.integer_scaling = !config_.integer_scaling; SDL_RenderSetIntegerScale(renderer_, config_.integer_scaling ? SDL_TRUE : SDL_FALSE); }
                 else if (key == config_data_.key_lid) state.lid_closed = !state.lid_closed;
                 else if (key == config_data_.key_screenshot) state.screenshot_requested = true;
+                else if (key == config_data_.key_gpu3d_scale) config_.gpu3d_scale = config_.gpu3d_scale % 4 + 1;
             }
             if (config_.debug_tool_enabled && event.type == SDL_MOUSEBUTTONDOWN &&
                 event.button.button == SDL_BUTTON_LEFT) {
@@ -604,9 +605,30 @@ public:
         }
     }
     void present(const std::uint32_t* top, const std::uint32_t* bottom) override {
+        present_hires(top, 1, bottom, 1);
+    }
+    int requested_gpu3d_scale() const override { return config_.gpu3d_scale; }
+    // (Re)creates screen texture `index` at `scale` times the native size. SDL stretches it
+    // into the same layout rectangle, so a larger texture only adds source resolution.
+    bool create_screen_texture(std::size_t index, int scale) {
+        if (textures_[index]) SDL_DestroyTexture(textures_[index]);
+        textures_[index] = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+                                             kScreenW * scale, kScreenH * scale);
+        if (!textures_[index]) return false;
+        texture_scale_[index] = scale;
+        SDL_SetTextureBlendMode(textures_[index], SDL_BLENDMODE_NONE);
+        SDL_SetTextureScaleMode(textures_[index], config_.linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+        return true;
+    }
+    void present_hires(const std::uint32_t* top, int top_scale, const std::uint32_t* bottom, int bottom_scale) override {
         if (!renderer_) return;
-        if (top) SDL_UpdateTexture(textures_[0], nullptr, top, kScreenW * static_cast<int>(sizeof(std::uint32_t)));
-        if (bottom) SDL_UpdateTexture(textures_[1], nullptr, bottom, kScreenW * static_cast<int>(sizeof(std::uint32_t)));
+        const std::uint32_t* const sources[2] = {top, bottom};
+        const int scales[2] = {std::clamp(top_scale, 1, 4), std::clamp(bottom_scale, 1, 4)};
+        for (std::size_t i = 0; i < 2; ++i) {
+            if (!sources[i]) continue;
+            if (texture_scale_[i] != scales[i] && !create_screen_texture(i, scales[i])) return;
+            SDL_UpdateTexture(textures_[i], nullptr, sources[i], kScreenW * scales[i] * static_cast<int>(sizeof(std::uint32_t)));
+        }
         int width = 0, height = 0; SDL_GetRendererOutputSize(renderer_, &width, &height);
         const auto rects = frontend_detail::layout_rects(config_.layout, width, height, config_.integer_scaling);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255); SDL_RenderClear(renderer_);
@@ -1252,6 +1274,7 @@ private:
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
     std::array<SDL_Texture*, 2> textures_{};
+    std::array<int, 2> texture_scale_{1, 1};
     std::array<SDL_Texture*, 4> texture_view_textures_{};
     std::vector<std::uint32_t> texture_view_pixels_;
     DebugOverlayState debug_overlay_{};

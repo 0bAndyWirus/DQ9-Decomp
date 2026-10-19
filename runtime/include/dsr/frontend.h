@@ -86,6 +86,11 @@ struct FrontendConfig {
     int stick_deadzone = 12000;
     bool dpad_from_stick = true;
     bool mouse_touch_enabled = true;
+    // Optional hi-res 3D: integer scale (1 = native, off; 1-4) of the second 3D render the
+    // host composes over the native top-screen frame. `gpu3d_scale_explicit` marks a value
+    // chosen on the command line, which wins over the persisted frontend.conf value.
+    int gpu3d_scale = 1;
+    bool gpu3d_scale_explicit = false;
     std::array<int, 12> keycodes{};
     std::array<int, 12> gamepad_buttons{};
     bool debug_tool_enabled = false;
@@ -181,6 +186,12 @@ public:
     virtual void diagnostics(FrontendDiagnostics&) const {}
     // Drawing is performed only by the frontend present stage.
     virtual void present(const std::uint32_t* top, const std::uint32_t* bottom) = 0;
+    // Like present(), but each screen is (256*scale) x (192*scale) pixels; scale 1 is native.
+    // The window layout is unchanged: the host scales each texture into the same rectangle.
+    virtual void present_hires(const std::uint32_t* top, int top_scale,
+                               const std::uint32_t* bottom, int bottom_scale) = 0;
+    // Hi-res 3D scale (1-4) the user currently wants; polled by the main loop every frame.
+    virtual int requested_gpu3d_scale() const = 0;
 
     // Queue interleaved stereo int16 frames produced at `source_rate` Hz.
     // The frontend resamples to the device rate.
