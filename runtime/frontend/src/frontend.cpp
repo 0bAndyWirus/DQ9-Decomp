@@ -1068,6 +1068,10 @@ private:
         }
         controllers_.push_back(gamepad);
         select_controller();
+        if (initialized_) { // not for controllers already plugged in at start-up
+            const char* name = SDL_GameControllerName(gamepad);
+            show_message(std::string("CONTROLLER CONNECTED: ") + (name ? name : "GAMEPAD"));
+        }
     }
     void remove_controller(SDL_JoystickID instance) {
         const auto found = std::find_if(controllers_.begin(), controllers_.end(), [&](SDL_GameController* gamepad) {
@@ -1075,6 +1079,8 @@ private:
         });
         if (found != controllers_.end()) {
             if (*found == controller_) controller_ = nullptr;
+            const char* name = SDL_GameControllerName(*found);
+            show_message(std::string("CONTROLLER DISCONNECTED: ") + (name ? name : "GAMEPAD"));
             SDL_GameControllerClose(*found);
             controllers_.erase(found);
         }

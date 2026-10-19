@@ -10,6 +10,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
   compositor; on a separate local development build the 28,500-frame gameplay script (3D scenes) ran about
   15% faster than before v0.2.1 with identical per-frame hashes and WAV output.
 - **Build safety:** `tools/build_port.py` records which image its workspace was extracted from and refuses to silently rebuild an older image when you give it a different one; `--rebuild-workspace` clears the tool's own folders (never the image) and starts clean.
+- **Controllers:** hot-plugging a controller shows a short on-screen notice.
 - **No audio device:** the game now starts and plays silently (with an on-screen notice) when SDL cannot open an audio device, instead of refusing to start.
 - **Window:** the windowed size is remembered between runs.
 - **Launcher:** drop a `.nds` file on the window to set the ROM path.

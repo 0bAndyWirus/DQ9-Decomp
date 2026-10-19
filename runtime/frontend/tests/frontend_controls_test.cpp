@@ -278,6 +278,7 @@ int main() {
     {
         // Pad combos through a virtual controller: Select=back, Start, L/R shoulders, R3.
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+        frontend->show_message(""); // clear earlier notices so only the hot-plug one can appear
         const int device = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 0, 8, 0);
         assert(device >= 0);
         char guid[64]{};
@@ -294,6 +295,23 @@ int main() {
             frontend->poll(hotkey_input);
         };
         frontend->poll(hotkey_input); // open the newly attached controller
+        {
+            // Hot-plugging is announced on screen (bottom-left notice).
+            SDL_Renderer* pad_renderer = SDL_GetRenderer(SDL_GetWindowFromID(1));
+            int pw = 0, ph = 0;
+            SDL_GetRendererOutputSize(pad_renderer, &pw, &ph);
+            const SDL_Rect corner{20, ph - 30, 1, 1};
+            std::array<std::uint32_t, 256 * 192> flat{};
+            flat.fill(0xff102030);
+            std::uint32_t pixel = 0;
+            frontend->present(flat.data(), flat.data());
+            assert(SDL_RenderReadPixels(pad_renderer, &corner, SDL_PIXELFORMAT_ARGB8888, &pixel, 4) == 0);
+            assert(pixel != 0xff102030);
+            frontend->show_message("");
+            frontend->present(flat.data(), flat.data());
+            assert(SDL_RenderReadPixels(pad_renderer, &corner, SDL_PIXELFORMAT_ARGB8888, &pixel, 4) == 0);
+            assert(pixel == 0xff102030); // and the corner is clean again once cleared
+        }
         pad({});
         pad({0, 3}); // Select+R held: fast-forward, nothing forwarded to the DS
         assert(hotkey_input.fast_forward && (hotkey_input.buttons & (dsr::kBtnSelect | dsr::kBtnR)) == 0);
