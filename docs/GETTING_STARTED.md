@@ -25,6 +25,8 @@ python -m pip install PyYAML capstone unicorn cmake ninja
 python tools/build_port.py --rom "/path/to/your-copy.nds"
 ```
 
+Before anything slow runs, the script checks Python, the pip packages, CMake/Ninja, a C++ compiler, free disk space and the image header, and stops with a `FAIL` line naming the fix; `python tools/build_port.py --check --rom PATH` runs only those checks.
+
 The build takes about five minutes. At the end it prints the exact command to start the game, which looks like this:
 
 ```sh

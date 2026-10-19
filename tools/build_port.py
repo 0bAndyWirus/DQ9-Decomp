@@ -37,11 +37,11 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-import yaml
-
 try:
+    from . import preflight
     from .host_tools import executable_name
 except ImportError:
+    import preflight
     from host_tools import executable_name
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -181,12 +181,23 @@ def main(argv: list[str] | None = None) -> int:
     # RelWithDebInfo (outputs identical); pass --config RelWithDebInfo when you need symbols.
     p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
+    p.add_argument("--check", action="store_true", help="only report whether this machine and image are ready, then exit")
     args = p.parse_args(argv)
     if not args.runtime_only and args.rom is None:
         p.error("--rom is required unless --runtime-only is used")
     if args.runtime_only and args.generate_only:
         p.error("--runtime-only and --generate-only cannot be combined")
     args.build_dir = args.build_dir or ROOT / "build" / ("win-zig" if args.runtime_only else "game")
+    if not args.runtime_only:
+        # Fail in seconds, not after the extraction step, when the image or tools are unusable.
+        ready = preflight.report(preflight.run_checks(args.rom, ROOT / "build"))
+        if args.check:
+            return 0 if ready else 1
+        if not ready:
+            print("Fix the FAIL lines above and run again.", file=sys.stderr)
+            return 1
+    elif args.check:
+        p.error("--check needs an image; it cannot be combined with --runtime-only")
     cmake = [sys.executable, "-m", "cmake"]
     if args.runtime_only:
         options = windows_cmake_options(args.sdk_deps)
@@ -238,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     run(py, tools / "unwrap_protected_overlay.py", "--manifest", manifest9, "--out", GEN)
 
     # DSD writes the ARM7 load address, entry and autoload callback while extracting.
+    import yaml  # imported late so tools/preflight.py can report a missing PyYAML first
+
     arm7_meta = yaml.safe_load((extract / "arm7" / "arm7.yaml").read_text(encoding="utf-8"))
     for key in ("base_address", "entry_function", "autoload_callback"):
         if key not in arm7_meta:
