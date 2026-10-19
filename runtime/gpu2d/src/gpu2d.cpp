@@ -1034,6 +1034,13 @@ struct Gpu2D::Impl {
             if (object_y >= 192) {
                 object_y -= 256;
             }
+            // Most objects miss this line; reject them before the affine matrix reads and the
+            // bitmap/tile setup below. Same wrapped-row test as the per-row loop.
+            if (!((screen_y - object_y >= 0 && screen_y - object_y < bound_height) ||
+                  (screen_y - 256 - object_y >= 0 && screen_y - 256 - object_y < bound_height) ||
+                  (screen_y + 256 - object_y >= 0 && screen_y + 256 - object_y < bound_height))) {
+                continue;
+            }
             const bool bitmap = mode == 3;
             const bool color256 = (attr0 & (1U << 13U)) != 0U;
             const std::uint32_t tile_number = attr2 & 0x3FFU;
