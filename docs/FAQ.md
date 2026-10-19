@@ -4,7 +4,7 @@ Short answers about what DQ9-Decomp is and is not. The authoritative documents a
 
 ## Can I play Dragon Quest IX on PC using this repository?
 
-No. This is a research project, not a playable release. The repository publishes original tooling, runtime components and synthetic tests. It ships no game, no generated game code, no compiled game builds and no end-to-end generator workflow, so it is not a completed port. See the [README status](../README.md#status).
+No. This is a research project, not a playable release. The repository publishes original tooling, runtime components and synthetic tests. It ships no game, no generated game code, no compiled game builds and no end-to-end generator workflow, so it is not a completed port. See the [plain-language guide](GETTING_STARTED.md) and the [README status](../README.md#status).
 
 ## Does the project contain ROMs, assets or decompiled game code?
 
