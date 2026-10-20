@@ -160,6 +160,11 @@ struct GameCard::Impl {
             backup_.assign(backup_bytes(backup_type_), 0xff);
             backup_write_bytes_.reserve(256);
             load_save();
+            // Inference replaces the backup memory with a blank one, so it is only allowed while nothing the
+            // user may care about has been loaded into it.
+            if (infer_chip_from_program_ &&
+                std::any_of(backup_.begin(), backup_.end(), [](std::uint8_t byte) { return byte != 0xff; }))
+                infer_chip_from_program_ = false;
             reset();
         } catch (...) {
             close_rom();

@@ -272,6 +272,34 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         automatic.flush_save();
         assert(std::filesystem::file_size(save) == 64u * 1024u);
     }
+    {   // Existing save data is never discarded by the inference: only a notice is possible.
+        const auto save = save_dir / "hint-existing.sav";
+        std::vector<std::uint8_t> existing(512u * 1024u, 0xff);
+        existing[1234] = 0x42;
+        {
+            std::ofstream out(save, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(existing.data()), static_cast<std::streamsize>(existing.size()));
+        }
+        {
+            dsr::GameCard kept(rom, save);   // Auto: the 512 KB size selects flash
+            (void)aux_transfer(kept, {0x03, 0x00, 0x00, 0x00});
+            assert(kept.chip_mismatch_suspected());
+            kept.flush_save();
+        }
+        assert(std::filesystem::file_size(save) == existing.size());
+        std::ifstream in(save, std::ios::binary);
+        std::vector<std::uint8_t> after((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(after == existing);
+        // A blank (all 0xff) save of the same size holds nothing to lose: the inference may switch.
+        std::fill(existing.begin(), existing.end(), 0xff);
+        {
+            std::ofstream out(save, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(existing.data()), static_cast<std::streamsize>(existing.size()));
+        }
+        dsr::GameCard blank(rom, save);
+        (void)aux_transfer(blank, {0x03, 0x00, 0x00, 0x00});
+        assert(!blank.chip_mismatch_suspected());
+    }
     {   // After a write the chip is no longer swapped: a mismatch is only reported.
         dsr::GameCard late(rom, save_dir / "hint-late.sav");
         (void)aux_transfer(late, {0x06});
