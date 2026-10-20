@@ -241,10 +241,17 @@ std::uint32_t isqrt(std::uint32_t value) {
     return result;
 }
 
-void divide(Cpu* c) {
+// Match the reference's post-header range check for timing only. Preserve
+// native decode/callback behavior without an extra source read.
+bool oracle_stream_range_valid(std::uint32_t source, std::uint32_t header) {
+    return (source & 0x0e000000u) != 0 &&
+           ((source + ((header >> 8) & 0x1fffffu)) & 0x0e000000u) != 0;
+}
+
+std::uint32_t divide(Cpu* c) {
     const std::int32_t numerator = std::bit_cast<std::int32_t>(c->r[0]);
     const std::int32_t denominator = std::bit_cast<std::int32_t>(c->r[1]);
-    if (denominator == 0) return;
+    if (denominator == 0) return 0;
     std::int32_t quotient;
     std::int32_t remainder;
     if (numerator == std::numeric_limits<std::int32_t>::min() &&
@@ -261,6 +268,7 @@ void divide(Cpu* c) {
     const std::uint32_t quotient_bits = c->r[0];
     c->r[3] = (quotient_bits & 0x80000000u) != 0 ? 0u - quotient_bits
                                                     : quotient_bits;
+    return 6;
 }
 
 void cpu_set(Cpu* c) {
@@ -321,7 +329,7 @@ void cpu_fast_set(Cpu* c) {
     }
 }
 
-void bit_unpack(Cpu* c) {
+std::uint32_t bit_unpack(Cpu* c) {
     const std::uint32_t source = c->r[0];
     std::uint32_t destination = c->r[1];
     const std::uint32_t info = c->r[2];
@@ -337,7 +345,7 @@ void bit_unpack(Cpu* c) {
         (destination_width != 1 && destination_width != 2 &&
          destination_width != 4 && destination_width != 8 &&
          destination_width != 16 && destination_width != 32)) {
-        return;
+        return 0;
     }
 
     const std::uint32_t value_mask = destination_width == 32
@@ -362,15 +370,19 @@ void bit_unpack(Cpu* c) {
         }
     }
     if (output_bits != 0) swi_wr32(c, destination, output_word);
+    return 1;
 }
 
-void lz77_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
+std::uint32_t lz77_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
                  CallbackTable callbacks, std::uint32_t callback_arg,
                  bool vram_output) {
     InputStream input{c, source, callbacks};
     std::uint32_t header = 0;
-    if (!open_stream(c, input, source, destination, callback_arg, header)) return;
+    if (!open_stream(c, input, source, destination, callback_arg, header)) return 0;
     const std::uint32_t output_size = header >> 8;
+    // Nonempty completions return zero from the reference's inner loop.
+    const std::uint32_t cycles =
+        output_size == 0 && oracle_stream_range_valid(input.position, header) ? 1u : 0u;
     OutputStream output{c, destination, vram_output};
     std::array<std::uint8_t, 0x1000> window{};
     std::uint32_t produced = 0;
@@ -409,15 +421,18 @@ void lz77_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
         }
     }
     close_stream(c, input, output_size);
+    return cycles;
 }
 
-void rl_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
+std::uint32_t rl_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
                CallbackTable callbacks, std::uint32_t callback_arg,
                bool vram_output) {
     InputStream input{c, source, callbacks};
     std::uint32_t header = 0;
-    if (!open_stream(c, input, source, destination, callback_arg, header)) return;
+    if (!open_stream(c, input, source, destination, callback_arg, header)) return 0;
     const std::uint32_t output_size = header >> 8;
+    const std::uint32_t cycles =
+        output_size == 0 && oracle_stream_range_valid(input.position, header) ? 1u : 0u;
     OutputStream output{c, destination, vram_output};
     while (output.size < output_size) {
         const std::uint32_t flag = input.get8();
@@ -435,6 +450,7 @@ void rl_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
         }
     }
     close_stream(c, input, output_size);
+    return cycles;
 }
 
 std::uint8_t huffman_symbol(InputStream& input,
@@ -463,12 +479,13 @@ std::uint8_t huffman_symbol(InputStream& input,
     return 0;
 }
 
-void huffman_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
+std::uint32_t huffman_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
                     CallbackTable callbacks, std::uint32_t temp_buffer) {
     InputStream input{c, source, callbacks};
     std::uint32_t header = 0;
-    if (!open_stream(c, input, source, destination, temp_buffer, header)) return;
+    if (!open_stream(c, input, source, destination, temp_buffer, header)) return 0;
     const std::uint32_t output_size = header >> 8;
+    const std::uint32_t cycles = oracle_stream_range_valid(input.position, header) ? 1u : 0u;
     const unsigned unit_width = header & 0x0fu;
     const std::uint32_t tree_size_byte = input.get8();
     const std::uint32_t tree_size = (tree_size_byte + 1) * 2;
@@ -504,6 +521,7 @@ void huffman_decode(Cpu* c, std::uint32_t source, std::uint32_t destination,
         swi_wr32(c, destination + output_offset, word);
     }
     close_stream(c, input, output_size);
+    return cycles;
 }
 
 
@@ -574,26 +592,25 @@ std::uint32_t volume_table_value(std::uint32_t index) {
 
 } // namespace
 
-bool handle_data_swi(Cpu* c, std::uint32_t imm) {
-    if (c == nullptr) return false;
-    const unsigned number=imm&0xffu;
+std::optional<std::uint32_t> handle_data_swi(Cpu* c, std::uint32_t imm) {
+    if (c == nullptr) return std::nullopt;
+    const unsigned number=imm;
     SwiTraceScope trace(c,number);
     switch (number) {
     case 0x09: // NDS Div: signed quotient in r0, remainder in r1, |quotient| in r3.
-        divide(c);
-        return true;
+        return divide(c);
     case 0x0b:
         cpu_set(c);
-        return true;
+        return 1;
     case 0x0c:
         cpu_fast_set(c);
-        return true;
+        return 1;
     case 0x0d:
         c->r[0] = isqrt(c->r[0]);
-        return true;
+        return 1;
     case 0x0e:
         crc16(c);
-        return true;
+        return 1;
     case 0x0f: {
         const std::uint32_t address = c->id == CpuId::Arm7 ? 0x027ffffau
                                                             : 0x027ffff8u;
@@ -603,57 +620,51 @@ bool handle_data_swi(Cpu* c, std::uint32_t imm) {
         // The 4 MB retail RAM mirrors at +4 MB; debug hardware has 8 MB and
         // leaves the corresponding 0x023ffffx halfword unchanged.
         c->r[0] = rd16(c, mirror) != probe ? 1u : 0u;
-        return true;
+        return 1;
     }
     case 0x10:
-        bit_unpack(c);
-        return true;
+        return bit_unpack(c);
     case 0x11:
-        lz77_decode(c, c->r[0], c->r[1], {}, c->r[2], false);
-        return true;
+        return lz77_decode(c, c->r[0], c->r[1], {}, c->r[2], false);
     case 0x12:
-        lz77_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2],
-                    true);
-        return true;
+        return lz77_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2],
+                           true);
     case 0x13:
-        huffman_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2]);
-        return true;
+        return huffman_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2]);
     case 0x14:
-        rl_decode(c, c->r[0], c->r[1], {}, c->r[2], false);
-        return true;
+        return rl_decode(c, c->r[0], c->r[1], {}, c->r[2], false);
     case 0x15:
-        rl_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2],
-                  true);
-        return true;
+        return rl_decode(c, c->r[0], c->r[1], load_callbacks(c, c->r[3]), c->r[2],
+                         true);
     case 0x16:
-        if (c->id != CpuId::Arm9) return false;
+        if (c->id != CpuId::Arm9) return std::nullopt;
         diff8(c, false);
-        return true;
+        return 1;
     case 0x18:
-        if (c->id != CpuId::Arm9) return false;
+        if (c->id != CpuId::Arm9) return std::nullopt;
         diff16(c);
-        return true;
+        return 1;
     case 0x1a: // Raw index: round(32767 * sin(index * pi / 128)).
-        if (c->id != CpuId::Arm7) return false;
-        if (c->r[0] >= 64) return true;
+        if (c->id != CpuId::Arm7) return std::nullopt;
+        if (c->r[0] >= 64) return 1;
         c->r[0] = static_cast<std::uint32_t>(std::lround(
             std::sin(static_cast<double>(c->r[0]) * 3.14159265358979323846 / 128.0) *
             32767.0));
-        return true;
+        return 1;
     case 0x1b: // 768 index steps span one octave; result is Q16 fractional pitch.
-        if (c->id != CpuId::Arm7) return false;
-        if (c->r[0] >= 768) return true;
+        if (c->id != CpuId::Arm7) return std::nullopt;
+        if (c->r[0] >= 768) return 1;
         c->r[0] = static_cast<std::uint32_t>(std::lround(
             (std::exp2(static_cast<double>(c->r[0]) / 768.0) - 1.0) * 65536.0));
-        return true;
+        return 1;
     case 0x1c:
-        if (c->id != CpuId::Arm7) return false;
-        if (c->r[0] >= 724) return true;
+        if (c->id != CpuId::Arm7) return std::nullopt;
+        if (c->r[0] >= 724) return 1;
         c->r[0] = volume_table_value(c->r[0]);
-        return true;
+        return 1;
     // GetBootProcs is not implemented; do not invent BIOS routine addresses.
     default:
-        return false;
+        return std::nullopt;
     }
 }
 

@@ -52,6 +52,54 @@ title-specific offsets in the runtime. `SessionConfig::abi_config_path` or
 diagnostic. Public field definitions live in `runtime/include/dsr/abi_config.h`;
 no title layouts are shipped.
 
+### CPU and Slot-1 timing approximation
+
+ARM9 generated blocks charge a reference-calibrated average of **161/64 CPU
+cycles per ordinary fetched instruction**. `Cpu::cycle_fraction` carries the
+remainder across blocks, calls, scheduler slices, and guest thread switches;
+reset clears it. It is CPU timing state, not saved architectural/context state.
+A long Thumb BL/BLX counts as two fetched instructions, and failed ARM
+predicates still incur their fetch cost. ARM7 retains its integer
+instruction-plus-memory estimate. This coefficient is an approximation, not an
+ARM946 cache-tag, wait-state, pipeline-hazard, or hardware-accurate timing model.
+Generated code and runtime must use the same CPU contract and timing emitter;
+rebuilding only the runtime does not update previously generated block costs.
+
+Data SWIs and `WaitByLoop` charge one generated base cycle instead of the ARM9
+average. Runtime HLE adds two dispatch cycles plus the reference handler's
+returned cycles, on either CPU. A failed conditional data/delay SWI therefore
+costs only its one base cycle. `CpuSet`, `CpuFastSet`, square root, CRC, debugger
+probe, valid bit unpack, Huffman, ARM9 differential filters, and ARM7 lookup
+tables have four-cycle totals, independent of data size; division costs nine
+cycles, or three for a zero divisor. Nonempty LZ77/RL completion returns zero
+handler cycles (three total), while an initially empty valid stream returns
+one (four total). Invalid bit-unpack parameters, a failed callback open, and
+invalid stream ranges return handled zero-cycle results; these remain distinct
+from unsupported SWIs. No per-byte copy/decompression charge is invented.
+`WaitByLoop` totals three cycles plus its loop count times four on ARM7, or
+two/eight on ARM9 with/without enabled TCM. Other control SWIs retain their
+cooperative halt/wait accounting.
+
+Slot-1 schedules its initial READY after `(8 + gap) * clocks + 4` machine
+ticks and holds READY until the card block is consumed. CPU polling can read
+successive words without another scheduler slice. One readiness callback lets
+cartridge DMA drain until the card block ends or the latched DMA count
+completes. DMA completion IRQ, repeat rearming, and destination reload happen
+once per programmed completion; a repeat channel cannot recursively consume
+another block in that callback. Card exhaustion must not create stale extra
+writes or a premature DMA IRQ. ROMCTRL size codes 1–6 transfer
+`0x100 << code` bytes (512–16384), code 7 transfers four bytes, and code 0 none
+([cartridge I/O contract](https://problemkaputt.de/gbatek-ds-cartridge-i-o-ports.htm)).
+
+The held-READY and bounded-DMA changes form one timing contract: holding READY
+with a one-unit-per-callback DMA would stall after its first word. Deterministic
+ROM-free regressions cover fractional carry/debt, SWI costs, initial READY
+latency, successive card data, completion/IRQ boundaries, DMA repeat/count
+latching, card exhaustion, and slot ownership. Cross-run comparisons require
+identical starting backup bytes as well as inputs, RTC, and CPU policy.
+Neither this timing approximation nor synthetic tests establish general frame
+parity, hardware accuracy, or native game playability.
+
 ### Runtime diagnostics
 
 Set `DSR_WATCH=addr[:length][,addr[:length]...]` to log writes intersecting selected guest-memory byte ranges; numbers accept decimal or `0x` hexadecimal, and an address without a length watches one byte. Watched pages use the core's slow write path, which logs frame, CPU, guest PC, thread context, Fiber identity, address, width, old/new values, guest registers, and CPSR. Generated stores report their exact instruction PC; other runtime-originated writes fall back to the CPU's most recently dispatched guest PC. `runtime/core/THREADS.md` documents the ARM9 stack identity checks and `DSR_TRACE_THREADS` diagnostics.

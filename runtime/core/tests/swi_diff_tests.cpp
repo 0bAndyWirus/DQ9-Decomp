@@ -1,4 +1,5 @@
 #include "core_internal.h"
+#include "swi.h"
 #include "dsr/machine.h"
 #include "dsr/mem.h"
 #include "dsr/rt.h"
@@ -704,7 +705,7 @@ void test_control_swis(dsr::Machine& machine) {
         cpu.r[0]=7;cpu.r[1]=0x11;cpu.r[2]=0x22;cpu.r[3]=0x33;cpu.budget=10000;
         dsr_swi(&cpu,0x00030000,0x02004000,false);
         mismatch+=cpu.r[0]!=0 || cpu.r[1]!=0x11 || cpu.r[2]!=0x22 ||
-                  cpu.r[3]!=0x33 || cpu.budget!=10000-7*cycles;
+                  cpu.r[3]!=0x33 || cpu.budget!=10000-2-7*cycles;
     }
     dsr::Cpu& arm7=machine.cpu(dsr::CpuId::Arm7);
     machine.write32(dsr::CpuId::Arm7,0x04000504,0x100);
@@ -714,6 +715,171 @@ void test_control_swis(dsr::Machine& machine) {
               arm7.r[3]!=4 || arm7.budget!=10000-256*2 ||
               machine.read32(dsr::CpuId::Arm7,0x04000504)!=0x200;
     report("WaitByLoop ARM7/9 + SoundBias",3,mismatch);
+}
+
+void test_swi_timing(dsr::Machine& machine) {
+    unsigned cases=0, mismatch=0;
+    // A SWI costs handler()+3: generated code charges one base cycle and
+    // HLE supplies the other two dispatch cycles plus the handler result.
+    const auto check=[&](dsr::CpuId id,unsigned swi,Registers regs,
+                         std::uint32_t handler_cycles,const char* name) {
+        for(bool thumb : {false,true}) {
+            dsr::Cpu& cpu=machine.cpu(id);
+            for(unsigned i=0;i<4;++i) cpu.r[i]=regs[i];
+            constexpr std::int64_t budget=10000;
+            cpu.budget=budget-1;
+            cpu.cycle_fraction=37;
+            dsr_swi(&cpu,thumb?swi:swi<<16,0x02004000,thumb);
+            const std::int64_t actual=budget-cpu.budget;
+            const std::int64_t expected=3+handler_cycles;
+            ++cases;
+            if(actual!=expected || cpu.cycle_fraction!=37) {
+                ++mismatch;
+                std::fprintf(stderr,
+                    "[swi-diff] %s ARM%u %s SWI %02x cycles=%lld expected=%lld fraction=%u\n",
+                    name,id==dsr::CpuId::Arm9?9u:7u,thumb?"Thumb":"ARM",swi,
+                    static_cast<long long>(actual),static_cast<long long>(expected),
+                    cpu.cycle_fraction);
+            }
+        }
+    };
+    for(dsr::CpuId id : {dsr::CpuId::Arm9,dsr::CpuId::Arm7}) {
+        for(std::uint32_t denominator : {3u,0u,0xffffffffu}) {
+            const Registers regs{0x80000000u,denominator,0x22222222u,0x33333333u};
+            check(id,0x09,regs,denominator?6u:0u,"Div");
+            Registers expected=regs;
+            reference_div(expected);
+            for(unsigned i=0;i<4;++i)
+                if(machine.cpu(id).r[i]!=expected[i]) ++mismatch;
+        }
+        for(std::uint32_t value : {0u,0xffffffffu})
+            check(id,0x0d,{value,0,0,0},1,"Sqrt");
+        for(unsigned swi : {0x0bu,0x0cu}) {
+            for(std::uint32_t count : {0u,8u,64u}) {
+                machine.write32(id,kSource,0x12345678);
+                check(id,swi,{kSource,kDestination,count|(1u<<26),0},1,"Copy");
+                check(id,swi,{kSource,kDestination,count|(1u<<24)|(1u<<26),0},1,"Fill");
+            }
+        }
+        for(std::uint32_t size : {0u,1u,8u,64u})
+            check(id,0x0e,{0xffffu,kSource,size,0},1,"CRC16");
+        check(id,0x0f,{0,0,0,0},1,"IsDebugger");
+        for(const auto [source_width,destination_width] :
+            {std::pair{1u,8u},std::pair{8u,32u},std::pair{0u,8u},
+             std::pair{3u,8u},std::pair{1u,0u},std::pair{1u,3u},
+             std::pair{1u,33u}}) {
+            for(unsigned size : {0u,4u}) {
+                machine.write16(id,kInfo,size);
+                machine.write8(id,kInfo+2,source_width);
+                machine.write8(id,kInfo+3,destination_width);
+                machine.write32(id,kInfo+4,0);
+                const bool valid=(source_width==1 || source_width==8) &&
+                                 (destination_width==8 || destination_width==32);
+                check(id,0x10,{kSource,kDestination,kInfo,0},valid?1u:0u,"BitUnPack");
+            }
+        }
+        for(unsigned swi : {0x11u,0x12u,0x14u,0x15u}) {
+            const bool lz=swi==0x11 || swi==0x12;
+            machine.write32(id,kSource,lz?0x10u:0x30u);
+            check(id,swi,{kSource,kDestination,0,0},1,"Empty decode");
+            machine.write32(id,kSource,(4u<<8)|(lz?0x10u:0x30u));
+            machine.write8(id,kSource+4,lz?0u:3u);
+            for(unsigned i=0;i<4;++i) machine.write8(id,kSource+5+i,'A'+i);
+            check(id,swi,{kSource,kDestination,0,0},0,"Literal decode");
+            machine.write32(id,kSource,(8u<<8)|(lz?0x10u:0x30u));
+            if(lz) {
+                machine.write8(id,kSource+4,0x10);
+                machine.write8(id,kSource+5,'A');
+                machine.write8(id,kSource+6,'B');
+                machine.write8(id,kSource+7,'C');
+                machine.write8(id,kSource+8,0x20);
+                machine.write8(id,kSource+9,2);
+            } else {
+                machine.write8(id,kSource+4,0x85);
+                machine.write8(id,kSource+5,'A');
+            }
+            check(id,swi,{kSource,kDestination,0,0},0,"Compressed decode");
+            // Unmapped reads supply a zero header without changing native
+            // decoder behavior solely for the reference's range check.
+            check(id,swi,{0x10000000u,kDestination,0,0},0,"Invalid decode range");
+        }
+        for(unsigned width : {4u,8u}) {
+            for(unsigned size : {0u,4u}) {
+                machine.write32(id,kSource,(size<<8)|0x20u|width);
+                machine.write8(id,kSource+4,1);
+                machine.write8(id,kSource+5,0xc0);
+                machine.write8(id,kSource+6,1);
+                machine.write8(id,kSource+7,2);
+                machine.write32(id,kSource+8,0x55555555u);
+                check(id,0x13,{kSource,kDestination,0,0},1,"Huffman");
+            }
+        }
+        check(id,0x13,{0x10000000u,kDestination,0,0},0,"Invalid Huffman range");
+        if(id==dsr::CpuId::Arm9) {
+            for(unsigned swi : {0x16u,0x18u}) {
+                machine.write32(id,kSource,(4u<<8)|0x80u|(swi==0x16?1u:2u));
+                check(id,swi,{kSource,kDestination,0,0},1,"Diff");
+            }
+        } else {
+            for(unsigned swi : {0x1au,0x1bu,0x1cu})
+                for(std::uint32_t index : {0u,32u,0xffffffffu})
+                    check(id,swi,{index,0,0,0},1,"Table");
+        }
+        for(unsigned delay : {0u,1u,100u})
+            check(id,3,{delay,0,0,0},delay*(id==dsr::CpuId::Arm9?2u:4u),
+                  "WaitByLoop");
+    }
+
+    dsr::Cpu& arm9=machine.cpu(dsr::CpuId::Arm9);
+    const std::uint32_t control=dsr_mrc(&arm9,15,0,1,0,0,0);
+    for(std::uint32_t tcm : {0u,1u<<16,1u<<18,(1u<<16)|(1u<<18)}) {
+        dsr_mcr(&arm9,15,0,1,0,0,(control&~((1u<<16)|(1u<<18)))|tcm,0);
+        for(unsigned delay : {0u,1u,100u})
+            check(dsr::CpuId::Arm9,3,{delay,0,0,0},delay*(tcm?2u:8u),
+                  "WaitByLoop TCM policy");
+    }
+    dsr_mcr(&arm9,15,0,1,0,0,control,0);
+
+    // A rejected open is handled with zero handler cycles, not unsupported;
+    // it must retain the callback result and never call close/read.
+    for(unsigned swi : {0x12u,0x13u,0x15u}) {
+        machine.write32(dsr::CpuId::Arm9,kSource,0x80000000u);
+        machine.write32(dsr::CpuId::Arm9,kCallbackTable,kCallbackOpen);
+        machine.write32(dsr::CpuId::Arm9,kCallbackTable+4,kCallbackClose);
+        machine.write32(dsr::CpuId::Arm9,kCallbackTable+8,kCallbackGet8);
+        callback_state={};
+        check(dsr::CpuId::Arm9,swi,{kSource,kDestination,kInfo,kCallbackTable},0,
+              "Failed stream open");
+        mismatch+=arm9.r[0]!=0x80000000u || callback_state.opens!=2 ||
+                  callback_state.closes!=0 || callback_state.reads8!=0 ||
+                  callback_state.reads16!=0 || callback_state.reads32!=0;
+    }
+
+    // Preserve cycle debt and fraction when HLE crosses a slice boundary.
+    arm9.r[0]=9;
+    arm9.budget=0; // generated base cycle has exhausted this slice
+    arm9.cycle_fraction=63;
+    dsr_swi(&arm9,0x000d0000,0x02004000,false);
+    ++cases;
+    mismatch+=arm9.r[0]!=3 || arm9.budget!=-3 || arm9.cycle_fraction!=63;
+
+    // Optional zero is handled, whereas wrong-CPU/control/unknown SWIs are
+    // absent. Already-decoded numbers must not alias through low-byte masking.
+    arm9.r[1]=0;
+    const auto zero=dsr::detail::handle_data_swi(&arm9,0x09);
+    ++cases;
+    mismatch+=!zero.has_value() || *zero!=0;
+    for(unsigned swi : {0x03u,0x1au,0xffu,0x109u}) {
+        ++cases;
+        mismatch+=dsr::detail::handle_data_swi(&arm9,swi).has_value();
+    }
+    for(unsigned swi : {0x16u,0x18u}) {
+        ++cases;
+        mismatch+=dsr::detail::handle_data_swi(&machine.cpu(dsr::CpuId::Arm7),swi).has_value();
+    }
+    ++cases;
+    mismatch+=dsr::detail::handle_data_swi(nullptr,0x09).has_value();
+    report("Exact HLE timing",cases,mismatch);
 }
 
 void test_bit_unpack(dsr::Machine& machine, std::mt19937& rng) {
@@ -860,6 +1026,7 @@ int run() {
     test_huffman(machine,rng);
     test_callback_streams(machine,rng);
     test_lz_rl_diff(machine,rng);
+    test_swi_timing(machine);
     return failures == 0 ? 0 : 1;
 }
 } // namespace

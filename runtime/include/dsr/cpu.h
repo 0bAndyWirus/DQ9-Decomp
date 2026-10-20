@@ -59,6 +59,10 @@ struct Cpu {
     // became deliverable).
     std::int64_t budget;
 
+    // Fractional ARM9 cycles in 1/64 units, carried across generated blocks.
+    // CPU time is not part of a saved guest thread or architectural state.
+    std::uint32_t cycle_fraction;
+
     CpuId id;
     Machine* m;
 

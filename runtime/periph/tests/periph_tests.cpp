@@ -211,31 +211,43 @@ void test_card_rom_and_chip_id(const std::filesystem::path& rom,
         const unsigned length = code == 7 ? 4u : 0x100u << code;
         write_card_command(card, 0xb7, 0x8000);
         card.io_write(kRomCtrl, 0x80000000u | (code << 24), 32);
+        assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0x80000000u);
+        card.run(43);
+        assert(ready == static_cast<int>(code - 1));
+        assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0x80000000u);
+        card.run(1); // slow clock, zero gap: (8 * 5 + 4)
+        assert(ready == static_cast<int>(code));
         for (unsigned offset = 0; offset < length; offset += 4) {
-            card.run(offset == 0 ? 44 : 2); // slow clock, zero gap: (8 * 5 + 4)
+            // No time advance is needed between distinct polled words.
             assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0x80800000u);
             assert(done == static_cast<int>(code - 1));
-            const int previous_ready = ready;
             std::uint32_t expected = 0;
             for (unsigned byte = 0; byte < 4; ++byte)
                 expected |= (((0x8000u + offset + byte) * 13u + 7u) & 0xffu) << (byte * 8);
             assert(card.io_read(kCardData, 32) == expected);
-            assert((card.io_read(kRomCtrl, 32) & (1u << 23)) == 0);
-            card.run(1); // No premature next word or duplicate completion.
-            assert(ready == previous_ready);
+            assert(ready == static_cast<int>(code));
             if (offset + 4 < length) {
-                assert((card.io_read(kRomCtrl, 32) & (1u << 31)) != 0);
+                assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0x80800000u);
                 assert(done == static_cast<int>(code - 1));
             }
         }
         assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0);
         assert(done == static_cast<int>(code));
+        card.run(1000);
+        assert(ready == static_cast<int>(code));
+        assert(done == static_cast<int>(code));
+        assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0);
     }
 
     write_card_command(card, 0xb8, 0);
     card.io_write(kRomCtrl, 0x87000000u, 32); // 4-byte block
     card.run(44);
     assert(card.io_read(kCardData, 32) == 0x00001fc2u);
+    assert(done == 8);
+    assert(ready == 8);
+    assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0);
+    card.run(1000);
+    assert(ready == 8);
     assert(done == 8);
 }
 

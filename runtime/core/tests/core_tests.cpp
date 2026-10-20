@@ -492,6 +492,8 @@ void test_slot1_read_ready_latency() {
         std::array<std::uint8_t, 0x20000> rom{};
         rom[0x15e] = 0x34;
         rom[0x15f] = 0x12;
+        for (unsigned i = 0; i < 512; ++i)
+            rom[0x8000u + i] = static_cast<std::uint8_t>(i * 13u + 7u);
         output.write(reinterpret_cast<const char*>(rom.data()),
                      static_cast<std::streamsize>(rom.size()));
         check(output.good(), "slot-1 timing ROM fixture is written");
@@ -514,13 +516,14 @@ void test_slot1_read_ready_latency() {
         config.direct_boot = false;
         Machine machine(config);
         machine.write32(CpuId::Arm9, 0x04000204, 1u << 11); // give slot-1 to ARM7
+        machine.write16(CpuId::Arm7, 0x040001a0, 0xc000); // ROM transfer IRQ
         const std::array<std::uint8_t, 8> command = {0xb7, 0, 0, 0x80, 0, 0, 0, 0};
         for (std::size_t i = 0; i < command.size(); ++i)
             machine.write8(CpuId::Arm7, 0x040001a8u + i, command[i]);
         const std::uint32_t clocks = scenario.fast_clock ? 8u : 5u;
         const std::uint32_t clock_select = scenario.fast_clock ? 1u << 27 : 0u;
         const std::uint32_t rom_control = 0x81000000u | clock_select | scenario.gap;
-        machine.write32(CpuId::Arm7, 0x040001a4, rom_control); // nonzero 0x100-byte block
+        machine.write32(CpuId::Arm7, 0x040001a4, rom_control); // 512-byte block
 
         // NDS_RescheduleReadSlot1 doubles the 33-MHz transfer clocks because
         // DeSmuME's nds_timer is 66 MHz. Machine ticks use the same 33-MHz
@@ -533,6 +536,25 @@ void test_slot1_read_ready_latency() {
         machine.run_ticks(1);
         check((machine.read32(CpuId::Arm7, 0x040001a4) & kDataReady) != 0,
               "slot-1 data-ready asserts at the Oracle ROMCTRL delay");
+        for (unsigned word = 0; word < 128; ++word) {
+            check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0x80800000u,
+                  "polled card holds READY and BUSY until its last word");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) == 0,
+                  "polled card transfer IRQ waits for its last word");
+            std::uint32_t expected = 0;
+            for (unsigned byte = 0; byte < 4; ++byte)
+                expected |= (((word * 4u + byte) * 13u + 7u) & 0xffu) << (byte * 8);
+            check(machine.read32(CpuId::Arm7, 0x04100010) == expected,
+                  "successive distinct card words are readable without advancing time");
+        }
+        check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0,
+              "last polled word clears card READY and BUSY");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) != 0,
+              "last polled word raises the card transfer IRQ");
+        machine.write32(CpuId::Arm7, 0x04000214, 1u << 19);
+        machine.run_ticks(native_delay);
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) == 0,
+              "acknowledged card completion IRQ does not repeat");
     }
 
     MachineConfig config;
@@ -593,6 +615,8 @@ void test_dma_latches_and_timing() {
         };
 
         machine.write32(CpuId::Arm9, 0x04000204, 1u << 11); // give slot-1 to ARM7
+        machine.write16(CpuId::Arm7, 0x040001a0, 0xc000); // ROM transfer IRQ
+        machine.write32(CpuId::Arm7, arm7_dst - 4, sentinel);
         machine.write32(CpuId::Arm7, 0x02001000, sentinel);
         machine.write32(CpuId::Arm7, 0x02001004, sentinel);
         machine.write32(CpuId::Arm7, 0x02001008, sentinel);
@@ -608,47 +632,94 @@ void test_dma_latches_and_timing() {
         machine.write32(CpuId::Arm7, 0x040000d0, (0xe760u << 16) | 2u); // fixed card source, repeat/reload + IRQ
         machine.write16(CpuId::Arm7, 0x040000d0, 1u); // count is already latched as 2
 
-        const std::array<std::uint8_t, 8> command = {0xb7, 0, 0, 0x80, 0, 0, 0, 0};
-        for (std::size_t i = 0; i < command.size(); ++i)
-            machine.write8(CpuId::Arm7, 0x040001a8u + i, command[i]);
-        machine.write32(CpuId::Arm7, 0x040001a4, 0x81000000u); // 256-byte ROM block
+        for (unsigned block = 0; block < 2; ++block) {
+            const std::array<std::uint8_t, 8> command = {
+                0xb7, 0, 0, 0x80, static_cast<std::uint8_t>(block * 8u), 0, 0, 0};
+            for (std::size_t i = 0; i < command.size(); ++i)
+                machine.write8(CpuId::Arm7, 0x040001a8u + i, command[i]);
+            machine.write32(CpuId::Arm7, 0x040001a4, 0x81000000u); // 512-byte block
 
-        machine.run_ticks(44); // ((8 + 0) * 5 + 4) native ticks
-        check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(0),
-              "one cartridge data-ready callback transfers one DMA word");
-        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == sentinel,
-              "cartridge DMA leaves the next destination untouched until its next callback");
-        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
-              "cartridge DMA does not raise its IRQ before the latched count completes");
-        check(machine.read32(CpuId::Arm9, arm9_nonowner_dst) == sentinel,
-              "cartridge DMA callback is routed only to the slot owner");
-        check(machine.read32(CpuId::Arm7, 0x040000d0) == ((0xe760u << 16) | 1u),
-              "DMA count register readback remains distinct from its latched remaining count");
-
-        machine.run_ticks(2);
-        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(1),
-              "cartridge DMA transfers the second distinct word");
-        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) != 0,
-              "cartridge DMA raises its IRQ at block completion");
-        machine.write32(CpuId::Arm7, 0x04000214, 1u << 10); // acknowledge first block IRQ
-
-        machine.run_ticks(2);
-        check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(2),
-              "repeated cartridge DMA reloads the destination after a full block");
-        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(1),
-              "repeated cartridge DMA advances within its reloaded destination block");
-        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
-              "repeated cartridge DMA waits for the next complete block before IRQ");
-        machine.run_ticks(2);
-        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(3),
-              "second repeated block transfers its final distinct word");
-        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) != 0,
-              "second repeated block raises DMA IRQ only on completion");
+            machine.run_ticks(43);
+            check(machine.read32(CpuId::Arm7, arm7_dst) ==
+                      (block == 0 ? sentinel : word_at(0)),
+                  "card DMA waits until the initial READY delay");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
+                  "card DMA IRQ is clear before the readiness callback");
+            machine.run_ticks(1);
+            check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(block * 2),
+                  "card DMA starts each repeat at the reloaded destination");
+            check(machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(block * 2 + 1),
+                  "one READY callback transfers both distinct programmed DMA words");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) != 0,
+                  "one READY callback completes the latched DMA count and raises IRQ");
+            check(machine.read32(CpuId::Arm9, arm9_nonowner_dst) == sentinel,
+                  "card DMA readiness is routed only to the slot owner");
+            check(machine.read32(CpuId::Arm7, 0x040000d0) == ((0xe760u << 16) | 1u),
+                  "repeat DMA remains enabled with separate programmed count readback");
+            check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0x80800000u,
+                  "DMA stops at its own count while the longer card block holds READY");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) == 0,
+                  "short DMA completion does not complete the longer card command");
+            machine.write32(CpuId::Arm7, 0x04000214, 1u << 10);
+            machine.run_ticks(100);
+            check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(block * 2) &&
+                      machine.read32(CpuId::Arm7, arm7_dst + 4) == word_at(block * 2 + 1),
+                  "rearmed DMA cannot recursively drain a second programmed block");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
+                  "DMA completion IRQ does not repeat without a new callback");
+            for (unsigned word = 2; word < 128; ++word)
+                check(machine.read32(CpuId::Arm7, card_data) == word_at(block * 2 + word),
+                      "polling consumes remaining card data without another DMA block");
+            check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0,
+                  "exhausting the card block clears READY and BUSY");
+            check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) != 0,
+                  "card IRQ follows card exhaustion, not short DMA completion");
+            machine.write32(CpuId::Arm7, 0x04000214, 1u << 19);
+            machine.run_ticks(100);
+            check((machine.read32(CpuId::Arm7, 0x04000214) & ((1u << 10) | (1u << 19))) == 0,
+                  "acknowledged card and DMA IRQs do not repeat");
+        }
         check(machine.read32(CpuId::Arm7, 0x040000c8) == card_data &&
                   machine.read32(CpuId::Arm7, 0x040000cc) == arm7_dst,
               "DMA source and destination registers retain their programmed readback values");
         check(machine.read32(CpuId::Arm7, arm7_dst + 8) == sentinel,
               "destination reload keeps repeated cartridge blocks within the programmed range");
+        check(machine.read32(CpuId::Arm7, arm7_dst - 4) == sentinel,
+              "repeated card DMA preserves the preceding destination guard");
+
+        // Card exhaustion must not synthesize the second word of a DMA
+        // programmed for two words or signal its completion prematurely.
+        machine.write16(CpuId::Arm7, 0x040000d2, 0);
+        machine.write32(CpuId::Arm7, arm7_dst, sentinel);
+        machine.write32(CpuId::Arm7, arm7_dst + 4, sentinel);
+        machine.write32(CpuId::Arm7, 0x040000d0, (0xe500u << 16) | 2u);
+        const std::array<std::uint8_t, 8> short_command = {0xb7, 0, 0, 0x80, 0, 0, 0, 0};
+        for (std::size_t i = 0; i < short_command.size(); ++i)
+            machine.write8(CpuId::Arm7, 0x040001a8u + i, short_command[i]);
+        machine.write32(CpuId::Arm7, 0x040001a4, 0x87000000u);
+        machine.run_ticks(44);
+        check(machine.read32(CpuId::Arm7, arm7_dst) == word_at(0),
+              "incomplete DMA transfers the one word the card supplies");
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == sentinel &&
+                  machine.read32(CpuId::Arm7, arm7_dst + 8) == sentinel &&
+                  machine.read32(CpuId::Arm7, arm7_dst - 4) == sentinel,
+              "card exhaustion leaves unwritten DMA words and destination guards intact");
+        check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0,
+              "short card exhaustion clears READY and BUSY");
+        check((machine.read32(CpuId::Arm7, 0x04000214) & (1u << 19)) != 0 &&
+                  (machine.read32(CpuId::Arm7, 0x04000214) & (1u << 10)) == 0,
+              "card exhaustion raises only the card IRQ while DMA remains incomplete");
+        check(machine.read32(CpuId::Arm7, 0x040000d0) == ((0xe500u << 16) | 2u) &&
+                  machine.read32(CpuId::Arm7, 0x040000c8) == card_data &&
+                  machine.read32(CpuId::Arm7, 0x040000cc) == arm7_dst,
+              "incomplete DMA retains enable and programmed register readback");
+        machine.write32(CpuId::Arm7, 0x04000214, 1u << 19);
+        machine.run_ticks(100);
+        check(machine.read32(CpuId::Arm7, arm7_dst + 4) == sentinel &&
+                  (machine.read32(CpuId::Arm7, 0x04000214) & ((1u << 10) | (1u << 19))) == 0,
+              "exhausted card cannot resume DMA or repeat completion IRQs");
+        check(machine.read32(CpuId::Arm9, arm9_nonowner_dst) == sentinel,
+              "short card callback also leaves the non-owner DMA untouched");
 
         machine.write32(CpuId::Arm9, 0x040000c4, 0x00054321u);
         check(machine.read32(CpuId::Arm9, 0x040000c4) == 0x00054321u,

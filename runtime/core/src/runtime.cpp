@@ -1,4 +1,5 @@
 #include "core_internal.h"
+#include "swi.h"
 
 #include <algorithm>
 #include <array>
@@ -6,10 +7,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-
-namespace dsr::detail {
-bool handle_data_swi(Cpu* cpu, std::uint32_t imm);
-}
 
 namespace dsr {
 namespace {
@@ -352,7 +349,11 @@ void Machine::Impl::cp15_write(Cpu* cpu, unsigned cp, unsigned op1, unsigned crn
 
 void Machine::Impl::swi(Cpu* cpu, std::uint32_t imm, std::uint32_t pc, bool thumb) {
     const std::uint32_t number = raw_swi_number(imm, thumb);
-    if (detail::handle_data_swi(cpu, number)) return;
+    if (const auto handler_cycles = detail::handle_data_swi(cpu, number)) {
+        // Reference SWI timing is handler()+3; generated code charges base 1.
+        cpu->budget -= 2 + static_cast<std::int64_t>(*handler_cycles);
+        return;
+    }
     CpuRuntime& rt = runtime(cpu->id);
     switch (number) {
     case 0: // SoftReset: restart the cartridge after leaving the active guest stack.
@@ -367,7 +368,7 @@ void Machine::Impl::swi(Cpu* cpu, std::uint32_t imm, std::uint32_t pc, bool thum
         cpu->r[0] = 0;
         const std::int64_t cycles = cpu->id == CpuId::Arm7
             ? 4 : ((rt.cp15_control & ((1u << 16) | (1u << 18))) ? 2 : 8);
-        cpu->budget -= static_cast<std::int64_t>(delay) * cycles;
+        cpu->budget -= 2 + static_cast<std::int64_t>(delay) * cycles;
         if (cpu->budget <= 0) checkpoint(cpu, pc + (thumb ? 2u : 4u));
         return;
     }

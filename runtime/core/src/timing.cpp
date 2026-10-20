@@ -115,8 +115,7 @@ void Machine::Impl::trigger_one_dma(unsigned cpu_index, unsigned channel) {
     const bool gx_dma = mode == 7 && cpu_index == 0;
     const bool word = gx_dma || (control & (1u << 10)) != 0;
     const std::uint32_t width = word ? 4u : 2u;
-    const std::uint32_t units = gx_dma ? std::min(dma.remaining, 112u)
-                                       : mode == 5 ? 1u : dma.remaining;
+    const std::uint32_t units = gx_dma ? std::min(dma.remaining, 112u) : dma.remaining;
     const unsigned source_control = (control >> 7) & 3u;
     const unsigned destination_control = (control >> 5) & 3u;
 
@@ -124,6 +123,12 @@ void Machine::Impl::trigger_one_dma(unsigned cpu_index, unsigned channel) {
     dma.current_dst &= ~(width - 1u);
     dma.in_transfer = true;
     for (std::uint32_t n = 0; n < units; ++n) {
+        // Slot-1 holds READY for the block. Stop at card exhaustion rather
+        // than synthesizing stale words if the DMA count is longer. The
+        // latched loop bound also limits repeating DMA to one completion.
+        if (mode == 5 &&
+            (!card || (card->io_read(0x040001a4u, 32) & 0x80800000u) != 0x80800000u))
+            break;
         const std::uint32_t destination = gx_dma ? 0x04000400u : dma.current_dst;
         const std::uint32_t transfer = read(cpu_index == 0 ? CpuId::Arm9 : CpuId::Arm7,
                                             dma.current_src, word ? 32 : 16);
