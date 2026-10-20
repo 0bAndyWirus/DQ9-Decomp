@@ -10,6 +10,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Fresh-save replay regression:** an EEPROM64K capture previously replayed into a 512 KB flash save despite matching early screen hashes. The regression now starts from an empty save and compares persisted save bytes/capacity as well as frames, screenshots and RTC/ticks. Explicit EEPROM, explicit Auto over ABI EEPROM, and inherited ABI EEPROM cases pass.
 - **Standalone Godot replay scripts:** target the standard local `build/game/game/dq9` executable (`.exe` on Windows) and change to their own bundle directory, so relative replay files work when invoked from elsewhere.
 - **Interrupted input recordings fail clearly:** an incomplete final `frame mask x y` entry now exits with status 2 instead of being silently ignored at EOF. Empty files and trailing whitespace remain valid.
+- **Readable notices in small windows:** save warnings, pause feedback and the fast-forward badge fit supported 1x/2x windows instead of losing their action text off the right edge. The renderer uses a smaller font or bounded word-wrap; long device/path text is visibly elided without per-frame heap allocation.
 
 ## v0.2.7
 
