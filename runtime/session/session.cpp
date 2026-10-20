@@ -2,6 +2,7 @@
 #include "dsr/gpu2d.h"
 #include "dsr/gpu3d.h"
 #include <algorithm>
+#include <stdexcept>
 namespace dsr {
 
 
@@ -27,6 +28,7 @@ void Session::latch_hires() {
 }
 
 void Session::step(const InputState& input) {
+    started_ = true;
     latch_hires();
     machine_.set_input(input);
     machine_.run_frame();
@@ -111,6 +113,24 @@ bool Session::chip_mismatch_suspected() {
 bool Session::flush_save() {
     if (GameCard* card = machine_.game_card()) return card->flush_save();
     return true;
+}
+
+std::vector<GameCard::SaveBackup> Session::save_backups() {
+    if (const GameCard* card = machine_.game_card()) return card->save_backups();
+    return {};
+}
+
+std::size_t Session::save_capacity() {
+    const GameCard* card = machine_.game_card();
+    return card != nullptr ? card->save_capacity() : 0;
+}
+
+void Session::restore_save(const std::filesystem::path& source) {
+    if (started_)
+        throw std::logic_error("restore_save requires a freshly loaded, unstarted session");
+    GameCard* card = machine_.game_card();
+    if (card == nullptr) throw std::logic_error("no cartridge save is available");
+    card->restore_save(source);
 }
 
 } // namespace dsr

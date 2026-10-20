@@ -485,6 +485,55 @@ void test_save_backup_unrelated_retention(const std::filesystem::path& rom,
 #endif
 }
 
+void test_save_backup_listing(const std::filesystem::path& rom,
+                               const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "listing.sav";
+    const auto backups = directory / "backups";
+    const std::string original(512, '\x35');
+    write_bytes(save, original);
+    {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        assert(card.save_capacity() == original.size());
+        assert(card.save_backups().empty());
+        assert(card.flush_save());
+    }
+    assert(slurp(save) == original);
+    assert(!std::filesystem::exists(backups)); // Inspection/destruction of an unstarted card is read-only.
+    std::filesystem::create_directory(backups);
+    const auto oldest = backups / "listing.sav.20260101T000000.000000001Z-000000.bak";
+    const auto middle = backups / "listing.sav.20260101T000000.000000001Z-000002.bak";
+    const auto newest = backups / "listing.sav.20260102T000000.000000000Z-000000.bak";
+    write_bytes(newest, std::string(512, '\x42'));
+    write_bytes(oldest, std::string(512, '\x16'));
+    write_bytes(middle, std::string(8192, '\x27')); // A different supported capacity remains visible.
+    const auto now = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(oldest, now + std::chrono::hours(24));
+    std::filesystem::last_write_time(middle, now);
+    std::filesystem::last_write_time(newest, now - std::chrono::hours(24));
+    write_bytes(backups / "listing.sav.20260230T000000.000000000Z-000000.bak", "invalid date");
+    write_bytes(backups / "other.sav.20260103T000000.000000000Z-000000.bak", "other save");
+    write_bytes(backups / "listing.sav.20260103T000000.000000000Z-000000.bak.pending", "staged");
+    write_bytes(backups / "listing.sav.20260103T000000.000000000Z-000000.bak.tmp.1", "temporary");
+    std::filesystem::create_directory(backups / "listing.sav.20260104T000000.000000000Z-000000.bak");
+#if !defined(_WIN32)
+    std::filesystem::create_symlink(oldest, backups / "listing.sav.20260105T000000.000000000Z-000000.bak");
+#endif
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    const auto listed = card.save_backups();
+    assert(listed.size() == 3);
+    assert(listed[0].path == newest && listed[0].size == 512);
+    assert(listed[1].path == middle && listed[1].size == 8192);
+    assert(listed[2].path == oldest && listed[2].size == 512);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Idle);
+    assert_restore_fails(card, listed[1].path);
+    assert(card.save_capacity() == 512); // Listing/restore never reinterpret the selected chip.
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == original);
+    assert(card.save_backups().size() == listed.size());
+    assert(slurp(middle) == std::string(8192, '\x27'));
+}
+
 void test_save_restore(const std::filesystem::path& rom, const std::filesystem::path& directory) {
     std::filesystem::create_directories(directory);
     const auto save = directory / "restore.sav";
@@ -562,10 +611,11 @@ void test_save_restore_refusal(const std::filesystem::path& rom, const std::file
     auto dirty = original;
     dirty[1] = 0x44;
     assert_restore_fails(card, directory / "missing.raw");
-    for (const std::size_t size : {std::size_t{511}, std::size_t{513}, std::size_t{552}}) {
+    for (const std::size_t size : {std::size_t{511}, std::size_t{513}, std::size_t{552}, std::size_t{8192}}) {
         const auto source = directory / ("wrong-" + std::to_string(size) + ".dsv");
         write_bytes(source, std::string(size, '\x27'));
         assert_restore_fails(card, source); // No truncation, padding, chip change or DSV conversion.
+        assert(card.save_capacity() == original.size());
         assert(slurp(source) == std::string(size, '\x27'));
         assert(slurp(save) == original);
         assert(read_eeprom_bytes(card) == dirty);
@@ -1143,6 +1193,7 @@ int main() {
     test_previous_save_backup(rom, temp.path / "previous.sav");
     test_save_backup_rotation(rom, temp.path / "rotation");
     test_save_backup_unrelated_retention(rom, temp.path / "unrelated");
+    test_save_backup_listing(rom, temp.path / "listing");
     test_save_restore(rom, temp.path / "restore");
     test_save_restore_refusal(rom, temp.path / "restore-refusal");
     test_save_backup_failure_recovery(rom, temp.path / "backup-failure");

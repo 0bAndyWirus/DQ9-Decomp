@@ -62,6 +62,23 @@ DSR_SESSION_API uint64_t dsr_session_ticks(const dsr_session_handle* session);
  * nonzero on write failure or a NULL session. Failed writes remain pending for retry.
  * Call on the session's owner thread, like step/destroy. */
 DSR_SESSION_API int dsr_session_save(dsr_session_handle* session);
+/* Save inspection and restore are owner-thread-only. Capacity is the effective chip's raw
+ * byte count, or zero for NULL/no cartridge. Listing visits managed regular, non-symlink
+ * backups newest filename first, regardless of mtime or capacity. path is UTF-8, borrowed
+ * only for the callback; size is the raw file byte count. The callback returns zero to
+ * accept an entry or nonzero to fail listing, and must not reenter/destroy the session.
+ * Listing returns 0 on success, nonzero with error text on failure. */
+typedef int (*dsr_save_backup_callback)(void* context, const char* path, uint64_t size);
+DSR_SESSION_API uint64_t dsr_session_get_save_capacity(dsr_session_handle* session);
+DSR_SESSION_API int dsr_session_get_save_backups(dsr_session_handle* session,
+                                 dsr_save_backup_callback callback, void* context,
+                                 char* error_out, size_t error_capacity);
+/* Restore is allowed only before any step attempt, including a session now paused/stopped.
+ * NULL/empty source selects the newest managed backup. Uses exact raw chip capacity;
+ * never changes chip type, pads/truncates bytes or converts DSV. Preserves the old target.
+ * Returns 0 on success, nonzero with error text on failure. */
+DSR_SESSION_API int dsr_session_restore_save(dsr_session_handle* session, const char* source,
+                              char* error_out, size_t error_capacity);
 /* Nonzero once the program has read the cartridge backup like an EEPROM while a flash chip is emulated. */
 DSR_SESSION_API int dsr_session_chip_mismatch_suspected(dsr_session_handle* session);
 

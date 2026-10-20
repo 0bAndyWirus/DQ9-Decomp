@@ -67,6 +67,34 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 const BACKUP_TYPES := ["auto", "eeprom64k", "eeprom8k", "eeprom512b", "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"]
 const BACKUP_LABELS := ["Auto", "EEPROM 64 KB", "EEPROM 8 KB", "EEPROM 512 B", "EEPROM 128 KB", "Flash 256 KB", "Flash 512 KB", "Flash 1 MB", "Flash 8 MB"]
 
+# These are UI hints only. The native restore rechecks the actual source and
+# loaded cartridge capacity immediately before its atomic replacement.
+static func save_restore_error(size: int, capacity: int) -> String:
+	if capacity <= 0: return "Save capacity unavailable. Load a ROM before restoring."
+	if size != capacity:
+		return "Capacity mismatch: backup is %d bytes; the current save chip holds %d bytes. Restore refused; the chip will not change." % [size, capacity]
+	return ""
+
+static func save_backup_label(path: String, size: int) -> String:
+	var filename := path.get_file()
+	var stamp := filename.right(37)
+	var date := filename
+	if stamp.length() == 37 and stamp.substr(8, 1) == "T" and stamp.ends_with(".bak"):
+		date = "%s-%s-%s %s:%s:%s UTC" % [stamp.substr(0, 4), stamp.substr(4, 2), stamp.substr(6, 2), stamp.substr(9, 2), stamp.substr(11, 2), stamp.substr(13, 2)]
+	return "%s · %d B" % [date, size]
+
+static func save_backup_rows(backups: Array, capacity: int, maximum := 50) -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	# Native filenames encode nanoseconds and collision sequence, including clock
+	# rollback. Preserve native newest-first order; never re-sort by mtime or label.
+	for index in mini(backups.size(), maxi(0, maximum)):
+		var backup: Dictionary = backups[index]
+		var path: String = backup.path
+		var size: int = int(backup.size)
+		var error := save_restore_error(size, capacity)
+		rows.append({"path": path, "size": size, "label": save_backup_label(path, size), "error": error})
+	return rows
+
 # The locally generated runtime configuration: `abi.ini` next to `start`, else `build/gen/abi.ini` in `start` or up to
 # five parent folders (the Godot project lives in <repo>/godot). Returns "" when nothing is found.
 static func find_abi_config(start: String) -> String:

@@ -1289,6 +1289,19 @@ void GameCard::set_save_backup_limit(std::size_t limit) {
     impl_->save_backup_limit_ = limit;
 }
 
+std::vector<GameCard::SaveBackup> GameCard::save_backups() const {
+    auto paths = impl_->managed_save_backups();
+    std::vector<SaveBackup> backups;
+    backups.reserve(paths.size());
+    for (auto it = paths.rbegin(); it != paths.rend(); ++it) {
+        const auto size = std::filesystem::file_size(*it);
+        backups.push_back({std::move(*it), size});
+    }
+    return backups;
+}
+
+std::size_t GameCard::save_capacity() const { return impl_->backup_.size(); }
+
 void GameCard::restore_save(const std::filesystem::path& source) {
     try {
         impl_->restore_save(source);

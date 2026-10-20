@@ -25,6 +25,33 @@ func _run() -> void:
 	DirAccess.remove_absolute(abi_root.path_join("build/gen/abi.ini"))
 	assert(Logic.BACKUP_TYPES.size() == Logic.BACKUP_LABELS.size() and Logic.BACKUP_TYPES[0] == "auto")
 	assert("eeprom64k" in Logic.BACKUP_TYPES and "flash512k" in Logic.BACKUP_TYPES)
+	var backups := [
+		{"path": "/saves/backups/game.sav.20261020T123456.000000002Z-000010.bak", "size": 65536},
+		{"path": "/saves/backups/game.sav.20261020T123456.000000002Z-000009.bak", "size": 512},
+		{"path": "/saves/backups/game.sav.20261020T123456.000000001Z-000000.bak", "size": 65536},
+	]
+	var backup_rows := Logic.save_backup_rows(backups, 65536)
+	assert(backup_rows.size() == 3)
+	for index in backups.size():
+		assert(backup_rows[index].path == backups[index].path, "Keep native filename ordering, including same-second collision sequence")
+	assert(backup_rows[0].label == "2026-10-20 12:34:56 UTC · 65536 B")
+	assert(backup_rows[0].error.is_empty() and not backup_rows[1].error.is_empty())
+	assert(Logic.save_restore_error(65536, 65536).is_empty())
+	assert(Logic.save_restore_error(512, 65536).begins_with("Capacity mismatch"))
+	assert(Logic.save_restore_error(524288, 65536).begins_with("Capacity mismatch"))
+	assert(not Logic.save_restore_error(0, 65536).is_empty())
+	assert(not Logic.save_restore_error(65536, 0).is_empty())
+	assert(not Logic.save_restore_error(65536, -1).is_empty())
+	assert(Logic.save_backup_rows([], 65536).is_empty())
+	assert(Logic.save_backup_rows(backups, 65536, 2).size() == 2)
+	assert(Logic.save_backup_rows(backups, 65536, 2)[1].path == backups[1].path)
+	assert(Logic.save_backup_rows(backups, 65536, 0).is_empty())
+	assert(backups[0].size == 65536 and backups[1].size == 512, "UI hints must not modify native entries or chip selection")
+	var many_backups: Array = []
+	for index in 60:
+		many_backups.append({"path": "/backups/game.sav.20261020T123456.000000002Z-%06d.bak" % (99 - index), "size": 65536})
+	var bounded_rows := Logic.save_backup_rows(many_backups, 65536)
+	assert(bounded_rows.size() == 50 and bounded_rows[49].path == many_backups[49].path)
 	assert(Logic.language_for_locale("fr_FR") == "fr" and Logic.language_for_locale("de-AT") == "de")
 	assert(Logic.language_for_locale("it") == "it" and Logic.language_for_locale("ES_mx") == "es")
 	assert(Logic.language_for_locale("ja_JP") == "en" and Logic.language_for_locale("") == "en")

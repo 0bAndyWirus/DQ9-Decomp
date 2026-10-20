@@ -15,6 +15,20 @@ var _toast: Label
 var _toast_token := 0
 var _chip_hint_shown := false
 var _last_save_ok := true
+var _machine_last_save_ok := true
+var _save_status_text := "Save status: no flush result yet."
+var _save_views: Array[Dictionary] = []
+var _active_save_config: Dictionary = {}
+var _backup_config: Dictionary = {}
+var _backup_capacity := 0
+var _backup_rows: Array[Dictionary] = []
+var _backup_context := "Refresh to list backups for the selected ROM, save and chip."
+var _backup_message := ""
+var _backup_refresh_pending := false
+var _restore_busy := false
+var _restore_dialog: ConfirmationDialog
+var _restore_confirmation: Dictionary = {}
+const MAX_VISIBLE_SAVE_BACKUPS := 50
 var settings_panel: PanelContainer
 var game_panel: Control
 var top_rect: TextureRect
@@ -183,7 +197,7 @@ func _make_settings() -> PanelContainer:
 	var rom:=LineEdit.new(); rom.placeholder_text="Nintendo DS .nds ROM path"; rom.text=settings.rom_path; rom.size_flags_horizontal=Control.SIZE_EXPAND_FILL; pathrow.add_child(rom); _ui.rom=rom
 	var browse:=Button.new(); browse.text="Browse…"; browse.pressed.connect(func(): _pick_path(rom,"*.nds,*.rom")); pathrow.add_child(browse)
 	var rom_status:=Label.new(); col.add_child(rom_status); _ui.rom_status=rom_status
-	rom.text_changed.connect(func(_t): _update_rom_status())
+	rom.text_changed.connect(func(_t): _update_rom_status(); _invalidate_save_backups())
 	_update_rom_status()
 	var saverow:=HBoxContainer.new(); col.add_child(saverow); var save:=LineEdit.new(); save.text=settings.save_path; save.placeholder_text="Save path"; save.size_flags_horizontal=Control.SIZE_EXPAND_FILL; saverow.add_child(save); _ui.save=save
 	var save_browse := Button.new(); save_browse.text="Browse…"; save_browse.pressed.connect(func(): _pick_path(save,"*.sav",true)); saverow.add_child(save_browse)
@@ -202,6 +216,12 @@ func _make_settings() -> PanelContainer:
 	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
 	chip_row.add_child(chip)
 	_ui.chip=chip
+	rom.text_submitted.connect(func(_t): _queue_save_backup_refresh())
+	save.text_changed.connect(func(_t): _invalidate_save_backups())
+	save.text_submitted.connect(func(_t): _queue_save_backup_refresh())
+	lang.item_selected.connect(func(_i): _invalidate_save_backups())
+	chip.item_selected.connect(func(_i): _invalidate_save_backups())
+	_make_save_controls(col, "Settings")
 	_section(col,"Display")
 	var options:=HBoxContainer.new(); col.add_child(options)
 	var layoutbox:=OptionButton.new()
@@ -323,6 +343,7 @@ func _make_pause() -> PanelContainer:
 	c.add_child(speeds)
 	var stats:=CheckButton.new(); stats.text="Show statistics"; stats.button_pressed=true; stats.toggled.connect(func(v):status_label.visible=v); c.add_child(stats)
 	var shot:=Button.new(); shot.text="Save screenshot"; shot.pressed.connect(_save_screenshot); c.add_child(shot)
+	_make_save_controls(c, "Pause")
 	pause_note=TextEdit.new(); pause_note.placeholder_text="Quick note"; pause_note.custom_minimum_size=Vector2(0,110); c.add_child(pause_note)
 	var note:=Button.new(); note.text="Save note + screenshot bundle"; note.pressed.connect(_save_bundle); c.add_child(note)
 	var reviewer := Button.new(); reviewer.text = "Issue reviewer…"; reviewer.pressed.connect(_open_issue_reviewer); c.add_child(reviewer)
@@ -335,7 +356,251 @@ func _pick_path(line: LineEdit, filters: String, save_file := false) -> void:
 		var path := ProjectSettings.globalize_path(line.text)
 		dialog.current_dir = path.get_base_dir()
 		dialog.current_file = path.get_file()
-	dialog.file_selected.connect(func(path):line.text=path;dialog.queue_free()); dialog.canceled.connect(dialog.queue_free); dialog.popup_centered_ratio(0.8)
+	dialog.file_selected.connect(func(path): line.text=path; _update_rom_status(); _invalidate_save_backups(); _queue_save_backup_refresh(); dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free); dialog.popup_centered_ratio(0.8)
+
+func _make_save_controls(parent: Control, prefix: String) -> void:
+	_section(parent, "Save backups")
+	var status := Label.new(); status.name = prefix + "SaveStatus"
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; parent.add_child(status)
+	var context := Label.new(); context.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	context.add_theme_font_size_override("font_size", 13); parent.add_child(context)
+	var list := ItemList.new(); list.name = prefix + "SaveBackups"
+	list.custom_minimum_size.y = 100; list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS; parent.add_child(list)
+	var row := HBoxContainer.new(); parent.add_child(row)
+	var refresh := Button.new(); refresh.text = "Refresh backups"; refresh.pressed.connect(_refresh_save_backups); row.add_child(refresh)
+	var restore := Button.new(); restore.text = "Restore…"; restore.disabled = true
+	restore.pressed.connect(func():
+		var selected := list.get_selected_items()
+		if not selected.is_empty(): _confirm_restore(str(list.get_item_metadata(selected[0]).path))
+	); row.add_child(restore)
+	var message := Label.new(); message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	message.add_theme_color_override("font_color", Color(1.0, 0.7, 0.4)); parent.add_child(message)
+	_save_views.append({"status": status, "context": context, "list": list, "restore": restore, "refresh": refresh, "message": message})
+	list.item_selected.connect(func(_index): _update_restore_buttons())
+	_update_save_views()
+
+func _ensure_abi_config() -> String:
+	if OS.get_environment("DQ9_ABI_CONFIG").is_empty():
+		var abi := Logic.find_abi_config(ProjectSettings.globalize_path("res://"))
+		if abi.is_empty(): abi = Logic.find_abi_config(OS.get_executable_path().get_base_dir())
+		if not abi.is_empty():
+			OS.set_environment("DQ9_ABI_CONFIG", abi)
+			print("Using ABI configuration ", abi)
+	return OS.get_environment("DQ9_ABI_CONFIG")
+
+func _settings_save_config(typed := true) -> Dictionary:
+	var rom: String = _ui.rom.text if typed else settings.rom_path
+	var save: String = _ui.save.text if typed else settings.save_path
+	var language: String = LANGS[_ui.lang.selected] if typed else settings.language
+	var chip: String = Logic.BACKUP_TYPES[_ui.chip.selected] if typed else settings.backup_type
+	return {"rom_path": ProjectSettings.globalize_path(rom) if not rom.is_empty() else "",
+		"save_path": ProjectSettings.globalize_path(save) if not save.is_empty() else "",
+		"language": language, "backup_type": chip, "abi_config": _ensure_abi_config()}
+
+func _current_save_config() -> Dictionary:
+	# Settings can be edited while playing. Never redirect a live/replay restore
+	# to those paths or reinterpret its cartridge with the newly selected chip.
+	return _active_save_config.duplicate(true) if machine else _settings_save_config()
+
+func _load_save_config(target: Node, config: Dictionary) -> String:
+	var previous_abi := OS.get_environment("DQ9_ABI_CONFIG")
+	if str(config.abi_config).is_empty(): OS.unset_environment("DQ9_ABI_CONFIG")
+	else: OS.set_environment("DQ9_ABI_CONFIG", config.abi_config)
+	target.set_backup_type(config.backup_type)
+	var result: String = target.load_game(config.rom_path, config.save_path, Logic.firmware_language(config.language))
+	if previous_abi.is_empty(): OS.unset_environment("DQ9_ABI_CONFIG")
+	else: OS.set_environment("DQ9_ABI_CONFIG", previous_abi)
+	return result
+
+func _is_issue_replay() -> bool:
+	return not replay_issue.is_empty() or not replay_save_path.is_empty() or (machine != null and bool(machine.get_stats().get("replay_active", false)))
+
+func _invalidate_save_backups() -> void:
+	if machine: return
+	_backup_config = {}; _backup_capacity = 0; _backup_rows.clear()
+	_backup_context = "Refresh to list backups for the typed ROM, save path and chip."
+	_backup_message = "Settings changed. Refresh backups before restoring."
+	_update_save_views()
+
+func _queue_save_backup_refresh() -> void:
+	if _backup_refresh_pending or _restore_busy: return
+	_backup_refresh_pending = true
+	call_deferred("_refresh_queued_save_backups")
+
+func _refresh_queued_save_backups() -> void:
+	if not _backup_refresh_pending: return
+	_backup_refresh_pending = false
+	if settings_panel.visible or pause_panel.visible: _refresh_save_backups()
+
+func _refresh_save_backups() -> void:
+	if _restore_busy: return
+	_backup_refresh_pending = false
+	_backup_rows.clear(); _backup_capacity = 0; _backup_message = ""
+	_backup_config = _current_save_config()
+	_backup_context = "No loaded save configuration."
+	var source: Node = machine
+	var temporary: Node
+	if _backup_config.is_empty():
+		_backup_message = "The current game's save configuration is unavailable. Close it before restoring."
+	elif not ClassDB.class_exists("DqMachine"):
+		_backup_message = "Build the native extension to list and restore save backups."
+	elif str(_backup_config.rom_path).is_empty() or str(_backup_config.save_path).is_empty():
+		_backup_message = "Choose a ROM and save path, then refresh backups."
+	else:
+		if source == null:
+			# Inspect only on panel-open/explicit refresh, never per frame or key.
+			# This machine is loaded but never started or stepped; its clean
+			# destruction does not create a save or rotate existing backups.
+			temporary = ClassDB.instantiate("DqMachine"); add_child(temporary)
+			temporary.set_gpu3d_enabled(false)
+			var result := _load_save_config(temporary, _backup_config)
+			if result.is_empty(): source = temporary
+			else: _backup_message = result
+		if source != null:
+			if not source.has_method("get_save_backups") or not source.has_method("get_save_backup_error") or not source.has_method("get_save_capacity") or not source.has_method("restore_save"):
+				_backup_message = "Rebuild the native extension for save backup support."
+			else:
+				_backup_capacity = int(source.get_save_capacity())
+				var backups: Array = source.get_save_backups()
+				var listing_error: String = source.get_save_backup_error()
+				if listing_error.is_empty():
+					_backup_rows = Logic.save_backup_rows(backups, _backup_capacity, MAX_VISIBLE_SAVE_BACKUPS)
+				var origin := "Current game" if machine else "Settings (game stopped)"
+				if _is_issue_replay(): origin = "Issue replay copy — restore disabled"
+				_backup_context = "%s: %s\nChip request: %s · capacity: %d B · newest first (UTC)" % [origin, _backup_config.save_path, _backup_config.backup_type, _backup_capacity]
+				if backups.size() > MAX_VISIBLE_SAVE_BACKUPS:
+					_backup_context += "\nShowing the newest %d of %d backups." % [MAX_VISIBLE_SAVE_BACKUPS, backups.size()]
+				if not listing_error.is_empty(): _backup_message = "Cannot list save backups: " + listing_error
+				elif backups.is_empty(): _backup_message = "No timestamped backups for this save."
+				if _is_issue_replay():
+					if not _backup_message.is_empty(): _backup_message += "\n"
+					_backup_message += "Restore is disabled throughout issue replay, including Play from here. Return to the normal game first."
+	if temporary != null: temporary.free()
+	_update_save_views()
+
+func _update_save_views() -> void:
+	for view in _save_views:
+		var list: ItemList = view.list
+		var selected_path := ""
+		var selected := list.get_selected_items()
+		if not selected.is_empty(): selected_path = str(list.get_item_metadata(selected[0]).path)
+		list.clear()
+		var selected_index := 0
+		for index in _backup_rows.size():
+			var backup: Dictionary = _backup_rows[index]
+			list.add_item(backup.label + (" — incompatible" if not str(backup.error).is_empty() else ""))
+			list.set_item_metadata(index, backup)
+			list.set_item_tooltip(index, str(backup.path) + ("\n" + str(backup.error) if not str(backup.error).is_empty() else ""))
+			if backup.path == selected_path: selected_index = index
+		if not _backup_rows.is_empty(): list.select(selected_index)
+		view.context.text = _backup_context
+		view.status.text = _save_status_text
+		view.status.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6) if _last_save_ok else Color(1.0, 0.45, 0.4))
+	_update_restore_buttons()
+
+func _update_restore_buttons() -> void:
+	var blocked := _restore_busy or _is_issue_replay()
+	for view in _save_views:
+		var list: ItemList = view.list
+		var selected := list.get_selected_items()
+		var error := ""
+		if not selected.is_empty(): error = str(list.get_item_metadata(selected[0]).error)
+		view.restore.disabled = blocked or selected.is_empty() or not error.is_empty()
+		view.restore.tooltip_text = error
+		view.refresh.disabled = _restore_busy
+		view.message.text = _backup_message if not _backup_message.is_empty() else error
+
+func _restore_candidate_error(path: String) -> String:
+	if _is_issue_replay(): return "Restore is disabled during issue replay. Return to the normal game first."
+	if _backup_rows.is_empty() and not _backup_message.is_empty(): return _backup_message
+	for backup in _backup_rows:
+		if backup.path == path: return Logic.save_restore_error(int(backup.size), _backup_capacity)
+	return "This backup is no longer listed for the current save. Refresh and select it again."
+
+func _show_restore_message(message: String) -> void:
+	_backup_message = message
+	_update_restore_buttons()
+	_show_toast(message, 12.0)
+
+func _confirm_restore(path: String) -> void:
+	if _restore_busy or is_instance_valid(_restore_dialog): return
+	_refresh_save_backups()
+	var error := _restore_candidate_error(path)
+	if not error.is_empty(): _show_restore_message(error); return
+	_restore_confirmation = {"path": path, "config": _backup_config.duplicate(true), "capacity": _backup_capacity}
+	var dialog := ConfirmationDialog.new(); _restore_dialog = dialog
+	dialog.title = "Restore cartridge save backup?"
+	dialog.dialog_autowrap = true
+	dialog.dialog_text = "Restore %s to:\n%s\n\nThe current on-disk save is backed up before replacement. Progress after the selected backup will be replaced; this is not a save state. The save chip will not change (%d B).\n\n%s" % [
+		Logic.save_backup_label(path, int(_backup_capacity)), _backup_config.save_path, _backup_capacity,
+		"The current game will be flushed, closed and restarted. If the flush fails, restore is cancelled and the live game is kept." if machine else "The game will remain closed after restoring."]
+	dialog.ok_button_text = "Restore and restart" if machine else "Restore (stay closed)"
+	add_child(dialog)
+	dialog.confirmed.connect(func(): _restore_dialog = null; dialog.queue_free(); _restore_backup(path))
+	dialog.canceled.connect(func(): _restore_dialog = null; _restore_confirmation = {}; dialog.queue_free())
+	dialog.popup_centered_clamped(Vector2i(620, 340), 0.9)
+
+func _cleanup_restore_source(directory: String) -> void:
+	if directory.is_empty(): return
+	DirAccess.remove_absolute(directory.path_join("restore.sav"))
+	DirAccess.remove_absolute(directory)
+
+func _restore_backup(path: String) -> void:
+	if _restore_busy: return
+	var confirmation := _restore_confirmation
+	_restore_confirmation = {}
+	_refresh_save_backups()
+	var error := _restore_candidate_error(path)
+	if error.is_empty() and not confirmation.is_empty() and (confirmation.path != path or confirmation.config != _backup_config or int(confirmation.capacity) != _backup_capacity):
+		error = "The save configuration changed after confirmation. Refresh and confirm the restore again."
+	if not error.is_empty(): _show_restore_message(error); return
+	var config := _backup_config.duplicate(true)
+	var capacity := _backup_capacity
+	var restart := machine != null
+	var source := path
+	var staging := ""
+	_restore_busy = true; _update_restore_buttons()
+	if restart:
+		# A first-write flush can rotate away the selected oldest backup. Keep a
+		# private copy before touching the live session; native still validates it.
+		staging = OS.get_cache_dir().path_join("dq9-decomp/restore-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
+		source = staging.path_join("restore.sav")
+		if DirAccess.make_dir_recursive_absolute(staging) != OK or DirAccess.copy_absolute(path, source) != OK:
+			_cleanup_restore_source(staging)
+			_restore_busy = false; _show_restore_message("Cannot preserve the selected backup for restore. The current game has not been closed.")
+			return
+		if not _release_machine(false, true):
+			_cleanup_restore_source(staging)
+			_restore_busy = false; _show_restore_message("Restore cancelled: save flush failed. The live game is still open; repair the save path and retry.")
+			return
+	var restored: Node = ClassDB.instantiate("DqMachine"); add_child(restored)
+	restored.set_gpu3d_enabled(false)
+	var timezone := Time.get_time_zone_from_system()
+	restored.set_rtc_epoch(int(Time.get_unix_time_from_system()), int(timezone.get("bias", 0)))
+	error = _load_save_config(restored, config)
+	if error.is_empty():
+		var actual_capacity: int = restored.get_save_capacity()
+		error = Logic.save_restore_error(capacity, actual_capacity)
+		if error.is_empty(): error = restored.restore_save(source)
+	_cleanup_restore_source(staging)
+	if error.is_empty():
+		_observe_save_result(true, "Saved — backup restored to disk.")
+		if restart:
+			machine = restored; _active_save_config = config
+			_chip_hint_shown = false; _machine_last_save_ok = true
+			_user_speed = 1.0; _ff_held = false
+			_apply_gpu3d_settings(); _start_loaded_game()
+		else:
+			restored.free()
+	else:
+		restored.free()
+		pause_panel.hide(); _show_settings()
+	_restore_busy = false
+	_refresh_save_backups()
+	if error.is_empty(): _show_restore_message("Backup restored. Game restarted." if restart else "Backup restored. Game remains closed.")
+	else: _show_restore_message("Restore failed; game remains closed: " + error)
 
 func _start_game() -> void:
 	_ui.error.text = ""
@@ -352,33 +617,31 @@ func _start_game() -> void:
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
 	_chip_hint_shown = false
-	_last_save_ok = true
+	_machine_last_save_ok = true
 	_user_speed = 1.0; _ff_held = false
 	_apply_gpu3d_settings()
 	if machine.has_method("set_rtc_epoch"):
 		var timezone := Time.get_time_zone_from_system()
 		machine.set_rtc_epoch(int(Time.get_unix_time_from_system()), int(timezone.get("bias", 0)))
-	if OS.get_environment("DQ9_ABI_CONFIG").is_empty():
-		# Without the generated configuration the game stalls on blank screens; pick up the one the build left behind.
-		var abi := Logic.find_abi_config(ProjectSettings.globalize_path("res://"))
-		if abi.is_empty(): abi = Logic.find_abi_config(OS.get_executable_path().get_base_dir())
-		if not abi.is_empty():
-			OS.set_environment("DQ9_ABI_CONFIG", abi)
-			print("Using ABI configuration ", abi)
-	var actual_save_path := ProjectSettings.globalize_path(settings.save_path)
-	if machine.has_method("set_backup_type"): machine.set_backup_type(settings.backup_type)
-	var result: String = machine.load_game(settings.rom_path, actual_save_path, Logic.firmware_language(settings.language))
+	var config := _settings_save_config(false)
+	var result := _load_save_config(machine, config)
 	if not result.is_empty():
 		push_error(result)
 		_ui.error.text = result
 		_release_machine(false)
 		_show_settings()
 		return
+	_active_save_config = config
+	_start_loaded_game()
+
+func _start_loaded_game() -> void:
 	machine.start()
 	_on_machine_frame(0)
 	if machine.has_signal("frame_ready"): machine.frame_ready.connect(_on_machine_frame)
 	machine.get_audio_player().volume_linear=settings.volume
+	pause_panel.hide()
 	_hide_settings()
+	_queue_save_backup_refresh()
 
 func _on_machine_frame(_frame: int) -> void:
 	if machine == null or not is_instance_valid(machine): return
@@ -479,33 +742,42 @@ func _gpu3d_status_text() -> String:
 	if _gpu3d_compare_software: state = "software A/B (F6: GPU)"
 	return "GPU3D: %dx valid %d%%   3D pixels %d%%   %s" % [int(settings.gpu3d_scale), valid_percent, pixels, state]
 
-func _release_machine(drain_audio: bool) -> void:
+func _release_machine(drain_audio: bool, keep_on_save_failure := false) -> bool:
 	var closing = machine
+	if closing == null or not is_instance_valid(closing): return true
+	var was_paused: bool = closing.is_paused()
+	# Pause without stopping first, so an unsuccessful restore preflight can
+	# retain and resume this exact session, including its pending in-memory save.
+	if keep_on_save_failure: closing.set_paused(true)
+	elif closing.has_method("stop"): closing.stop()
+	if closing.has_method("flush_save") and closing.get_stats().get("loaded", false):
+		var save_ok: bool = closing.flush_save()
+		_observe_save_result(save_ok)
+		if not save_ok:
+			if keep_on_save_failure:
+				closing.set_paused(was_paused)
+				_observe_save_result(false, "Save failed — restore cancelled; live game kept open.")
+				return false
+			var warning := "SAVE NOT WRITTEN BEFORE CLOSE: CHECK SAVE PATH"
+			_save_status_text = "Save failed — close flush failed; final shutdown retry is not confirmed."
+			_observe_save_result(false, _save_status_text)
+			_show_toast(warning, 15.0)
+			_ui.error.text = warning
+			push_warning("Save flush failed before closing. The final shutdown retry is best effort; the latest save data may not be on disk.")
+	if closing.has_method("stop"): closing.stop()
+	machine = null; _active_save_config = {}
 	set_gpu3d_frame(null, null)
-	_gpu3d_compare_software = false
-	_clear_gpu3d_status()
-	if closing == null or not is_instance_valid(closing): return
-	machine = null
+	_gpu3d_compare_software = false; _clear_gpu3d_status()
 	_ff_held = false
 	if closing.has_signal("frame_ready"):
 		var callback := Callable(self, "_on_machine_frame")
 		if closing.is_connected("frame_ready", callback): closing.disconnect("frame_ready", callback)
-	if closing.has_method("stop"): closing.stop()
-	if closing.has_method("flush_save") and closing.get_stats().get("loaded", false):
-		var save_ok: bool = closing.flush_save()
-		if save_ok:
-			_observe_save_result(true)
-		else:
-			_last_save_ok = false
-			var warning := "SAVE NOT WRITTEN BEFORE CLOSE: CHECK SAVE PATH"
-			_show_toast(warning, 15.0)
-			_ui.error.text = warning
-			push_warning("Save flush failed before closing. The final shutdown retry is best effort; the latest save data may not be on disk.")
 	var audio_player: AudioStreamPlayer = closing.get_audio_player() if closing.has_method("get_audio_player") else null
 	if audio_player: audio_player.stop()
 	closing.free()
 	_cleanup_replay_save()
 	if drain_audio: OS.delay_msec(500)
+	return true
 
 func _stop_game() -> void:
 	_release_machine(true)
@@ -528,7 +800,7 @@ func _close_issue_reviewer() -> void:
 	if machine:
 		# A replay stays paused until the user explicitly chooses Play from here.
 		machine.set_paused(_reviewer_was_paused)
-	else: settings_panel.show()
+	else: _show_settings()
 
 func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	if issue.is_empty(): return
@@ -557,15 +829,17 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	replay_save_path = temporary_save
 	replay_issue = issue.duplicate(true); replay_complete = false
 	machine = ClassDB.instantiate("DqMachine"); add_child(machine)
-	_last_save_ok = true
+	_machine_last_save_ok = true
 	# Software screenshots are the exact reference even when normal play uses GPU 3D.
 	machine.set_gpu3d_enabled(false)
 	var backup_type: String = str(environment.get("backup_type", "auto"))
 	if backup_type not in Logic.BACKUP_TYPES: backup_type = "auto"
-	machine.set_backup_type(backup_type)
 	var metadata := IssueReviewer.Store.fields(issue.comment)
 	machine.set_rtc_epoch(int(environment.get("rtc_epoch", metadata.get("rtc_epoch", 0))), int(environment.get("rtc_timezone_offset_minutes", metadata.get("rtc_timezone_offset_minutes", 0))))
-	var error: String = machine.load_game(rom_path, replay_save_path, Logic.firmware_language(issue.language))
+	_active_save_config = {"rom_path": ProjectSettings.globalize_path(rom_path),
+		"save_path": replay_save_path, "language": str(issue.language),
+		"backup_type": backup_type, "abi_config": _ensure_abi_config()}
+	var error := _load_save_config(machine, _active_save_config)
 	if error.is_empty(): error = machine.set_input_script(FileAccess.get_file_as_string(script_path).split("\n"))
 	if not error.is_empty():
 		_release_machine(false)
@@ -582,6 +856,7 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	if not status_error.is_empty(): issue_reviewer.show_message(status_error)
 	error = machine.start_replay(int(issue.frame), record_hashes)
 	if not error.is_empty(): _on_issue_replay_error(error)
+	_queue_save_backup_refresh()
 
 func _on_issue_replay_finished(frame: int) -> void:
 	if replay_issue.is_empty(): return
@@ -663,11 +938,17 @@ func _show_toast(text: String, seconds := 2.5) -> void:
 	var token := _toast_token
 	get_tree().create_timer(seconds).timeout.connect(func(): if token == _toast_token: _toast.hide())
 
-func _observe_save_result(save_ok: bool) -> void:
-	if save_ok == _last_save_ok: return
-	_last_save_ok = save_ok
+func _observe_save_result(save_ok: bool, detail := "") -> void:
+	var changed := save_ok != _last_save_ok
+	_last_save_ok = save_ok; _machine_last_save_ok = save_ok
+	_save_status_text = detail if not detail.is_empty() else ("Saved — last flush succeeded (or no pending writes)." if save_ok else "Save failed — repair the save path and retry before closing.")
+	for view in _save_views:
+		view.status.text = _save_status_text
+		view.status.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6) if save_ok else Color(1.0, 0.45, 0.4))
+	if not changed: return
 	if save_ok:
 		_show_toast("SAVE WRITTEN: SAVE PATH WORKING AGAIN", 6.0)
+		if str(_ui.error.text).begins_with("SAVE NOT WRITTEN"): _ui.error.text = ""
 	else:
 		_show_toast("SAVE NOT WRITTEN: CHECK SAVE PATH (WILL RETRY ON NEXT SAVE)", 15.0)
 
@@ -677,7 +958,7 @@ func _update_fast_forward() -> void:
 		if _ff_held: _ff_held = false; _show_toast("")
 		return
 	var typing := get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit
-	var want := machine != null and Input.is_key_pressed(KEY_TAB) and not typing and not settings_panel.visible and not issue_reviewer.visible and not pause_panel.visible
+	var want := machine != null and Input.is_key_pressed(KEY_TAB) and not typing and not settings_panel.visible and not issue_reviewer.visible and not pause_panel.visible and not is_instance_valid(_restore_dialog) and not _restore_busy
 	if want == _ff_held: return
 	_ff_held = want
 	machine.set_speed(0.0 if want else _user_speed)
@@ -707,7 +988,8 @@ func _process(_delta: float) -> void:
 		if s.get("chip_mismatch", false) and not _chip_hint_shown:
 			_chip_hint_shown = true
 			_show_toast("Save chip wrong? Try EEPROM 64 KB (Start / Settings)", 12.0)
-		_observe_save_result(bool(s.get("last_save_ok", true)))
+		var save_ok := bool(s.get("last_save_ok", true))
+		if save_ok != _machine_last_save_ok: _observe_save_result(save_ok)
 		var now := Time.get_ticks_msec()
 		if now - _fps_ms >= 1000:
 			var fr: int = int(s.get("frame", 0))
@@ -720,7 +1002,7 @@ func _process(_delta: float) -> void:
 		var pressed: Array[String] = []
 		for action in BUTTON_ACTIONS:
 			if Input.is_action_pressed(action): pressed.append(action)
-		machine.set_buttons(0 if issue_reviewer.visible else Logic.button_mask(pressed))
+		machine.set_buttons(0 if issue_reviewer.visible or is_instance_valid(_restore_dialog) or _restore_busy else Logic.button_mask(pressed))
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and not event.pressed:
@@ -729,6 +1011,7 @@ func _input(event: InputEvent) -> void:
 			if machine: machine.set_touch(0,0,false)
 		if _overlay_drag or _overlay_resize:
 			_overlay_drag = false; _overlay_resize = false; _persist()
+	if _restore_busy or is_instance_valid(_restore_dialog): return
 	if rebinding_action != "":
 		if event is InputEventKey and event.pressed and not event.echo: _replace_binding(event); get_viewport().set_input_as_handled()
 		elif event is InputEventJoypadButton and event.pressed: _replace_binding(event); get_viewport().set_input_as_handled()
@@ -760,11 +1043,14 @@ func _toggle_pause() -> void:
 	if not machine: _show_settings(); return
 	_fit_panels()
 	pause_panel.visible=not pause_panel.visible; machine.set_paused(pause_panel.visible)
+	if pause_panel.visible: _queue_save_backup_refresh()
 func _persist() -> void:
 	settings.overlay_rect = _overlay_rect
 	Logic.save_settings("user://settings.cfg", settings)
 
-func _show_settings() -> void: _fit_panels(); settings_panel.show()
+func _show_settings() -> void:
+	_fit_panels(); settings_panel.show()
+	_queue_save_backup_refresh()
 func _hide_settings() -> void: settings_panel.hide(); _persist()
 func _set_layout(index: int) -> void: layout=index; settings.layout=index; _layout_screens()
 func _apply_filter() -> void:
@@ -826,11 +1112,15 @@ func _save_bundle() -> void:
 	var dir="user://debug/"+stamp
 	var frame := _current_frame()
 	if machine and machine.has_method("get_input_history"):
-		var bundle_rom: String = replay_issue.env.get("rom_path", settings.rom_path) if not replay_issue.is_empty() else settings.rom_path
-		var bundle_save: String = replay_save_path if not replay_save_path.is_empty() else settings.save_path
-		var bundle_language: String = replay_issue.language if not replay_issue.is_empty() else settings.language
+		var config := _current_save_config()
+		var bundle_rom: String = str(config.get("rom_path", settings.rom_path))
+		var bundle_save: String = str(config.get("save_path", settings.save_path))
+		var bundle_language: String = str(config.get("language", settings.language))
 		var result: String = DebugBundle.save_note(machine, dir, pause_note.text, frame,
 			bundle_rom, bundle_save, bundle_language)
+		if result.is_empty() or result.begins_with("save not written:"):
+			_observe_save_result(result.is_empty())
+			_queue_save_backup_refresh()
 		if not result.is_empty():
 			push_error(result)
 			return

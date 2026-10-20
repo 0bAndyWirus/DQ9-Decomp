@@ -43,6 +43,12 @@ public:
     std::uint64_t frame_count() const { return frame_count_; }
     std::uint64_t ticks() const { return machine_.ticks(); }
     bool flush_save();
+    // Owner-thread save inspection; no cartridge means an empty list and zero capacity.
+    std::vector<GameCard::SaveBackup> save_backups();
+    std::size_t save_capacity();
+    // Only before the first step attempt, even if the host has since paused/stopped.
+    // Uses GameCard's exact-size restore and preserves the current save before committing.
+    void restore_save(const std::filesystem::path& source = {});
     // See GameCard::chip_mismatch_suspected().
     bool chip_mismatch_suspected();
     // Optional hi-res 3D overlay (Gpu3D::set_output_scale(N), N > 1). Writes the screen that
@@ -67,6 +73,7 @@ private:
     std::array<std::int16_t, 8192> audio_{};
     std::size_t audio_frames_ = 0;
     std::uint64_t frame_count_ = 0;
+    bool started_ = false;
 };
 
 } // namespace dsr

@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
@@ -30,9 +31,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <string>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <iterator>
@@ -61,6 +64,10 @@ struct RecordedInput {
 };
 struct ReplayHash {
     std::uint64_t frame, top, bottom;
+};
+struct SaveBackup {
+    std::string path;
+    std::int64_t size;
 };
 struct WorkerTexture {
     std::shared_ptr<dq9::DecodedTexture> decoded;
@@ -113,17 +120,19 @@ public:
         if (language < 0 || language > 5) return "language must be in range 0..5";
         const godot::CharString rom = rom_path.utf8();
         const godot::CharString save = save_path.utf8();
-        {
-            std::ifstream initial(save.get_data(), std::ios::binary);
-            session_start_save_.assign(std::istreambuf_iterator<char>(initial), std::istreambuf_iterator<char>());
-        }
+        auto initial_save = read_start_save(save.get_data());
         {
             std::lock_guard lock(mutex_);
             rom_path_ = rom.get_data(); save_path_ = save.get_data();
+            session_start_save_ = std::move(initial_save);
             language_ = static_cast<std::uint8_t>(language);
             input_ = {0, 0, 0, 0, 0};
             chip_mismatch_ = false;
             last_save_ok_ = true; flush_requested_ = false;
+            backups_requested_ = restore_requested_ = false;
+            save_backups_.clear(); restore_path_.clear(); restore_error_.clear();
+            save_backup_error_.clear();
+            save_capacity_ = 0; started_ = false;
             error_.clear(); running_ = false; paused_ = false;
             {
                 std::lock_guard audio_lock(audio_mutex_);
@@ -154,6 +163,7 @@ public:
     void start() {
         std::lock_guard lock(mutex_);
         if (!loaded_) return;
+        started_ = true;
         running_ = true; paused_ = false; cv_.notify_all();
         if (audio_player_ && !audio_priming_) audio_player_->set_stream_paused(false);
     }
@@ -180,12 +190,15 @@ public:
     bool is_paused() const { std::lock_guard lock(mutex_); return paused_; }
     void step_once() {
         std::lock_guard lock(mutex_);
-        if (loaded_ && (paused_ || !running_)) { ++pending_steps_; cv_.notify_all(); }
+        if (loaded_ && (paused_ || !running_)) {
+            started_ = true; ++pending_steps_; cv_.notify_all();
+        }
     }
     void step_frames(int n, int mask, int x, int y, bool down) {
         if (n <= 0 || n > 1000000) return;
         std::unique_lock lock(mutex_);
         if (!loaded_ || running_) { error_ = "step_frames requires a loaded, stopped session"; return; }
+        started_ = true;
         input_ = {static_cast<std::uint16_t>(mask), x < 0 ? -1 : std::clamp(x, 0, 255),
                   y < 0 ? -1 : std::clamp(y, 0, 191), static_cast<std::uint8_t>(down), 0};
         sync_frames_ = n; sync_done_ = false; cv_.notify_all();
@@ -238,6 +251,7 @@ public:
         record_replay_hashes_ = record_hashes;
         if (record_hashes) replay_hashes_.reserve(replay_target_ + 1);
         script_cursor_ = 0;
+        started_ = true;
         replay_active_ = true; replay_finished_pending_ = false;
         running_ = true; paused_ = false;
         input_ = {};
@@ -320,6 +334,7 @@ public:
         input_.pen_down = static_cast<std::uint8_t>(down);
     }
     godot::PackedByteArray get_session_start_save() const {
+        std::lock_guard lock(mutex_);
         godot::PackedByteArray out;
         out.resize(static_cast<int64_t>(session_start_save_.size()));
         if (!session_start_save_.empty())
@@ -352,6 +367,42 @@ public:
         // Shutdown also completes the request with its final owner-thread flush.
         cv_.wait(lock, [&] { return !flush_requested_; });
         return last_save_ok_;
+    }
+    godot::Array get_save_backups() {
+        std::unique_lock lock(mutex_);
+        godot::Array out;
+        if (!loaded_ || shutdown_) {
+            save_backup_error_ = "save backup listing requires a loaded session";
+            return out;
+        }
+        backups_requested_ = true; cv_.notify_all();
+        cv_.wait(lock, [&] { return !backups_requested_; });
+        for (const auto& backup : save_backups_) {
+            godot::Dictionary entry;
+            entry["path"] = godot::String::utf8(backup.path.c_str());
+            entry["size"] = backup.size;
+            out.append(entry);
+        }
+        return out;
+    }
+    godot::String get_save_backup_error() const {
+        std::lock_guard lock(mutex_);
+        return godot::String::utf8(save_backup_error_.c_str());
+    }
+    std::int64_t get_save_capacity() const {
+        std::lock_guard lock(mutex_);
+        return loaded_ && !shutdown_ ? static_cast<std::int64_t>(save_capacity_) : 0;
+    }
+    godot::String restore_save(const godot::String& path) {
+        std::unique_lock lock(mutex_);
+        if (!loaded_ || shutdown_) return "restore_save requires a loaded session";
+        if (started_ || running_ || paused_)
+            return "restore_save requires a freshly loaded, unstarted session";
+        restore_path_ = path.utf8().get_data();
+        restore_error_.clear();
+        restore_requested_ = true; cv_.notify_all();
+        cv_.wait(lock, [&] { return !restore_requested_; });
+        return godot::String::utf8(restore_error_.c_str());
     }
     godot::Dictionary get_stats() const {
         std::lock_guard lock(mutex_);
@@ -499,6 +550,10 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("get_bottom_image"), &DqMachine::get_bottom_image);
         godot::ClassDB::bind_method(godot::D_METHOD("get_audio_player"), &DqMachine::get_audio_player);
         godot::ClassDB::bind_method(godot::D_METHOD("flush_save"), &DqMachine::flush_save);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_save_backups"), &DqMachine::get_save_backups);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_save_backup_error"), &DqMachine::get_save_backup_error);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_save_capacity"), &DqMachine::get_save_capacity);
+        godot::ClassDB::bind_method(godot::D_METHOD("restore_save", "path"), &DqMachine::restore_save);
         godot::ClassDB::bind_method(godot::D_METHOD("get_stats"), &DqMachine::get_stats);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_enabled", "enabled"), &DqMachine::set_gpu3d_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_scale", "scale"), &DqMachine::set_gpu3d_scale);
@@ -516,6 +571,17 @@ protected:
     }
 
 private:
+    static std::vector<std::uint8_t> read_start_save(const std::string& path) {
+        std::ifstream initial(std::filesystem::u8path(path), std::ios::binary);
+        return {std::istreambuf_iterator<char>(initial), std::istreambuf_iterator<char>()};
+    }
+    static int collect_save_backup(void* context, const char* path, std::uint64_t size) {
+        if (size > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+            return 1;
+        static_cast<std::vector<SaveBackup>*>(context)->push_back(
+            {path, static_cast<std::int64_t>(size)});
+        return 0;
+    }
     void release_resources(bool children_alive) {
         if (resources_released_) return;
         resources_released_ = true;
@@ -751,6 +817,7 @@ private:
             loaded_ = true;
             frame_count_ = dsr_session_frame_count(session_);
             ticks_ = dsr_session_ticks(session_);
+            save_capacity_ = dsr_session_get_save_capacity(session_);
             copy_screen(session_, 0, frames_[0].screens[0].data());
             copy_screen(session_, 1, frames_[0].screens[1].data());
             frames_[0].number = frame_count_;
@@ -779,8 +846,8 @@ private:
                 {
                     std::unique_lock lock(mutex_);
                     cv_.wait(lock, [&] {
-                        return shutdown_ || flush_requested_ || sync_frames_ > 0 ||
-                               pending_steps_ > 0 || (running_ && !paused_);
+                        return shutdown_ || flush_requested_ || backups_requested_ || restore_requested_ ||
+                               sync_frames_ > 0 || pending_steps_ > 0 || (running_ && !paused_);
                     });
                     if (shutdown_) break;
                     if (flush_requested_) {
@@ -789,6 +856,37 @@ private:
                         lock.lock();
                         last_save_ok_ = save_ok;
                         flush_requested_ = false; cv_.notify_all();
+                        continue;
+                    }
+                    if (restore_requested_) {
+                        if (started_ || running_ || paused_) {
+                            restore_error_ = "restore_save requires a freshly loaded, unstarted session";
+                        } else {
+                            auto source = std::move(restore_path_);
+                            lock.unlock();
+                            error[0] = '\0';
+                            const bool restored = dsr_session_restore_save(session_, source.c_str(),
+                                                                           error, sizeof(error)) == 0;
+                            auto initial_save = restored ? read_start_save(save_path_) : std::vector<std::uint8_t>{};
+                            lock.lock();
+                            last_save_ok_ = restored;
+                            restore_error_ = restored ? "" : error;
+                            if (restored) session_start_save_ = std::move(initial_save);
+                        }
+                        restore_requested_ = false; cv_.notify_all();
+                        continue;
+                    }
+                    if (backups_requested_) {
+                        lock.unlock();
+                        std::vector<SaveBackup> backups;
+                        error[0] = '\0';
+                        const bool listed = dsr_session_get_save_backups(session_, collect_save_backup,
+                                                                         &backups, error, sizeof(error)) == 0;
+                        lock.lock();
+                        save_backup_error_ = listed ? "" : error;
+                        if (!listed) { backups.clear(); error_ = error; }
+                        save_backups_ = std::move(backups);
+                        backups_requested_ = false; cv_.notify_all();
                         continue;
                     }
                     if (sync_frames_ > 0) { --sync_frames_; manual = true; do_step = true; }
@@ -895,7 +993,10 @@ private:
                     deadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(1.0 / (kFrameRate * speed)));
                     std::unique_lock lock(mutex_);
-                    cv_.wait_until(lock, deadline, [&] { return shutdown_ || paused_ || !running_ || pending_steps_ > 0 || speed_ != speed; });
+                    cv_.wait_until(lock, deadline, [&] {
+                        return shutdown_ || flush_requested_ || backups_requested_ || restore_requested_ ||
+                               paused_ || !running_ || pending_steps_ > 0 || speed_ != speed;
+                    });
                     if (std::chrono::steady_clock::now() > deadline + std::chrono::milliseconds(250))
                         deadline = std::chrono::steady_clock::now();
                 }
@@ -906,7 +1007,12 @@ private:
             {
                 std::lock_guard lock(mutex_);
                 last_save_ok_ = save_ok;
-                loaded_ = false; flush_requested_ = false; cv_.notify_all();
+                loaded_ = false; save_capacity_ = 0;
+                save_backups_.clear();
+                if (backups_requested_) save_backup_error_ = "session closed before save backup listing";
+                backups_requested_ = false;
+                if (restore_requested_) restore_error_ = "session closed before save restore";
+                restore_requested_ = flush_requested_ = false; cv_.notify_all();
             }
             dsr_session_destroy(session_);
             session_ = nullptr;
@@ -1000,6 +1106,11 @@ private:
     bool audio_priming_ = true;
     bool shutdown_ = false, initialized_ = false, flush_requested_ = false, sync_done_ = false;
     bool last_save_ok_ = true;
+    bool started_ = false, backups_requested_ = false, restore_requested_ = false;
+    std::uint64_t save_capacity_ = 0;
+    std::vector<SaveBackup> save_backups_;
+    std::string restore_path_, restore_error_;
+    std::string save_backup_error_;
     int pending_steps_ = 0, sync_frames_ = 0;
     float speed_ = 1.0f;
     std::string rom_path_, save_path_;
