@@ -23,14 +23,18 @@ Compilation can take 30-90 minutes; not measured by the author.
 Keep the terminal open and read any error before trying again.
 
 After the build, launch from the same directory:
-  PLAY-DQ9.bat "C:\path\game.nds" en
+  PLAY-DQ9.bat
 
-Languages: en, fr, de, es, it. Omitting the language selects en.
+Choose your ROM, language, and EEPROM 64 KB under ROM / SAVE -> Save chip,
+then Launch. This choice is remembered for later launcher starts.
+Languages: en, fr, de, es, it.
 In PowerShell, prefix these commands with .\, for example:
   .\BUILD-DQ9.bat "C:\path\game.nds"
-  .\PLAY-DQ9.bat "C:\path\game.nds" en
+  .\PLAY-DQ9.bat
 The launcher supplies build\gen\abi.ini and does not enable the debug tool.
 Keep backups of your saves and keep all local output out of the kit ZIP.
+The direct PLAY-DQ9.bat "C:\path\game.nds" en form uses the chip in the
+generated ABI configuration; it does not apply the launcher's saved chip choice.
 
 Protection-step legal note (from docs/GETTING_STARTED.md):
 Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).

@@ -75,6 +75,68 @@ jobs:
           SDL_AUDIODRIVER: dummy
           SDL_RENDER_DRIVER: software
         run: python tools/build_port.py --runtime-only
+      - name: Check real Windows launcher failure status and file paths
+        run: |
+          $kit = Join-Path $env:RUNNER_TEMP 'DQ9 kit ! launcher smoke'
+          $tools = Join-Path $kit 'tools'
+          $game = Join-Path $kit 'build/game/game'
+          $abiDir = Join-Path $kit 'build/gen'
+          New-Item -ItemType Directory -Force $tools, $game, $abiDir | Out-Null
+          Set-Content -Encoding ascii (Join-Path $abiDir 'abi.ini') 'fixture'
+          Copy-Item tools/windows/PLAY-DQ9.bat (Join-Path $kit 'PLAY-DQ9.bat')
+          Copy-Item tools/build_port.py (Join-Path $tools 'build_port.py')
+          $source = Join-Path $env:RUNNER_TEMP 'dq9-launcher-smoke.c'
+          @'
+          #include <stdio.h>
+          #include <string.h>
+          int main(int argc, char **argv) {
+              const char *abi;
+              int status;
+              if (argc == 4 && strcmp(argv[1], "--launcher") == 0 &&
+                  strcmp(argv[2], "--abi-config") == 0) {
+                  abi = argv[3];
+                  status = 7;
+              } else if (argc == 7 && strcmp(argv[1], "--rom") == 0 &&
+                         strcmp(argv[3], "--abi-config") == 0 &&
+                         strcmp(argv[5], "--language") == 0 && strcmp(argv[6], "fr") == 0) {
+                  FILE *input = fopen(argv[2], "rb");
+                  if (!input) return 19;
+                  int first = fgetc(input);
+                  fclose(input);
+                  if (first != 'f') return 20;
+                  abi = argv[4];
+                  status = 9;
+              } else return 21;
+              FILE *config = fopen(abi, "rb");
+              if (!config) return 22;
+              int first = fgetc(config);
+              fclose(config);
+              return first == 'f' ? status : 23;
+          }
+          '@ | Set-Content -Encoding ascii $source
+          python -m ziglang cc $source -o (Join-Path $game 'dq9.exe')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $play = Join-Path $kit 'PLAY-DQ9.bat'
+          # An inherited RESULT=7 must not mask premature percent expansion in cmd.
+          $env:RESULT = $null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $play
+          $launcherExit = $LASTEXITCODE
+          if ($launcherExit -ne 7) {
+            throw "Launcher branch returned $launcherExit instead of 7"
+          }
+
+          # A text fixture proves the child can open the path containing spaces and !.
+          $rom = Join-Path $kit 'input fixture !.txt'
+          Set-Content -Encoding ascii $rom 'fixture'
+          & $play $rom fr
+          $directExit = $LASTEXITCODE
+          if ($directExit -ne 9) {
+            throw "Direct branch returned $directExit instead of 9 (path/ABI not preserved)"
+          }
+          # Both expected native failures were asserted; do not return their status to CI.
+          exit 0
       - name: Audit source-only Windows kit
         run: python tools/package_windows_kit.py --tag ci
 

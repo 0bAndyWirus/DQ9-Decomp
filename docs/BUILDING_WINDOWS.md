@@ -20,11 +20,14 @@ From Command Prompt in that directory:
 
 ```bat
 BUILD-DQ9.bat "C:\path\game.nds"
-PLAY-DQ9.bat "C:\path\game.nds" en
+PLAY-DQ9.bat
 ```
 
 In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead. `PLAY-DQ9.bat` without arguments opens the launcher, which remembers your ROM path, language and options.
 The language is optional (default `en`); `fr`, `de`, `es` and `it` are also supported.
+For a fresh European-release save, choose **EEPROM 64 KB** on the launcher's
+**ROM / SAVE → Save chip** control before Launch. The direct ROM/language form
+uses the generated ABI configuration's chip rather than the launcher's saved choice.
 The build creates `.venv`, installs the Python dependencies and Zig, downloads
 ds-decomp with a pinned SHA-256 check and the official SDL2 SDK, then generates
 and compiles code from your own dump. It can take 30–90 minutes; this Windows
@@ -37,7 +40,7 @@ In a source checkout, the launchers are `tools\windows\BUILD-DQ9.bat` and
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
-.\.venv\Scripts\python.exe tools\build_port.py --rom "C:\path\game.nds"
+.\.venv\Scripts\python.exe tools\build_port.py --rom "C:\path\game.nds" --backup-type eeprom64k
 ```
 
 The Windows-hosted flow pins `ziglang==0.16.0` because PyPI publishes no Windows wheel for
