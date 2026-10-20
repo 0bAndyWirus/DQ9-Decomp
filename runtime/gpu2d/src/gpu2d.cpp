@@ -84,9 +84,7 @@ struct Color {
     std::uint8_t alpha = 31;
 };
 
-// Keep each whole-pixel copy within one cache line, including mosaic arrays
-// that otherwise follow a four-byte register/scanline field.
-struct alignas(8) Pixel {
+struct Pixel {
     Color color{};
     // 3D layer pixels keep the 3D engine's full 6-bit colour for alpha blending.
     std::array<std::uint8_t, 3> rgb6{};
