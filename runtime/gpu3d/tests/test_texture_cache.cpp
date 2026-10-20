@@ -7,6 +7,9 @@
 #include "dsr/mem.h"
 
 #include <array>
+#include <bit>
+#include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -23,6 +26,36 @@ bool check(bool condition, std::string_view message) {
 }
 bool same(Texel a, Texel b) {
     return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+bool test_integer_texture_floor() {
+    const auto matches = [](float value) {
+        return floor_texcoord(value) == static_cast<int>(std::floor(value));
+    };
+    bool ok = true;
+    // Both adjacent representable floats at every texel boundary, including
+    // signed zero and subnormal values around it, expose truncation mistakes.
+    for (int integer = -65536; integer <= 65536; ++integer) {
+        const float value = static_cast<float>(integer);
+        ok &= matches(value);
+        ok &= matches(std::nextafter(value, -std::numeric_limits<float>::infinity()));
+        ok &= matches(std::nextafter(value, std::numeric_limits<float>::infinity()));
+    }
+    ok &= matches(-0.0F);
+    ok &= matches(static_cast<float>(std::numeric_limits<int>::min()));
+    ok &= matches(std::nextafter(static_cast<float>(std::numeric_limits<int>::max()), 0.0F));
+    // Random bit patterns exercise the full defined float-to-int domain, not
+    // just the small coordinate interval most texture scenes happen to use.
+    std::mt19937 random(0xF10012U);
+    for (unsigned i = 0; i < 200000; ++i) {
+        const float value = std::bit_cast<float>(static_cast<std::uint32_t>(random()));
+        if (!std::isfinite(value)) continue;
+        const double floored = std::floor(static_cast<double>(value));
+        if (floored < std::numeric_limits<int>::min() ||
+            floored > std::numeric_limits<int>::max()) continue;
+        ok &= matches(value);
+    }
+    return check(ok, "integer texture floor matches scalar floor at boundaries and random floats");
 }
 
 struct Storage {
@@ -315,7 +348,8 @@ bool test_live_guest_write_paths() {
 } // namespace
 
 int main() {
-    const bool ok = test_bulk_reference() & test_cache_reuse_invalidation_and_lru() &
+    const bool ok = test_integer_texture_floor() & test_bulk_reference() &
+                    test_cache_reuse_invalidation_and_lru() &
                     test_shared_immutable_snapshot() & test_live_guest_write_paths();
     if (!ok) return EXIT_FAILURE;
     std::cout << "All decoded texture cache tests passed\n";
