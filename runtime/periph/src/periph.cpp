@@ -615,6 +615,18 @@ struct GameCard::Impl {
 
     void backup_close() {
         if (!backup_selected_) return;
+        // A flash READ always returns at least one byte. A READ that ends right after its (3-byte) address is
+        // an EEPROM-style access with a 2-byte address whose last byte was clocked as data: the program
+        // expects a different chip than the emulated one.
+        if (!chip_mismatch_hinted_ && backup_is_flash(backup_type_) &&
+            (backup_command_ == 0x03 || backup_command_ == 0x0b) &&
+            (backup_stage_ == BackupStage::Read || backup_stage_ == BackupStage::Dummy) && backup_data_bytes_ == 0) {
+            chip_mismatch_hinted_ = true;
+            std::fprintf(stderr,
+                         "[dsr] hint: the program reads the cartridge backup like an EEPROM (2-byte addresses) but the "
+                         "emulated chip is a flash type. If the game reports a corrupt save, try --backup-type eeprom64k "
+                         "(or eeprom8k), or choose Save chip in the launcher.\n");
+        }
         finalize_backup_write();
         backup_selected_ = false;
         backup_stage_ = BackupStage::Command;
@@ -746,6 +758,7 @@ struct GameCard::Impl {
             backup_address_count_ = 0;
             backup_write_bytes_.clear();
             backup_id_pos_ = 0;
+            backup_data_bytes_ = 0;
             switch (value) {
             case 0x06: backup_wel_ = true; backup_stage_ = BackupStage::Ignore; break;
             case 0x04: backup_wel_ = false; backup_stage_ = BackupStage::Ignore; break;
@@ -785,6 +798,7 @@ struct GameCard::Impl {
             backup_stage_ = BackupStage::Read;
             return 0xff;
         case BackupStage::Read: {
+            ++backup_data_bytes_;
             const std::size_t index = normalize_backup_address(backup_address_++);
             return backup_[index];
         }
@@ -839,6 +853,8 @@ struct GameCard::Impl {
     std::vector<std::uint8_t> backup_;
     bool save_dirty_ = false;
     bool save_failure_reported_ = false;
+    bool chip_mismatch_hinted_ = false;
+    std::size_t backup_data_bytes_ = 0;
     bool previous_save_backed_up_ = false;
     std::uint16_t aux_control_ = 0;
     std::uint8_t aux_data_ = 0xff;
@@ -985,6 +1001,8 @@ void GameCard::read_rom(std::uint32_t offset, void* dst, std::uint32_t size) con
 
 std::uint32_t GameCard::chip_id() const { return kCardChipId; }
 std::uint64_t GameCard::rom_size() const { return impl_->rom_size_; }
+bool GameCard::chip_mismatch_suspected() const { return impl_->chip_mismatch_hinted_; }
+
 bool GameCard::flush_save() {
     try {
         impl_->flush_save();

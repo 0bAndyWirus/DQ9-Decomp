@@ -65,6 +65,10 @@ public:
     // one-time stderr warning) if the file could not be written; the data stays dirty for the next call.
     bool flush_save();
 
+    // True once the program has issued an EEPROM-style read (2-byte address, no further data) to an emulated
+    // flash chip, i.e. the chosen backup type is probably wrong. Informational; behaviour is unchanged.
+    bool chip_mismatch_suspected() const;
+
     struct Impl;
 
 private:
