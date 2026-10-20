@@ -1376,6 +1376,40 @@ void test_one_dot_depth_boundary() {
     if (!ok) std::exit(1);
 }
 
+void test_clipped_slivers_do_not_become_one_dot_polygons() {
+    // Both original triangles span many pixels. Only their clipped fragments
+    // fit within one pixel, crossing the left or top viewport boundary.
+    constexpr std::array<std::array<std::int16_t, 2>, 3> left{{
+        {-4608, 2048}, {-4080, 1131}, {-4608, 1024}}};
+    constexpr std::array<std::array<std::int16_t, 2>, 3> top{{
+        {-2560, 4779}, {-1872, 4075}, {-1792, 4779}}};
+    constexpr std::uint32_t red = (31U << 24) | 63U;
+    bool ok = true;
+    for (int threads : {0, 2, 3}) {
+        for (unsigned side = 0; side < 2; ++side) {
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.io_write(0x04000350U, (31U << 16) | 0x03e0U, 32);
+            gpu.io_write(0x04000354U, 0x7fffU, 32);
+            send(gpu, 0x20, {0x001fU});
+            send(gpu, 0x29, {0xc0U | (31U << 16)});
+            send(gpu, 0x40, {0});
+            for (const auto& position : side == 0 ? left : top)
+                position16(gpu, position[0], position[1], 0);
+            send(gpu, 0x41);
+            submit_frame(gpu);
+            const unsigned x = side == 0 ? 0 : 69;
+            const unsigned y = side == 0 ? 69 : 0;
+            ok &= check(gpu.line(y)[x] == red,
+                        "clipped subpixel sliver retains its filled boundary pixel");
+            const auto view = gpu.raster_view();
+            ok &= check(std::count(view.output, view.output + view.output_pixel_count, red) == 1,
+                        "clipped sliver produces exactly one filled pixel");
+        }
+    }
+    if (!ok) std::exit(1);
+}
+
 void test_shadow_requires_depth_mask_and_different_polygon_id() {
     const auto render_shadow = [](bool include_mask, std::uint8_t shadow_id) {
         Gpu3D gpu;
@@ -2951,9 +2985,9 @@ void band_scene(Gpu3D& gpu, TestTextureSource& source, BandScene scene, int vari
         send(gpu, 0x20, {0x7c00U});
         send(gpu, 0x29, {0xc0U | (31U << 16) | (4U << 24)});
         send(gpu, 0x40, {0U});
-        // Clipping yields a subpixel polygon, but one-dot rendering uses
-        // this original, outside vertex (x=95, y=row+1), not the clipped bounds.
-        position16(gpu, -8192, -8192, -3072);
+        // The original polygon already fits one pixel in this tiny viewport.
+        // Clipping must not move its outside first vertex (x=95, y=row+1).
+        position16(gpu, -6144, -6144, -3072);
         position16(gpu, 0, 0, -3072);
         position16(gpu, 512, 512, -3072);
         send(gpu, 0x41);
@@ -3639,6 +3673,7 @@ int main() {
     test_fog_density_interpolation();
     test_fog_descending_density_uses_weighted_truncation();
     test_one_dot_depth_boundary();
+    test_clipped_slivers_do_not_become_one_dot_polygons();
     test_shadow_requires_depth_mask_and_different_polygon_id();
     test_shadow_preserves_vertex_color();
     test_translucent_id_rejection_ignores_blend_enable_and_depth_write();
