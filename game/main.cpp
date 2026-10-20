@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <limits>
@@ -194,7 +195,9 @@ void load_recorded_rtc(Options& options) {
 }
 
 
-Options parse_args(int argc, char** argv) {
+const char* g_parsing_option = nullptr; // for the message when a numeric value does not parse
+
+Options parse_args_unchecked(int argc, char** argv) {
     Options o;
     o.abi_config = dsr::guest_abi_config_path_from_environment();
 #if defined(_WIN32)
@@ -204,6 +207,7 @@ Options parse_args(int argc, char** argv) {
 #endif
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
+        g_parsing_option = argv[i];
         auto value = [&]() -> std::string_view {
             if (i + 1 >= argc) usage(2);
             return argv[++i];
@@ -283,6 +287,15 @@ Options parse_args(int argc, char** argv) {
     return o;
 }
 
+Options parse_args(int argc, char** argv) {
+    try {
+        return parse_args_unchecked(argc, argv);
+    } catch (const std::logic_error&) { // std::stoi/stoll: invalid_argument or out_of_range
+        std::fprintf(stderr, "dq9: invalid value for %s\n", g_parsing_option ? g_parsing_option : "an option");
+        usage(2);
+    }
+}
+
 std::map<FrameIndex, ScriptedInput> load_script(const std::filesystem::path& path) {
     std::map<FrameIndex, ScriptedInput> script;
     std::ifstream in(path);
@@ -296,11 +309,16 @@ std::map<FrameIndex, ScriptedInput> load_script(const std::filesystem::path& pat
     while (in >> frame >> mask >> x >> y) {
         script[frame] = ScriptedInput{static_cast<std::uint16_t>(mask), x, y};
     }
+    if (!in.eof()) { // stopped on something that is not `frame mask x y`: the rest would silently be dropped
+        std::fprintf(stderr, "dq9: input script %s: malformed entry after %zu valid line(s); expected `frame mask x y`\n",
+                     path.string().c_str(), script.size());
+        std::exit(2);
+    }
     return script;
 }
 
 // Interleaved stereo 16-bit PCM, little-endian, as emitted by the SPU drain.
-void write_wav(const std::filesystem::path& path, const std::vector<std::int16_t>& pcm, double rate) {
+bool write_wav(const std::filesystem::path& path, const std::vector<std::int16_t>& pcm, double rate) {
     std::ofstream out(path, std::ios::binary);
     const auto put32 = [&](std::uint32_t v) {
         const char b[4] = {static_cast<char>(v), static_cast<char>(v >> 8), static_cast<char>(v >> 16),
@@ -326,6 +344,8 @@ void write_wav(const std::filesystem::path& path, const std::vector<std::int16_t
     out.write("data", 4);
     put32(bytes);
     for (const std::int16_t s : pcm) put16(static_cast<std::uint16_t>(s));
+    out.flush();
+    return static_cast<bool>(out);
 }
 
 void write_ppm(const std::filesystem::path& path, const std::uint32_t* px, int width = 256, int height = 192) {
@@ -723,7 +743,13 @@ int main(int argc, char** argv) {
     const std::map<FrameIndex, ScriptedInput> script =
         opt.input_script.empty() ? std::map<FrameIndex, ScriptedInput>{} : load_script(opt.input_script);
     if (!opt.dump_frames.empty()) {
-        std::filesystem::create_directories(opt.dump_dir);
+        std::error_code dump_dir_error;
+        std::filesystem::create_directories(opt.dump_dir, dump_dir_error);
+        if (dump_dir_error) {
+            std::fprintf(stderr, "dq9: cannot create dump directory %s: %s\n", opt.dump_dir.string().c_str(),
+                         dump_dir_error.message().c_str());
+            return 2;
+        }
     }
     std::ofstream hash_out;
     if (!opt.hash_file.empty()) {
@@ -1655,8 +1681,12 @@ int main(int argc, char** argv) {
         // Total emulated frames, so idle frames after the last input survive replay (`--frames N`).
         std::ofstream(dsr::host::path_with_suffix(opt.record_input, ".frames")) << frames_done.load() << '\n';
     }
+    bool audio_dump_ok = true;
     if (!opt.dump_audio.empty()) {
-        write_wav(opt.dump_audio, audio_capture, 33'513'982.0 / dsr::Spu::kTicksPerSample);
+        if (!write_wav(opt.dump_audio, audio_capture, 33'513'982.0 / dsr::Spu::kTicksPerSample)) {
+            std::fprintf(stderr, "dq9: cannot write audio capture %s\n", opt.dump_audio.string().c_str());
+            audio_dump_ok = false;
+        }
     }
     if (watchdog.joinable()) watchdog.join();
     const bool final_save_ok = session.flush_save();
@@ -1666,5 +1696,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[debug-workflow-selftest] session: %s\n", debug_session->directory().string().c_str());
         if (workflow_failed) return 1;
     }
-    return final_save_ok ? 0 : 1;
+    return final_save_ok && audio_dump_ok ? 0 : 1;
 }

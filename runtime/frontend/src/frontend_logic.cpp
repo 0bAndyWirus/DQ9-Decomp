@@ -303,6 +303,10 @@ std::string game_language_for_locales(const std::vector<std::string>& preferred)
     return "en";
 }
 
+int fit_window_extent(int wanted, int max_extent) {
+    return max_extent > 0 && wanted > max_extent ? max_extent : wanted;
+}
+
 int volume_gain_q8(int percent, bool muted) {
     return muted ? 0 : std::clamp(percent, 0, 100) * 256 / 100;
 }

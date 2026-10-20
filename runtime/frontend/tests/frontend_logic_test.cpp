@@ -163,6 +163,8 @@ int main() {
     assert(with_volume.key_volume_down == 80 && with_volume.key_volume_up == 81 && with_volume.key_mute == 82);
     assert(with_volume.frontend.volume == 40 && default_config().frontend.volume == 100);
     assert(parse_config("volume=250\n").frontend.volume == 100 && parse_config("volume=-5\n").frontend.volume == 0);
+    assert(fit_window_extent(3840, 1920) == 1920 && fit_window_extent(800, 1920) == 800);
+    assert(fit_window_extent(3840, 0) == 3840 && fit_window_extent(3840, -1) == 3840);   // unknown display
     assert(game_language_for_locales({}) == "en");
     assert(game_language_for_locales({"fr_FR.UTF-8"}) == "fr");
     assert(game_language_for_locales({"DE-at"}) == "de");

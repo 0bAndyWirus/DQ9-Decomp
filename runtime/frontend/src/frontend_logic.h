@@ -48,6 +48,9 @@ void apply_volume_gain(std::int16_t* samples, std::size_t count, int gain_q8);
 // First-run language choice: the first preferred locale ("fr_FR", "de-AT", "es", ...) whose language the
 // European release ships (en, fr, de, es, it), else "en".
 std::string game_language_for_locales(const std::vector<std::string>& preferred);
+// A remembered window size can come from a larger display or a hand-edited file: never open a window
+// bigger than the usable desktop area (max_* <= 0 means unknown and leaves the size alone).
+int fit_window_extent(int wanted, int max_extent);
 std::string audio_debug_status(int solo, const std::array<bool, 16>& muted);
 
 struct Rect { int x; int y; int w; int h; };
