@@ -1900,11 +1900,9 @@ struct Gpu3D::Impl {
                 }
             }
             if (textured && mode != 1U) {
-                // The six-bit expansion/product/truncation reduces exactly to
-                // this five-bit product (also zero when either input is zero).
-                alpha = static_cast<std::uint8_t>(
-                    ((static_cast<unsigned>(texel.a) + 1U) *
-                     (static_cast<unsigned>(alpha) + 1U) - 1U) >> 5U);
+                const auto alpha6 = ((static_cast<unsigned>(expand6(texel.a)) + 1U) *
+                                     (static_cast<unsigned>(expand6(alpha)) + 1U) - 1U) / 64U;
+                alpha = static_cast<std::uint8_t>(std::min(alpha6 / 2U, 31U));
             }
         }
         return {shade[0], shade[1], shade[2], alpha};
