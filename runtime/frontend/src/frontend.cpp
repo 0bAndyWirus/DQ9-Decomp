@@ -1130,20 +1130,105 @@ private:
         SDL_GetRendererOutputSize(renderer_, &width, &height);
         ui_detail::UiCanvas canvas(renderer_);
         const ui_detail::UiColor white{238, 244, 252, 255};
-        const int scale = height >= 700 ? 2 : 1;
-        if (toast) {
-            const int text_w = canvas.text_width(toast_, scale);
-            const int box_h = 14 * scale + 12;
-            canvas.panel({14, height - 14 - box_h, text_w + 28, box_h});
-            canvas.text(28, height - 14 - box_h + 6 + scale * 2, toast_, white, scale);
-        }
-        if (fast_forward_active_) {
-            const char* label = "FAST-FORWARD >>";
-            const int text_w = canvas.text_width(label, scale);
-            const int box_h = 14 * scale + 12;
-            canvas.panel({width - 14 - text_w - 28, 14, text_w + 28, box_h});
-            canvas.text(width - 14 - text_w - 14, 14 + 6 + scale * 2, label, ui_detail::UiColor{128, 216, 255, 255}, scale);
-        }
+        if (width <= 0 || height <= 0) return;
+        const auto draw_notice = [&](std::string_view message, bool top_right, ui_detail::UiColor color) {
+            // Keep the existing padding and anchors when they fit. Tiny renderer
+            // sizes may reduce the margins, but never draw outside the output.
+            const int margin_x = std::min(14, width / 4);
+            const int margin_y = std::min(14, height / 4);
+            const int padding_x = std::min(14, std::max(0, (width - margin_x - 7) / 2));
+            const int content_width = width - margin_x - 2 * padding_x;
+            const int available_height = height - margin_y;
+            constexpr int kLineHeight = 14; // Retain the original single-line panel height.
+            std::array<std::string_view, 32> lines;
+            int scale = height >= 700 ? 2 : 1;
+            if (scale == 2) {
+                const int columns = content_width / canvas.text_width("M", scale);
+                const int rows = std::min(static_cast<int>(lines.size()),
+                                          std::max(0, (available_height - 12) / (kLineHeight * scale)));
+                int column = 0, row = 1;
+                for (char c : message) {
+                    if (c == '\n') { column = 0; ++row; }
+                    else if (c != '\r') ++column;
+                    if (column > columns || row > rows) { scale = 1; break; }
+                }
+            }
+            const int cell_width = canvas.text_width("M", scale);
+            const auto columns = static_cast<std::size_t>(content_width / cell_width);
+            const int line_height = kLineHeight * scale;
+            const auto row_limit = static_cast<std::size_t>(std::min(static_cast<int>(lines.size()),
+                std::max(0, (available_height - 12) / line_height)));
+            if (columns == 0 || row_limit == 0) return;
+
+            // Views into the message avoid both allocation and text copying.
+            // Scan only as far as the visible rows, even for very long paths.
+            std::size_t count = 0, begin = 0;
+            bool complete = false;
+            while (count < row_limit) {
+                std::size_t end = begin, cells = 0, space = std::string_view::npos;
+                for (; end < message.size(); ++end) {
+                    const char c = message[end];
+                    if (c == '\n') break;
+                    if (c == '\r') continue;
+                    if (cells == columns) break;
+                    ++cells;
+                    if (c == ' ') space = end;
+                }
+                std::size_t next = end;
+                if (end < message.size()) {
+                    if (message[end] == '\n') {
+                        ++next;
+                    } else {
+                        // Prefer a word boundary; a word wider than the panel
+                        // must hard-break so that every row still makes progress.
+                        if (message[end] != ' ' && space != std::string_view::npos && space > begin)
+                            end = next = space;
+                        while (next < message.size() && message[next] == ' ') ++next;
+                    }
+                }
+                lines[count++] = message.substr(begin, end - begin);
+                if (end == message.size() ||
+                    (next == message.size() && message.back() != '\n')) {
+                    complete = true;
+                    break;
+                }
+                begin = next;
+            }
+            const std::size_t dots = complete ? 0 : std::min<std::size_t>(3, columns);
+            if (!complete) {
+                auto& last = lines[count - 1];
+                const std::size_t keep = columns - dots;
+                std::size_t end = 0, cells = 0;
+                while (end < last.size()) {
+                    if (last[end] != '\r') {
+                        if (cells == keep) break;
+                        ++cells;
+                    }
+                    ++end;
+                }
+                last = last.substr(0, end);
+            }
+            int text_width = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                const int suffix_width = i + 1 == count ? static_cast<int>(dots) * cell_width : 0;
+                text_width = std::max(text_width, canvas.text_width(lines[i], scale) + suffix_width);
+            }
+            const int box_w = text_width + 2 * padding_x;
+            const int box_h = static_cast<int>(count) * line_height + 12;
+            const int x = top_right ? width - margin_x - box_w : margin_x;
+            const int y = top_right ? margin_y : height - margin_y - box_h;
+            canvas.panel({x, y, box_w, box_h});
+            for (std::size_t i = 0; i < count; ++i) {
+                const int text_y = y + 6 + scale * 2 + static_cast<int>(i) * line_height;
+                canvas.text(x + padding_x, text_y, lines[i], color, scale);
+                if (dots && i + 1 == count)
+                    canvas.text(x + padding_x + canvas.text_width(lines[i], scale), text_y,
+                                std::string_view("...", dots), color, scale);
+            }
+        };
+        if (toast) draw_notice(toast_, false, white);
+        if (fast_forward_active_)
+            draw_notice("FAST-FORWARD >>", true, ui_detail::UiColor{128, 216, 255, 255});
     }
     void toggle_fullscreen() {
         const bool now = (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;

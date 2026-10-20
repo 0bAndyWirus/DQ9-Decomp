@@ -29,6 +29,10 @@ Screenshots go to `screenshots/` next to the save file. Controller mappings can 
 | `gpu3d_scale` | `1` | Experimental hi-res 3D overlay, 1 (off) to 4 |
 | `frame_time_overlay` | `0` | Show the frame-time display |
 
+Transient notices and the fast-forward badge fit the renderer width: large text falls back to the
+smaller bitmap size, then wraps where needed. Long paths/device names are bounded by the visible
+height and end with `...` when truncated. Save-path and pause notices remain complete at 1x/2x sizes.
+
 ## Audio
 
 | Key | Default | Meaning |
