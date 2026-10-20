@@ -12,6 +12,12 @@ func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	# --script does not scan for extensions in a clean checkout. Match the app's
+	# explicit load rather than requiring an editor-generated extension cache.
+	if not GDExtensionManager.is_extension_loaded("res://dq9.gdextension"):
+		var status := GDExtensionManager.load_extension("res://dq9.gdextension")
+		check(status == GDExtensionManager.LOAD_STATUS_OK,
+			"Failed to load dq9.gdextension (status %d)" % status)
 	check(ClassDB.class_exists("DqMachine"), "DqMachine is not registered")
 	check(ClassDB.class_exists("DqGpuScene"), "DqGpuScene is not registered")
 	if not failures.is_empty():

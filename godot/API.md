@@ -20,7 +20,7 @@ The extension bundles no title-specific layout or values.
 - Optional deterministic replay: call `set_rtc_epoch(epoch_seconds, timezone_offset_minutes)` before `load_game` to make the guest RTC advance from emulated time rather than host time. The timezone offset must be in -840..840 minutes. Production hosts that omit it use the session's normal RTC behavior.
 - `set_speed(float)` selects frames per second relative to the 59.8261 Hz normal rate. `1` is realtime; `0` is unpaced; values are clamped to 0..16.
 - `set_buttons(mask)` uses DS bits A=1, B=2, Select=4, Start=8, Right=16, Left=32, Up=64, Down=128, R=256, L=512, X=1024, Y=2048. `set_touch(x,y,down)` uses bottom-screen pixel coordinates and clamps to 0..255, 0..191.
-- `flush_save()` requests the owner thread to flush the loaded session save and waits for completion.
+- `flush_save() -> bool` requests the owner thread to flush the loaded session save and waits for the actual result. `true` means pending writes completed or there was nothing to write; `false` means a write failed or no loaded session can accept the request. Failures leave the in-memory data dirty so the next flush can retry; they do not stop emulation. The Godot host does not schedule periodic flushes: existing calls are debug-bundle capture and session close, followed by a final best-effort shutdown flush. Debug-bundle capture reports a failure rather than copying a stale disk save as the current state.
 - Worker-side input replay: `set_input_script(rows: PackedStringArray) -> String`
   accepts zero-based `frame buttons x y` rows on a freshly loaded, stopped
   session. Missing frames have no input, duplicate frames use the last row, and
@@ -66,6 +66,21 @@ Godot or the native extension is absent. A changed cold-import signature fails
 the known-bug test so the packaging workaround can be revisited, never silently
 accepting a different crash. `tests/test_extension_lifecycle.gd` also checks the
 engine-class bindings and resource release, and is included in the smoke gate.
+A cold import with the official Linux 4.7.2 editor has also been observed to
+abort after writing the extension cache, with no diagnostic on stderr; a
+debugger stops first at a segmentation fault in the engine. This newer failure
+remains a failing regression, not an accepted replacement for the pinned 4.5
+signature. Import failures include the actual process return code and engine
+version so a signal termination is not mistaken for a missing-class failure.
+Both native classes are registered at scene initialization regardless of the
+display backend; headless mode does not intentionally omit either class.
+On a clean checkout, a standalone `--script` probe must explicitly load
+`res://dq9.gdextension`, as the application does: the editor-generated
+`.godot/extension_list.cfg` is not present yet. The lifecycle probe loads the
+real extension and checks its load status before asserting registration.
+`tests/test_godot_editor_import.py` covers this cold runtime path separately
+from editor import, so the smoke gate needs no editor warm-up or rendered
+backend for the lifecycle checks.
 
 When GPU 3D is enabled, each slot also owns a bounded copy of the captured
 `RenderFrame`: at most 2048 polygons and 6144 transformed vertices, in the
@@ -92,6 +107,20 @@ Signals: `frame_ready(frame: int)` is emitted when a new frame is uploaded; `err
 
 `get_stats()` returns `frame`, `ticks`, `fps`, `audio_queue_ms` (ring fill), `underruns` (AudioStreamGeneratorPlayback skips), `dropped_audio_ms`, `running`, and `paused`; `audio_frames_pushed` is an additional cumulative count of frames accepted by generator playback.
 Replay diagnostics also expose `replay_active` and the zero-based `replay_target`.
+`loaded` reports whether a live session is available. `last_save_ok` is the result
+of the most recent completed explicit or shutdown flush, published under the
+worker mutex; it starts as `true` on each `load_game` and is not proof that the
+guest has saved any progress. The launcher shows a long failure toast on a
+`true` -> `false` transition and one recovery toast after a later successful
+flush, not on every presented frame. A failed close flush is also shown in the
+launcher and logged before the existing final shutdown retry; closing still
+discards the in-memory session, so repair the path and retry before closing.
+
+The C boundary `dsr_session_save(session) -> int` in
+`runtime/include/dsr/session_c.h` returns **0 on success**, including no pending
+writes, and **nonzero on write failure or a NULL handle**. Like stepping and
+destruction, it must run on the session owner thread. Both the session library
+and its consumers must be rebuilt for the changed return type.
 
 ## Issue reviewer and status store
 

@@ -14,6 +14,7 @@ var _ff_held := false
 var _toast: Label
 var _toast_token := 0
 var _chip_hint_shown := false
+var _last_save_ok := true
 var settings_panel: PanelContainer
 var game_panel: Control
 var top_rect: TextureRect
@@ -198,7 +199,7 @@ func _make_settings() -> PanelContainer:
 	var chip:=OptionButton.new(); chip.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	for text in Logic.BACKUP_LABELS: chip.add_item(text)
 	chip.select(maxi(0,Logic.BACKUP_TYPES.find(settings.backup_type)))
-	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size, else infers it from the program. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
+	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
 	chip_row.add_child(chip)
 	_ui.chip=chip
 	_section(col,"Display")
@@ -212,6 +213,7 @@ func _make_settings() -> PanelContainer:
 	var integer:=CheckButton.new(); integer.text="Integer scaling"; integer.button_pressed=settings.integer_scale; integer.toggled.connect(func(v):settings.integer_scale=v;_layout_screens()); options.add_child(integer)
 	var scale_row:=HBoxContainer.new(); col.add_child(scale_row); var scalelabel:=Label.new(); scalelabel.text="Window scale"; scale_row.add_child(scalelabel)
 	var scale:=OptionButton.new()
+	scale.name = "WindowScale"
 	for n in [1,2,3]: scale.add_item("%dx"%n)
 	scale.select(clampi(settings.window_scale-1,0,2))
 	scale.item_selected.connect(func(i): settings.window_scale=i+1; get_window().size=Vector2i(1280,800)*(i+1))
@@ -350,6 +352,7 @@ func _start_game() -> void:
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
 	_chip_hint_shown = false
+	_last_save_ok = true
 	_user_speed = 1.0; _ff_held = false
 	_apply_gpu3d_settings()
 	if machine.has_method("set_rtc_epoch"):
@@ -483,13 +486,23 @@ func _release_machine(drain_audio: bool) -> void:
 	_clear_gpu3d_status()
 	if closing == null or not is_instance_valid(closing): return
 	machine = null
+	_ff_held = false
 	if closing.has_signal("frame_ready"):
 		var callback := Callable(self, "_on_machine_frame")
 		if closing.is_connected("frame_ready", callback): closing.disconnect("frame_ready", callback)
-	if closing.has_method("flush_save"): closing.flush_save()
+	if closing.has_method("stop"): closing.stop()
+	if closing.has_method("flush_save") and closing.get_stats().get("loaded", false):
+		var save_ok: bool = closing.flush_save()
+		if save_ok:
+			_observe_save_result(true)
+		else:
+			_last_save_ok = false
+			var warning := "SAVE NOT WRITTEN BEFORE CLOSE: CHECK SAVE PATH"
+			_show_toast(warning, 15.0)
+			_ui.error.text = warning
+			push_warning("Save flush failed before closing. The final shutdown retry is best effort; the latest save data may not be on disk.")
 	var audio_player: AudioStreamPlayer = closing.get_audio_player() if closing.has_method("get_audio_player") else null
 	if audio_player: audio_player.stop()
-	if closing.has_method("stop"): closing.stop()
 	closing.free()
 	_cleanup_replay_save()
 	if drain_audio: OS.delay_msec(500)
@@ -544,6 +557,7 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	replay_save_path = temporary_save
 	replay_issue = issue.duplicate(true); replay_complete = false
 	machine = ClassDB.instantiate("DqMachine"); add_child(machine)
+	_last_save_ok = true
 	# Software screenshots are the exact reference even when normal play uses GPU 3D.
 	machine.set_gpu3d_enabled(false)
 	var metadata := IssueReviewer.Store.fields(issue.comment)
@@ -646,6 +660,14 @@ func _show_toast(text: String, seconds := 2.5) -> void:
 	var token := _toast_token
 	get_tree().create_timer(seconds).timeout.connect(func(): if token == _toast_token: _toast.hide())
 
+func _observe_save_result(save_ok: bool) -> void:
+	if save_ok == _last_save_ok: return
+	_last_save_ok = save_ok
+	if save_ok:
+		_show_toast("SAVE WRITTEN: SAVE PATH WORKING AGAIN", 6.0)
+	else:
+		_show_toast("SAVE NOT WRITTEN: CHECK SAVE PATH (WILL RETRY ON NEXT SAVE)", 15.0)
+
 # Hold Tab to run unpaced (the pause panel's speed returns on release). Ignored while typing or in dialogs.
 func _update_fast_forward() -> void:
 	if machine == null:
@@ -682,6 +704,7 @@ func _process(_delta: float) -> void:
 		if s.get("chip_mismatch", false) and not _chip_hint_shown:
 			_chip_hint_shown = true
 			_show_toast("Save chip wrong? Try EEPROM 64 KB (Start / Settings)", 12.0)
+		_observe_save_result(bool(s.get("last_save_ok", true)))
 		var now := Time.get_ticks_msec()
 		if now - _fps_ms >= 1000:
 			var fr: int = int(s.get("frame", 0))

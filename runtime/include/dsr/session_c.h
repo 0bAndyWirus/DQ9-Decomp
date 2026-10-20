@@ -58,7 +58,10 @@ DSR_SESSION_API const int16_t* dsr_session_get_audio(const dsr_session_handle* s
                                      size_t* frame_count, double* sample_rate);
 DSR_SESSION_API uint64_t dsr_session_frame_count(const dsr_session_handle* session);
 DSR_SESSION_API uint64_t dsr_session_ticks(const dsr_session_handle* session);
-DSR_SESSION_API void dsr_session_save(dsr_session_handle* session);
+/* Flushes pending save data. Returns 0 on success (including no pending writes),
+ * nonzero on write failure or a NULL session. Failed writes remain pending for retry.
+ * Call on the session's owner thread, like step/destroy. */
+DSR_SESSION_API int dsr_session_save(dsr_session_handle* session);
 /* Nonzero once the program has read the cartridge backup like an EEPROM while a flash chip is emulated. */
 DSR_SESSION_API int dsr_session_chip_mismatch_suspected(dsr_session_handle* session);
 

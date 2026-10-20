@@ -123,6 +123,7 @@ public:
             language_ = static_cast<std::uint8_t>(language);
             input_ = {0, 0, 0, 0, 0};
             chip_mismatch_ = false;
+            last_save_ok_ = true; flush_requested_ = false;
             error_.clear(); running_ = false; paused_ = false;
             {
                 std::lock_guard audio_lock(audio_mutex_);
@@ -344,11 +345,13 @@ public:
     godot::AudioStreamPlayer* get_audio_player() const { return audio_player_; }
     godot::Ref<godot::Image> get_top_image() const { return top_image_; }
     godot::Ref<godot::Image> get_bottom_image() const { return bottom_image_; }
-    void flush_save() {
+    bool flush_save() {
         std::unique_lock lock(mutex_);
-        if (!loaded_) return;
+        if (!loaded_ || shutdown_) return false;
         flush_requested_ = true; cv_.notify_all();
-        cv_.wait(lock, [&] { return !flush_requested_ || shutdown_; });
+        // Shutdown also completes the request with its final owner-thread flush.
+        cv_.wait(lock, [&] { return !flush_requested_; });
+        return last_save_ok_;
     }
     godot::Dictionary get_stats() const {
         std::lock_guard lock(mutex_);
@@ -363,6 +366,8 @@ public:
             out["audio_frames_pushed"] = static_cast<std::int64_t>(audio_frames_pushed_);
         }
         out["running"] = running_;
+        out["loaded"] = loaded_;
+        out["last_save_ok"] = last_save_ok_;
         out["chip_mismatch"] = chip_mismatch_;
         out["paused"] = paused_;
         out["replay_active"] = replay_active_;
@@ -780,8 +785,9 @@ private:
                     if (shutdown_) break;
                     if (flush_requested_) {
                         lock.unlock();
-                        dsr_session_save(session_);
+                        const bool save_ok = dsr_session_save(session_) == 0;
                         lock.lock();
+                        last_save_ok_ = save_ok;
                         flush_requested_ = false; cv_.notify_all();
                         continue;
                     }
@@ -896,7 +902,12 @@ private:
             }
             dsr::set_session_render_callback(session_, {});
             dsr::set_session_capture_opaque_only(session_, false);
-            dsr_session_save(session_);
+            const bool save_ok = dsr_session_save(session_) == 0;
+            {
+                std::lock_guard lock(mutex_);
+                last_save_ok_ = save_ok;
+                loaded_ = false; flush_requested_ = false; cv_.notify_all();
+            }
             dsr_session_destroy(session_);
             session_ = nullptr;
         }
@@ -988,6 +999,7 @@ private:
     bool loaded_ = false, running_ = false, paused_ = false;
     bool audio_priming_ = true;
     bool shutdown_ = false, initialized_ = false, flush_requested_ = false, sync_done_ = false;
+    bool last_save_ok_ = true;
     int pending_steps_ = 0, sync_frames_ = 0;
     float speed_ = 1.0f;
     std::string rom_path_, save_path_;

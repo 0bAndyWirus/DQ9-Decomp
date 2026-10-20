@@ -135,8 +135,11 @@ func _run() -> void:
         await process_frame
         quit(9)
         return
-    _destroy_machine(machine)
+    var save_ok := _destroy_machine(machine)
     await process_frame
+    if not save_ok:
+        quit(12)
+        return
     print("PASS: pause, exact step, 20s realtime audio/pacing, and clean shutdown")
     if not parity_ok:
         quit(11)
@@ -172,11 +175,14 @@ func _compare_hash_files(native_path: String, godot_path: String, frames: int) -
     print("PASS: %d frames; top and bottom hashes identical to native dq9" % frames)
     return true
 
-func _destroy_machine(machine: Node) -> void:
+func _destroy_machine(machine: Node) -> bool:
     if is_instance_valid(machine):
         machine.stop()
         machine.set_paused(true)
-        machine.flush_save()
+        var save_ok: bool = machine.flush_save()
+        if not save_ok: push_error("save flush failed during smoke cleanup")
         machine.free()
         # Give Godot's audio mixer thread time to retire its generator playback before quit.
         OS.delay_msec(500)
+        return save_ok
+    return false

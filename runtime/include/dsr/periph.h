@@ -65,8 +65,8 @@ public:
     // one-time stderr warning) if the file could not be written; the data stays dirty for the next call.
     bool flush_save();
 
-    // True once the program has issued an EEPROM-style read (2-byte address, no further data) to an emulated
-    // flash chip, i.e. the chosen backup type is probably wrong. Informational; behaviour is unchanged.
+    // True after an address-only backup read: this may indicate EEPROM addressing or a cancelled flash read.
+    // Informational only; never changes the chip, write-enable latch or save contents.
     bool chip_mismatch_suspected() const;
 
     struct Impl;

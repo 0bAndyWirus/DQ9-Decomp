@@ -67,11 +67,22 @@ class GodotEditorImportTests(unittest.TestCase):
     def import_project(self, project):
         result = self.run_engine(project, "--editor", "--import", "--quit")
         if result.returncode != 0:
-            self.assertTrue(known_editor_doc_crash(result, self.version), result.stdout + result.stderr)
+            self.assertTrue(
+                known_editor_doc_crash(result, self.version),
+                f"Cold editor import exited {result.returncode} with Godot {self.version}\n"
+                + result.stdout + result.stderr)
         cache = project / ".godot/extension_list.cfg"
         self.assertTrue(cache.is_file(), result.stdout + result.stderr)
         self.assertIn("res://dq9.gdextension", cache.read_text())
         return result
+
+    def test_cold_runtime_lifecycle_without_editor_import(self):
+        with tempfile.TemporaryDirectory(prefix="dq9-runtime-lifecycle-") as directory:
+            project = self.fresh_project(directory)
+            self.assertFalse((project / ".godot").exists())
+            lifecycle = self.run_engine(project, "--script", "res://tests/test_extension_lifecycle.gd")
+            self.assert_clean_runtime(lifecycle)
+            self.assertIn("PASS: DqMachine registered; extension lifecycle", lifecycle.stdout)
 
     def test_five_cold_import_caches_and_strict_runtime_teardown(self):
         for attempt in range(5):

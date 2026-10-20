@@ -115,8 +115,8 @@ extern "C" uint64_t dsr_session_frame_count(const dsr_session_handle* session) {
 extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
     return session ? session->session.ticks() : 0;
 }
-extern "C" void dsr_session_save(dsr_session_handle* session) {
-    if (session) session->session.flush_save();
+extern "C" int dsr_session_save(dsr_session_handle* session) {
+    return session && session->session.flush_save() ? 0 : 1;
 }
 extern "C" int dsr_session_chip_mismatch_suspected(dsr_session_handle* session) {
     return session && session->session.chip_mismatch_suspected() ? 1 : 0;

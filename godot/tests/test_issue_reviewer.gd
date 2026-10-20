@@ -50,7 +50,8 @@ func _run() -> void:
 	var frozen_frame: int = worker.get_stats().frame
 	await create_timer(0.2).timeout
 	_expect(int(worker.get_stats().frame) == frozen_frame, "no overshoot while waiting for main-thread presentation")
-	worker.stop(); worker.flush_save()
+	worker.stop()
+	_expect(worker.flush_save(), "flush replay save before reload")
 	_expect(worker.load_game(args[0], worker_save, 1).is_empty(), "reload stopped worker for sparse input semantics")
 	_expect(worker.set_input_script(PackedStringArray(["2 1 -1 -1", "0 2 -1 -1", "2 8 10 20", "5 0 -1 -1"])).is_empty(), "accept sparse unsorted duplicate rows")
 	finished_frame[0] = -1
@@ -59,7 +60,9 @@ func _run() -> void:
 	while finished_frame[0] < 0 and Time.get_ticks_msec() < deadline: await process_frame
 	_expect(worker.get_input_history() == PackedStringArray(["0 2 -1 -1", "1 0 -1 -1", "2 8 10 20", "3 0 -1 -1", "4 0 -1 -1", "5 0 -1 -1"]), "worker selects input per frame, missing rows release, last duplicate wins")
 	_expect(worker.get_replay_hashes().is_empty(), "normal replay avoids hash collection")
-	worker.stop(); worker.flush_save(); worker.free()
+	worker.stop()
+	_expect(worker.flush_save(), "flush sparse replay save before teardown")
+	worker.free()
 
 	var app = load("res://scenes/main.tscn").instantiate()
 	root.add_child(app)

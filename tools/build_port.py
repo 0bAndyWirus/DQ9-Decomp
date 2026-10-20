@@ -267,8 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
     p.add_argument("--backup-type", choices=BACKUP_TYPE_CHOICES, default="auto",
-                   help="cartridge backup chip written to the local abi.ini (default auto: the runtime infers it from an "
-                        "existing save file or from how the program accesses the backup).")
+                   help="cartridge backup chip written to the local abi.ini (default auto: inferred from an existing "
+                        "save file, otherwise flash512k). Use eeprom64k for the European release.")
     p.add_argument("--rebuild-workspace", action="store_true",
                    help="discard the extracted workspace and generated code first (use when switching to a different image)")
     p.add_argument("--check", action="store_true", help="only report whether this machine and image are ready, then exit")
