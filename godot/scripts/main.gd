@@ -13,6 +13,7 @@ var _user_speed := 1.0          # speed chosen in the pause panel; fast-forward 
 var _ff_held := false
 var _toast: Label
 var _toast_token := 0
+var _chip_hint_shown := false
 var settings_panel: PanelContainer
 var game_panel: Control
 var top_rect: TextureRect
@@ -348,6 +349,7 @@ func _start_game() -> void:
 		return
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
+	_chip_hint_shown = false
 	_user_speed = 1.0; _ff_held = false
 	_apply_gpu3d_settings()
 	if machine.has_method("set_rtc_epoch"):
@@ -677,6 +679,9 @@ func _process(_delta: float) -> void:
 	_update_fast_forward()
 	if machine and machine.has_method("get_stats"):
 		var s:Dictionary=machine.get_stats()
+		if s.get("chip_mismatch", false) and not _chip_hint_shown:
+			_chip_hint_shown = true
+			_show_toast("Save chip wrong? Try EEPROM 64 KB (Start / Settings)", 12.0)
 		var now := Time.get_ticks_msec()
 		if now - _fps_ms >= 1000:
 			var fr: int = int(s.get("frame", 0))

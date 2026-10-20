@@ -118,6 +118,9 @@ extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
 extern "C" void dsr_session_save(dsr_session_handle* session) {
     if (session) session->session.flush_save();
 }
+extern "C" int dsr_session_chip_mismatch_suspected(dsr_session_handle* session) {
+    return session && session->session.chip_mismatch_suspected() ? 1 : 0;
+}
 
 bool dsr::capture_session_render_frame(const dsr_session_handle* session,
                                        RenderFrame& destination) noexcept {

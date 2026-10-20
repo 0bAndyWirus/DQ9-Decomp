@@ -43,6 +43,8 @@ public:
     std::uint64_t frame_count() const { return frame_count_; }
     std::uint64_t ticks() const { return machine_.ticks(); }
     bool flush_save();
+    // See GameCard::chip_mismatch_suspected().
+    bool chip_mismatch_suspected();
     // Optional hi-res 3D overlay (Gpu3D::set_output_scale(N), N > 1). Writes the screen that
     // engine A (the 3D engine) drives, per POWCNT1 bit 15, as 256N x 192N 0xFFRRGGBB: pixels the
     // 2D compositor shows as an unmodified 3D pixel (Gpu2D::three_d_mask) come from the scaled 3D
