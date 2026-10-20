@@ -1659,12 +1659,12 @@ int main(int argc, char** argv) {
         write_wav(opt.dump_audio, audio_capture, 33'513'982.0 / dsr::Spu::kTicksPerSample);
     }
     if (watchdog.joinable()) watchdog.join();
-    session.flush_save();
+    const bool final_save_ok = session.flush_save();
     if (opt.debug_workflow_selftest) {
         dq9::workflow_test::close_virtual_controller(workflow_controller);
         frontend.reset();
         std::fprintf(stderr, "[debug-workflow-selftest] session: %s\n", debug_session->directory().string().c_str());
         if (workflow_failed) return 1;
     }
-    return 0;
+    return final_save_ok ? 0 : 1;
 }

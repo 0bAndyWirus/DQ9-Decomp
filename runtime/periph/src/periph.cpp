@@ -838,6 +838,7 @@ struct GameCard::Impl {
     BackupType backup_type_ = BackupType::Flash512K;
     std::vector<std::uint8_t> backup_;
     bool save_dirty_ = false;
+    bool save_failure_reported_ = false;
     bool previous_save_backed_up_ = false;
     std::uint16_t aux_control_ = 0;
     std::uint8_t aux_data_ = 0xff;
@@ -984,7 +985,21 @@ void GameCard::read_rom(std::uint32_t offset, void* dst, std::uint32_t size) con
 
 std::uint32_t GameCard::chip_id() const { return kCardChipId; }
 std::uint64_t GameCard::rom_size() const { return impl_->rom_size_; }
-void GameCard::flush_save() { impl_->flush_save(); }
+bool GameCard::flush_save() {
+    try {
+        impl_->flush_save();
+        impl_->save_failure_reported_ = false;
+        return true;
+    } catch (const std::exception& error) {
+        // A full disk or a read-only folder must not end the session: the data stays dirty and the next
+        // flush (autosave or exit) tries again. Report once per run of failures.
+        if (!impl_->save_failure_reported_)
+            std::fprintf(stderr, "[dsr] warning: could not write the save file %s: %s (will retry)\n",
+                         impl_->save_path_.string().c_str(), error.what());
+        impl_->save_failure_reported_ = true;
+        return false;
+    }
+}
 
 struct Spi::Impl {
     explicit Impl(const FirmwareSettings& settings) {

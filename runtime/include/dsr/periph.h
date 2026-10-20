@@ -61,8 +61,9 @@ public:
     std::uint32_t chip_id() const;
     std::uint64_t rom_size() const;
 
-    // Flush backup memory to save_path if dirty. Called periodically and on exit.
-    void flush_save();
+    // Flush backup memory to save_path if dirty. Called periodically and on exit. Returns false (after a
+    // one-time stderr warning) if the file could not be written; the data stays dirty for the next call.
+    bool flush_save();
 
     struct Impl;
 
