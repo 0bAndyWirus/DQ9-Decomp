@@ -9,6 +9,10 @@ Unknown keys and out-of-range values are ignored, so a typo never prevents the g
 | Linux | `$XDG_CONFIG_HOME/dq9-decomp` or `~/.config/dq9-decomp` | `$XDG_DATA_HOME/dq9-decomp` or `~/.local/share/dq9-decomp` |
 | Windows | `%APPDATA%\dq9-decomp` | `%LOCALAPPDATA%\dq9-decomp` |
 
+**Portable mode:** an empty file named `portable.txt` next to `dq9` / `dq9.exe` keeps everything beside the
+program instead of the profile folders above: settings in `portable/config/`, saves and screenshots in
+`portable/data/`. Delete the file to go back; the two folders are not moved for you.
+
 Screenshots go to `screenshots/` next to the save file. Controller mappings can be added in a
 `gamecontrollerdb.txt` in the config folder (SDL_GameControllerDB format).
 

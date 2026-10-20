@@ -23,6 +23,11 @@ int main() {
     paths = user_paths_from_environment(environment);
     assert(paths.config_dir == std::filesystem::path("/custom/config/dq9-decomp"));
     assert(paths.data_dir == std::filesystem::path("/custom/data/dq9-decomp"));
+    environment.portable_root = "/games/dq9/portable";   // beats every platform root
+    paths = user_paths_from_environment(environment);
+    assert(paths.config_dir == std::filesystem::path("/games/dq9/portable/config"));
+    assert(paths.data_dir == std::filesystem::path("/games/dq9/portable/data"));
+    environment.portable_root.clear();
     environment.windows = true;
     environment.appdata = "C:/dq9-test-home/AppData/Roaming";
     environment.local_appdata = "D:/dq9-test-data";

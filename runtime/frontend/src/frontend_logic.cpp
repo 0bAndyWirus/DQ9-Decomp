@@ -91,6 +91,8 @@ void parse_line(const std::string& line, ConfigData& cfg) {
 } // namespace
 
 UserPaths user_paths_from_environment(const UserPathEnvironment& environment) {
+    if (!environment.portable_root.empty())
+        return {environment.portable_root / "config", environment.portable_root / "data"};
     UserPaths paths;
     if (environment.windows) {
         paths.config_dir = environment.appdata;
