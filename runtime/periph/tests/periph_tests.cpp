@@ -3,13 +3,92 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/syscall.h>
+
+// Test-only syscall interposition makes publication races and denied cleanup deterministic,
+// without adding production hooks, relying on timing, or requiring non-root permissions.
+namespace save_fault {
+bool collide_next_backup = false;
+bool deny_restore_commit = false;
+bool deny_pending_cleanup = false;
+bool deny_stage_publication = false;
+std::string restore_target;
+std::string collided_target;
+std::string retained_stage;
+
+bool has_suffix(const char* path, std::string_view suffix) {
+    const std::string_view name(path);
+    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
+}
+
+struct Scope {
+    ~Scope() {
+        collide_next_backup = false;
+        deny_restore_commit = false;
+        deny_pending_cleanup = false;
+        deny_stage_publication = false;
+        restore_target.clear();
+        collided_target.clear();
+        retained_stage.clear();
+    }
+};
+} // namespace save_fault
+
+extern "C" int link(const char* source, const char* target) noexcept {
+    if (save_fault::deny_stage_publication && save_fault::has_suffix(source, ".pending")) {
+        save_fault::retained_stage = source;
+        errno = EACCES;
+        return -1;
+    }
+    if (save_fault::collide_next_backup && save_fault::has_suffix(target, ".bak")) {
+        save_fault::collide_next_backup = false;
+        const int fd = ::open(target, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        assert(fd >= 0);
+        std::array<char, 512> bytes{};
+        bytes.fill('\x6c');
+        const auto amount = ::write(fd, bytes.data(), bytes.size());
+        const int closed = ::close(fd);
+        assert(amount == static_cast<ssize_t>(bytes.size()));
+        assert(closed == 0);
+        save_fault::collided_target = target;
+    }
+    return static_cast<int>(::syscall(SYS_linkat, AT_FDCWD, source, AT_FDCWD, target, 0));
+}
+
+extern "C" int rename(const char* source, const char* target) noexcept {
+    if (save_fault::deny_restore_commit && save_fault::restore_target == target) {
+        errno = EACCES;
+        return -1;
+    }
+    return static_cast<int>(::syscall(SYS_renameat, AT_FDCWD, source, AT_FDCWD, target));
+}
+
+extern "C" int unlink(const char* path) noexcept {
+    if (save_fault::deny_pending_cleanup && save_fault::has_suffix(path, ".pending")) {
+        save_fault::retained_stage = path;
+        errno = EACCES;
+        return -1;
+    }
+    return static_cast<int>(::syscall(SYS_unlinkat, AT_FDCWD, path, 0));
+}
+#endif
 
 
 namespace {
@@ -222,34 +301,518 @@ std::string slurp(const std::filesystem::path& path) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// The save as it was before a run survives as <save>.bak: written once, before the first overwrite.
+void write_bytes(const std::filesystem::path& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    assert(out.good());
+}
+
+std::vector<std::filesystem::path> save_backups(const std::filesystem::path& save) {
+    std::vector<std::filesystem::path> backups;
+    const auto directory = save.parent_path() / "backups";
+    if (!std::filesystem::exists(directory)) return backups;
+    const auto prefix = save.filename().string() + ".";
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (!std::filesystem::is_regular_file(entry.symlink_status())) continue;
+        const auto name = entry.path().filename().string();
+        if (name.size() != prefix.size() + 37 || name.compare(0, prefix.size(), prefix) != 0) continue;
+        const auto suffix = name.substr(prefix.size());
+        bool matched = true;
+        for (std::size_t i = 0; i < suffix.size(); ++i) {
+            const char separator = i == 8 ? 'T' : i == 15 ? '.' : i == 25 ? 'Z' :
+                                   i == 26 ? '-' : i == 33 ? '.' :
+                                   i == 34 ? 'b' : i == 35 ? 'a' : i == 36 ? 'k' : '\0';
+            if (separator != '\0' ? suffix[i] != separator : suffix[i] < '0' || suffix[i] > '9')
+                matched = false;
+        }
+        if (matched) backups.push_back(entry.path());
+    }
+    std::sort(backups.begin(), backups.end());
+    return backups;
+}
+
+void write_eeprom_byte(dsr::GameCard& card, std::uint8_t value) {
+    (void)aux_transfer(card, {0x06});
+    (void)aux_transfer(card, {0x02, 0x01, value});
+}
+
+std::string read_eeprom_bytes(dsr::GameCard& card) {
+    std::vector<std::uint8_t> command(514, 0);
+    command[0] = 0x03;
+    const auto bytes = aux_transfer(card, command);
+    return std::string(bytes.begin() + 2, bytes.end());
+}
+
+void assert_restore_fails(dsr::GameCard& card, const std::filesystem::path& source = {}) {
+    bool failed = false;
+    try {
+        card.restore_save(source);
+    } catch (const std::exception&) {
+        failed = true;
+    }
+    assert(failed);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+}
+
+// Preserve the pre-session file once, including across reset, not at every autosave.
 void test_previous_save_backup(const std::filesystem::path& rom, const std::filesystem::path& save) {
     {
         dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
-        (void)aux_transfer(card, {0x06});
-        (void)aux_transfer(card, {0x02, 0x01, 0x11});
-        card.flush_save();
+        assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Idle);
+        assert(card.flush_save());
+        assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Idle);
+        assert(!std::filesystem::exists(save));
+        write_eeprom_byte(card, 0x11);
+        assert(card.flush_save());
+        assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+        assert(card.flush_save());
+        assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
     }
     const std::string first_session = slurp(save);
     assert(first_session.size() == 512);
-    std::filesystem::path backup = save;
-    backup += ".bak";
-    assert(!std::filesystem::exists(backup)); // nothing to back up before the first save
+    assert(save_backups(save).empty()); // No old file existed before the initial write.
+    std::string second_session;
     {
         dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
-        (void)aux_transfer(card, {0x06});
-        (void)aux_transfer(card, {0x02, 0x01, 0x22});
-        card.flush_save();
-        const std::string second_session = slurp(save);
+        assert(card.flush_save());
+        assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Idle);
+        assert(save_backups(save).empty());
+        write_eeprom_byte(card, 0x22);
+        assert(card.flush_save());
+        const auto backups = save_backups(save);
+        assert(backups.size() == 1);
+        assert(slurp(backups.front()) == first_session);
+        write_eeprom_byte(card, 0x33);
+        assert(card.flush_save());
+        card.reset();
+        write_eeprom_byte(card, 0x44);
+        assert(card.flush_save());
+        assert(save_backups(save) == backups);
+        assert(slurp(backups.front()) == first_session);
+        second_session = slurp(save);
         assert(second_session != first_session);
-        assert(slurp(backup) == first_session); // the previous run's save
-        (void)aux_transfer(card, {0x06});
-        (void)aux_transfer(card, {0x02, 0x01, 0x33});
-        card.flush_save();                      // later flushes of the same run keep the first backup
-        assert(slurp(backup) == first_session);
-        assert(slurp(save) != second_session);
+    }
+    {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        write_eeprom_byte(card, 0x55);
+        assert(card.flush_save());
+        const auto backups = save_backups(save);
+        assert(backups.size() == 2);
+        assert(slurp(backups.front()) == first_session);
+        assert(slurp(backups.back()) == second_session);
+    }
+    auto legacy_backup = save;
+    legacy_backup += ".bak";
+    assert(!std::filesystem::exists(legacy_backup));
+}
+
+void test_save_backup_rotation(const std::filesystem::path& rom, const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    for (const std::size_t limit : {std::size_t{5}, std::size_t{2}, std::size_t{1}}) {
+        const auto save = directory / ("keep-" + std::to_string(limit) + ".sav");
+        std::vector<std::string> sessions;
+        for (std::size_t session = 0; session < 9; ++session) {
+            dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+            // Exercise the real default separately from explicit retention settings.
+            if (limit != 5) card.set_save_backup_limit(limit);
+            write_eeprom_byte(card, static_cast<std::uint8_t>(session + 1));
+            assert(card.flush_save());
+            const auto backups = save_backups(save);
+            const auto count = std::min(session, limit);
+            assert(backups.size() == count);
+            for (std::size_t i = 0; i < count; ++i)
+                assert(slurp(backups[i]) == sessions[session - count + i]);
+            sessions.push_back(slurp(save));
+        }
     }
 }
+
+void test_save_backup_unrelated_retention(const std::filesystem::path& rom,
+                                           const std::filesystem::path& directory) {
+    const auto save = directory / "retention.sav";
+    const auto backups = directory / "backups";
+    std::filesystem::create_directories(backups);
+    const std::vector<std::filesystem::path> unrelated{
+        directory / "retention.sav.bak",
+        backups / "notes.txt",
+        backups / "other.sav.20990101T010203.000000000Z-000000.bak",
+        backups / "retention.sav.20990230T010203.000000000Z-000000.bak",
+        backups / "retention.sav.20990101T246000.000000000Z-000000.bak",
+        backups / "retention.sav.20990101T010203.000000000Z-000000.bak.keep",
+        backups / "retention.sav.20990101T010203.000000000Z-00000.bak",
+        backups / "retention.sav.20990101T010203.000000000Z-00000x.bak",
+        backups / "retention.sav.extra.20990101T010203.000000000Z-000000.bak",
+    };
+    for (const auto& path : unrelated) write_bytes(path, "unrelated bytes");
+    const auto matching_directory = backups / "retention.sav.20980101T010203.000000000Z-000000.bak";
+    std::filesystem::create_directory(matching_directory);
+    write_bytes(matching_directory / "keep.txt", "directory contents");
+#if !defined(_WIN32)
+    const auto matching_symlink = backups / "retention.sav.20970101T010203.000000000Z-000000.bak";
+    std::filesystem::create_symlink(unrelated.front(), matching_symlink);
+#endif
+    std::size_t original_entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(backups)) {
+        (void)entry;
+        ++original_entries;
+    }
+    write_bytes(save, std::string(512, '\xff'));
+    std::string previous;
+    for (std::uint8_t value = 1; value <= 4; ++value) {
+        previous = slurp(save);
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        card.set_save_backup_limit(1);
+        write_eeprom_byte(card, value);
+        assert(card.flush_save());
+    }
+    std::size_t entries = 0;
+    std::size_t retained = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(backups)) {
+        ++entries;
+        if (std::filesystem::is_regular_file(entry.symlink_status()) &&
+            std::find(unrelated.begin(), unrelated.end(), entry.path()) == unrelated.end()) {
+            ++retained;
+            assert(slurp(entry.path()) == previous);
+        }
+    }
+    assert(entries == original_entries + 1);
+    assert(retained == 1);
+    for (const auto& path : unrelated) assert(slurp(path) == "unrelated bytes");
+    assert(slurp(matching_directory / "keep.txt") == "directory contents");
+#if !defined(_WIN32)
+    assert(std::filesystem::is_symlink(std::filesystem::symlink_status(matching_symlink)));
+    assert(slurp(matching_symlink) == "unrelated bytes");
+#endif
+}
+
+void test_save_restore(const std::filesystem::path& rom, const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "restore.sav";
+    std::string original(512, '\0');
+    for (std::size_t i = 0; i < original.size(); ++i) original[i] = static_cast<char>(i * 37);
+    write_bytes(save, original);
+    std::vector<std::string> sessions{original};
+    for (const std::uint8_t value : {0x11, 0x22}) {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        write_eeprom_byte(card, value);
+        assert(card.flush_save());
+        sessions.push_back(slurp(save));
+    }
+    const auto initial_backups = save_backups(save);
+    assert(initial_backups.size() == 2);
+    // File metadata is not the timestamp: selection follows the managed filename, not source mtime.
+    std::filesystem::last_write_time(initial_backups.front(),
+                                    std::filesystem::file_time_type::clock::now() + std::chrono::hours(24));
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    card.set_save_backup_limit(1);
+    card.restore_save();
+    assert(slurp(save) == sessions[1]);
+    assert(std::filesystem::file_size(save) == 512);
+    assert(read_eeprom_bytes(card) == sessions[1]);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    auto backups = save_backups(save);
+    assert(backups.size() == 1);
+    assert(slurp(backups.back()) == sessions[2]);
+    assert(!std::filesystem::exists(initial_backups.back())); // The read source was safely pruned.
+    assert(card.flush_save());
+    assert(save_backups(save) == backups); // A restore is already clean, not a pending overwrite.
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    const auto chosen = backups.back();
+    card.restore_save(chosen);
+    assert(slurp(save) == sessions[2]);
+    assert(read_eeprom_bytes(card) == sessions[2]);
+    assert(!std::filesystem::exists(chosen));
+    backups = save_backups(save);
+    assert(backups.size() == 1);
+    assert(slurp(backups.back()) == sessions[1]);
+    const auto external = directory / "chosen.raw";
+    write_bytes(external, original);
+    card.restore_save(external);
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == original);
+    assert(slurp(external) == original);
+    const auto restored_backups = save_backups(save);
+    assert(card.flush_save());
+    assert(save_backups(save) == restored_backups);
+    {
+        dsr::GameCard reloaded(rom, save, dsr::BackupType::Eeprom512B);
+        assert(read_eeprom_bytes(reloaded) == original);
+    }
+    const auto missing_save = directory / "new" / "missing.sav";
+    dsr::GameCard fresh(rom, missing_save, dsr::BackupType::Eeprom512B);
+    fresh.restore_save(external);
+    assert(slurp(missing_save) == original);
+    assert(read_eeprom_bytes(fresh) == original);
+    assert(save_backups(missing_save).empty());
+    assert(fresh.flush_save());
+}
+
+void test_save_restore_refusal(const std::filesystem::path& rom, const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "refuse.sav";
+    const std::string original(512, '\x19');
+    write_bytes(save, original);
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    assert_restore_fails(card); // No managed backup yet.
+    assert(card.flush_save());
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+    assert(slurp(save) == original);
+    assert(save_backups(save).empty());
+    write_eeprom_byte(card, 0x44); // Refused restore must retain dirty in-memory data too.
+    auto dirty = original;
+    dirty[1] = 0x44;
+    assert_restore_fails(card, directory / "missing.raw");
+    for (const std::size_t size : {std::size_t{511}, std::size_t{513}, std::size_t{552}}) {
+        const auto source = directory / ("wrong-" + std::to_string(size) + ".dsv");
+        write_bytes(source, std::string(size, '\x27'));
+        assert_restore_fails(card, source); // No truncation, padding, chip change or DSV conversion.
+        assert(slurp(source) == std::string(size, '\x27'));
+        assert(slurp(save) == original);
+        assert(read_eeprom_bytes(card) == dirty);
+        assert(save_backups(save).empty());
+    }
+    bool rejected_zero = false;
+    try {
+        card.set_save_backup_limit(0);
+    } catch (const std::invalid_argument&) {
+        rejected_zero = true;
+    }
+    assert(rejected_zero);
+    assert(card.flush_save());
+    assert(slurp(save) == dirty);
+    assert(save_backups(save).size() == 1);
+    assert(slurp(save_backups(save).front()) == original);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+}
+
+void test_save_backup_failure_recovery(const std::filesystem::path& rom,
+                                        const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "backup-failure.sav";
+    const auto blocker = directory / "backups";
+    const std::string original(512, '\x35');
+    write_bytes(save, original);
+    write_bytes(blocker, "not a directory");
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    write_eeprom_byte(card, 0x62);
+    assert(!card.flush_save());
+    assert(!card.flush_save());
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+    assert(slurp(save) == original); // Required backup failure cannot overwrite the save.
+    assert(slurp(blocker) == "not a directory");
+    auto changed = original;
+    changed[1] = 0x62;
+    assert(read_eeprom_bytes(card) == changed);
+    std::filesystem::remove(blocker);
+    assert(card.flush_save());
+    assert(slurp(save) == changed);
+    const auto backups = save_backups(save);
+    assert(backups.size() == 1);
+    assert(slurp(backups.front()) == original);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    assert(card.flush_save());
+    assert(save_backups(save) == backups);
+}
+
+void test_readonly_save_recovery(const std::filesystem::path& rom,
+                                  const std::filesystem::path& directory) {
+#if defined(_WIN32)
+    (void)rom;
+    (void)directory;
+    std::cout << "skipping POSIX read-only save test on Windows\n";
+#else
+    if (::geteuid() == 0) {
+        std::cout << "skipping read-only save test as root\n";
+        return;
+    }
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "readonly.sav";
+    const auto backup_directory = directory / "backups";
+    std::filesystem::create_directory(backup_directory);
+    const auto source = directory / "chosen.raw";
+    const std::string original(512, '\x31'), restored(512, '\x79');
+    write_bytes(save, original);
+    write_bytes(source, restored);
+    const auto directory_permissions = std::filesystem::status(directory).permissions();
+    const auto backup_permissions = std::filesystem::status(backup_directory).permissions();
+    const auto readonly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec;
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    struct RestorePermissions {
+        std::filesystem::path directory;
+        std::filesystem::path backups;
+        std::filesystem::perms directory_permissions;
+        std::filesystem::perms backup_permissions;
+        ~RestorePermissions() {
+            std::error_code ec;
+            std::filesystem::permissions(directory, directory_permissions,
+                                         std::filesystem::perm_options::replace, ec);
+            std::filesystem::permissions(backups, backup_permissions,
+                                         std::filesystem::perm_options::replace, ec);
+        }
+    } restore_permissions{directory, backup_directory, directory_permissions, backup_permissions};
+    write_eeprom_byte(card, 0x42);
+    auto changed = original;
+    changed[1] = 0x42;
+    std::filesystem::permissions(backup_directory, readonly);
+    assert(!card.flush_save());
+    assert(!card.flush_save());
+    assert_restore_fails(card, source);
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == changed);
+    assert(save_backups(save).empty());
+    std::filesystem::permissions(backup_directory, backup_permissions);
+    assert(card.flush_save());
+    assert(slurp(save) == changed);
+    const auto session_backups = save_backups(save);
+    assert(session_backups.size() == 1);
+    assert(slurp(session_backups.front()) == original);
+
+    std::filesystem::permissions(directory, readonly);
+    write_eeprom_byte(card, 0x53);
+    assert(!card.flush_save());
+    assert(!card.flush_save());
+    assert(slurp(save) == changed);
+    assert(save_backups(save) == session_backups);
+    std::filesystem::permissions(directory, directory_permissions);
+    changed[1] = 0x53;
+    assert(card.flush_save());
+    assert(slurp(save) == changed);
+    assert(save_backups(save) == session_backups);
+
+    // The preservation backup can succeed while the atomic target commit still fails.
+    card.set_save_backup_limit(1);
+    std::filesystem::permissions(directory, readonly);
+    assert_restore_fails(card);
+    assert(save_backups(save) == session_backups); // Neither source pruning nor a false "newest".
+    assert(slurp(save) == changed);
+    assert(read_eeprom_bytes(card) == changed);
+    assert(card.flush_save()); // Clean: this must not turn a failed restore into a "Saved" badge.
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+    std::filesystem::permissions(directory, directory_permissions);
+    card.restore_save();
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == original);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    card.restore_save(source);
+    assert(slurp(save) == restored);
+    assert(std::filesystem::file_size(save) == 512);
+    assert(read_eeprom_bytes(card) == restored);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    const auto after_restore = save_backups(save);
+    assert(card.flush_save());
+    assert(save_backups(save) == after_restore);
+    assert(slurp(source) == restored);
+
+    const auto first_commit_save = directory / "first-commit.sav";
+    write_bytes(first_commit_save, original);
+    dsr::GameCard first_commit(rom, first_commit_save, dsr::BackupType::Eeprom512B);
+    write_eeprom_byte(first_commit, 0x24);
+    std::filesystem::permissions(directory, readonly);
+    assert(!first_commit.flush_save());
+    const auto first_commit_backups = save_backups(first_commit_save);
+    assert(first_commit_backups.size() == 1);
+    assert(slurp(first_commit_backups.front()) == original);
+    assert(!first_commit.flush_save());
+    assert(save_backups(first_commit_save) == first_commit_backups);
+    assert(slurp(first_commit_save) == original);
+    std::filesystem::permissions(directory, directory_permissions);
+    assert(first_commit.flush_save());
+    auto first_commit_bytes = original;
+    first_commit_bytes[1] = 0x24;
+    assert(slurp(first_commit_save) == first_commit_bytes);
+    assert(read_eeprom_bytes(first_commit) == first_commit_bytes);
+    assert(save_backups(first_commit_save) == first_commit_backups);
+#endif
+}
+
+#if defined(__linux__)
+void test_save_backup_publish_collision(const std::filesystem::path& rom,
+                                         const std::filesystem::path& directory) {
+    save_fault::Scope faults;
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "collision.sav";
+    const std::string original(512, '\x31');
+    write_bytes(save, original);
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    write_eeprom_byte(card, 0x42);
+    save_fault::collide_next_backup = true;
+    assert(card.flush_save());
+    assert(!save_fault::collided_target.empty()); // The destination appeared at the publish syscall.
+    assert(slurp(save_fault::collided_target) == std::string(512, '\x6c'));
+    const auto backups = save_backups(save);
+    assert(backups.size() == 2);
+    std::size_t preserved = 0;
+    for (const auto& path : backups) {
+        if (path != save_fault::collided_target) {
+            ++preserved;
+            assert(slurp(path) == original);
+        }
+    }
+    assert(preserved == 1);
+    auto changed = original;
+    changed[1] = 0x42;
+    assert(slurp(save) == changed);
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+}
+
+void test_save_restore_staged_failures(const std::filesystem::path& rom,
+                                        const std::filesystem::path& directory) {
+    save_fault::Scope faults;
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "staged.sav";
+    const std::string original(512, '\x19');
+    write_bytes(save, original);
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    card.set_save_backup_limit(1);
+    write_eeprom_byte(card, 0x2a);
+    assert(card.flush_save());
+    const auto changed = slurp(save);
+    const auto initial_backups = save_backups(save);
+    assert(initial_backups.size() == 1);
+    save_fault::restore_target = save.string();
+    save_fault::deny_restore_commit = true;
+    save_fault::deny_pending_cleanup = true;
+    assert_restore_fails(card);
+    assert(!save_fault::retained_stage.empty());
+    const std::filesystem::path failed_stage = save_fault::retained_stage;
+    assert(slurp(failed_stage) == changed);
+    assert(save_backups(save) == initial_backups);
+    assert(slurp(save) == changed);
+    assert(read_eeprom_bytes(card) == changed);
+    assert(card.flush_save());
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+
+    save_fault::deny_restore_commit = false;
+    save_fault::deny_pending_cleanup = false;
+    card.restore_save(); // Denied cleanup must not have made the staged target the newest backup.
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == original);
+    assert(slurp(failed_stage) == changed); // Unmanaged stages are never rotated.
+    const auto before_promotion_failure = save_backups(save);
+    assert(before_promotion_failure.size() == 1);
+    assert(slurp(before_promotion_failure.front()) == changed);
+
+    save_fault::retained_stage.clear();
+    save_fault::deny_stage_publication = true;
+    card.restore_save();
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+    assert(slurp(save) == changed);
+    assert(read_eeprom_bytes(card) == changed);
+    assert(save_backups(save) == before_promotion_failure);
+    assert(!save_fault::retained_stage.empty());
+    const std::filesystem::path unpublished = save_fault::retained_stage;
+    assert(slurp(unpublished) == original);
+    assert(card.flush_save());
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+
+    save_fault::deny_stage_publication = false;
+    card.restore_save(unpublished); // Retained staging bytes remain usable as an explicit raw source.
+    assert(slurp(save) == original);
+    assert(read_eeprom_bytes(card) == original);
+    assert(slurp(unpublished) == original);
+    assert(save_backups(save).size() == 1);
+}
+#endif
 
 void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesystem::path& save_dir) {
     {   // An address-only read can suggest a mismatch, but is also a cancelled flash read.
@@ -330,10 +893,12 @@ void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
     const auto save = blocker / "x.sav";
     dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
     assert(card.flush_save());                       // nothing dirty yet: nothing to write
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Idle);
     (void)aux_transfer(card, {0x06});
     (void)aux_transfer(card, {0x02, 0x01, 0x22});
     assert(!card.flush_save());                      // reports failure instead of throwing
     assert(!card.flush_save());                      // still dirty, still failing, still no throw
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
     std::filesystem::remove(blocker);
     assert(card.flush_save());                      // retry creates the directory and writes retained data
     const auto saved_byte = [&] {
@@ -344,6 +909,7 @@ void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
     };
     assert(saved_byte() == 0x22);
     assert(card.flush_save());                      // a clean flush still succeeds after recovery
+    assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
 
     // A later commit failure must also retain new writes and allow another recovery.
     std::filesystem::remove(save);
@@ -575,6 +1141,16 @@ int main() {
     test_unwritable_save_does_not_throw(rom, temp.path);
     test_larger_eeproms(rom, temp.path);
     test_previous_save_backup(rom, temp.path / "previous.sav");
+    test_save_backup_rotation(rom, temp.path / "rotation");
+    test_save_backup_unrelated_retention(rom, temp.path / "unrelated");
+    test_save_restore(rom, temp.path / "restore");
+    test_save_restore_refusal(rom, temp.path / "restore-refusal");
+    test_save_backup_failure_recovery(rom, temp.path / "backup-failure");
+    test_readonly_save_recovery(rom, temp.path / "readonly");
+#if defined(__linux__)
+    test_save_backup_publish_collision(rom, temp.path / "publish-collision");
+    test_save_restore_staged_failures(rom, temp.path / "staged-failures");
+#endif
     test_backup_flash_round_trip(rom, temp.path / "saves" / "nested" / "flash.sav");
     test_dsv_import(rom, temp.path / "import.dsv");
     test_explicit_backup_selection(rom, temp.path / "explicit-backup.sav");

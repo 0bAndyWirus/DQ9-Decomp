@@ -214,6 +214,8 @@ public:
     virtual void clear_audio_queue() {}
     // Short on-screen notice (screenshot saved, layout changed, ...); hosts without a window ignore it.
     virtual void show_message(const std::string& /*text*/, int /*milliseconds*/ = 2500) {}
+    // Independent save badge: failure persists until recovery; success fades after six seconds.
+    virtual void show_save_status(bool /*success*/) {}
 
     // Sleep until the next emulated frame deadline (59.8261 Hz).
     virtual void pace_frame() = 0;

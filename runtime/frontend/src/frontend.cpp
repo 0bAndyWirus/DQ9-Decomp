@@ -1122,16 +1122,23 @@ private:
         toast_ = text;
         toast_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
     }
+    void show_save_status(bool success) override {
+        save_failed_ = !success;
+        save_status_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    }
     // Transient notice at the bottom-left plus a held-key fast-forward badge at the top-right.
     void draw_toast() {
-        const bool toast = !toast_.empty() && std::chrono::steady_clock::now() < toast_until_;
-        if (!toast && !fast_forward_active_) return;
+        const auto now = std::chrono::steady_clock::now();
+        const bool toast = !toast_.empty() && now < toast_until_;
+        const bool save_status = save_failed_ || now < save_status_until_;
+        if (!toast && !fast_forward_active_ && !save_status) return;
         int width = 0, height = 0;
         SDL_GetRendererOutputSize(renderer_, &width, &height);
         ui_detail::UiCanvas canvas(renderer_);
         const ui_detail::UiColor white{238, 244, 252, 255};
         if (width <= 0 || height <= 0) return;
-        const auto draw_notice = [&](std::string_view message, bool top_right, ui_detail::UiColor color) {
+        const auto draw_notice = [&](std::string_view message, bool top_right, ui_detail::UiColor color,
+                                     bool top_left = false) {
             // Keep the existing padding and anchors when they fit. Tiny renderer
             // sizes may reduce the margins, but never draw outside the output.
             const int margin_x = std::min(14, width / 4);
@@ -1216,7 +1223,7 @@ private:
             const int box_w = text_width + 2 * padding_x;
             const int box_h = static_cast<int>(count) * line_height + 12;
             const int x = top_right ? width - margin_x - box_w : margin_x;
-            const int y = top_right ? margin_y : height - margin_y - box_h;
+            const int y = top_right || top_left ? margin_y : height - margin_y - box_h;
             canvas.panel({x, y, box_w, box_h});
             for (std::size_t i = 0; i < count; ++i) {
                 const int text_y = y + 6 + scale * 2 + static_cast<int>(i) * line_height;
@@ -1229,6 +1236,9 @@ private:
         if (toast) draw_notice(toast_, false, white);
         if (fast_forward_active_)
             draw_notice("FAST-FORWARD >>", true, ui_detail::UiColor{128, 216, 255, 255});
+        if (save_status)
+            draw_notice(save_failed_ ? "SAVE FAILED (WILL RETRY)" : "SAVED", false,
+                        save_failed_ ? ui_detail::UiColor{255, 146, 146, 255} : white, true);
     }
     void toggle_fullscreen() {
         const bool now = (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
@@ -1466,6 +1476,8 @@ private:
     std::array<int, 2> texture_scale_{1, 1};
     std::string toast_;
     std::chrono::steady_clock::time_point toast_until_{};
+    std::chrono::steady_clock::time_point save_status_until_{};
+    bool save_failed_ = false;
     bool fast_forward_active_ = false;
     bool muted_ = false;
     bool window_unfocused_ = false;
