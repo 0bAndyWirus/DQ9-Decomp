@@ -5,7 +5,7 @@
 Use the SDL2 launcher before starting the game:
 
 ```sh
-build/game-ui/game/dq9 --launcher
+build/game/game/dq9 --launcher
 ```
 
 The launcher writes `frontend.conf` beside the existing frontend settings,
@@ -49,7 +49,7 @@ restoring. Godot has its own [backup browser and confirmed restore](USING_GODOT.
 The direct launch form is unchanged:
 
 ```sh
-build/game-ui/game/dq9 --rom "$DQ9_ROM" --save "$DQ9_SAVE" --language en
+build/game/game/dq9 --rom "$DQ9_ROM" --save "$DQ9_SAVE" --language en
 ```
 Relative ROM paths are resolved in this order: the current working directory,
 the directory containing `frontend.conf`, then a repository checkout above the
@@ -103,6 +103,7 @@ Debug actions are active only when **Debug tool** is enabled in the launcher or 
 | F1 | Show/hide hotkey help |
 | D (HUD visible) | Toggle RAM/VRAM snapshots for the next bundle |
 | T (HUD visible) | Toggle the four-slot raw texture-memory inspector |
+| M (HUD visible) | Toggle the audio mixer instead of the ordinary mute hotkey |
 | F5/F6 (visible mixer), or Ctrl+Shift+F5/F6 | Select previous/next mixer channel |
 | F7/F12 (visible mixer), or Ctrl+Shift+F7/F12 | Mute selected channel / toggle solo |
 

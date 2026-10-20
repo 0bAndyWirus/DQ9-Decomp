@@ -77,7 +77,7 @@ Defaults for the SDL window (rebind them on the launcher's HOTKEYS page or in `f
 
 Each hotkey shows a short notice in the window (layout, swap, filter, integer scaling, hi-res scale, screenshot saved), and a FAST-FORWARD badge appears while fast-forward is held.
 
-Pad combos never pass the combo buttons to the game while held. With `--debug-tool` enabled, F3/F4/F8 are taken by the debug tool (see [Launcher and debug tool](LAUNCHER_AND_DEBUG.md)). F7 used to be the screen-swap key; configuration files that still bind both actions to F7 keep the new F7 meaning and move the swap to F8.
+Pad combos never pass the combo buttons to the game while held. With `--debug-tool` enabled, F3/F4/F8 are taken by the debug tool, and **M** toggles the mixer instead of mute while the debug HUD is visible (see [Launcher and debug tool](LAUNCHER_AND_DEBUG.md)). F7 used to be the screen-swap key; configuration files that still bind both actions to F7 keep the new F7 meaning and move the swap to F8.
 
 ## Optional hi-res 3D (experimental, off by default)
 
