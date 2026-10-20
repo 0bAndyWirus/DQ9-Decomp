@@ -2,7 +2,7 @@
 
 The SDL host stores its settings in a plain-text `frontend.conf` (one `key=value` per line, `#`
 starts a comment). The launcher writes it; you can also edit it by hand while the game is closed.
-Unknown keys and out-of-range values are ignored, so a typo never prevents the game from starting.
+Unknown keys and malformed individual settings are ignored. Numeric settings such as volume, scale and audio limits are clamped to the ranges below; invalid enumerated choices such as a layout or chip name retain the previous/default value.
 
 | Platform | Config folder | Data folder (saves, screenshots) |
 | --- | --- | --- |
@@ -80,7 +80,48 @@ the swap moves to F8.
 | --- | --- | --- |
 | `language` | `en` | `en`, `fr`, `de`, `es`, `it` |
 | `rom_path`, `save_path` | empty | Remembered by the launcher |
+| `backup_type` | ABI setting on first launcher run, otherwise `auto` | Remembered save-chip choice using the CLI chip names below. Saved choices win over ABI defaults; explicit `--backup-type`, including `auto`, wins for that launch. |
 | `debug_tool` | `0` | Capture/annotation tool (see [Launcher and debug tool](LAUNCHER_AND_DEBUG.md)) |
 | `capture_memory_dumps` | `1` | Include RAM/VRAM snapshots in debug bundles |
 
 Command-line options override these for one run (`dq9 --help`).
+
+## Native command-line reference
+
+Run `build/game/game/dq9 --help` for the installed build's options (`--help` / `-h`
+prints usage and exits). These are runtime options, not arguments to
+`tools/build_port.py`. Paths and diagnostic outputs stay local.
+
+| Option | Meaning |
+| --- | --- |
+| `--rom PATH` | Your own `.nds` image; alternatively set `DQ9_ROM`. |
+| `--save PATH` | Cartridge save; defaults to `dq9.sav` in the data folder above. |
+| `--language en\|fr\|de\|es\|it` | Select a language from the European multilingual image. |
+| `--abi-config PATH` | Generated ABI INI; alternatively `DQ9_ABI_CONFIG`. If neither is set, search the build tree for `build/gen/abi.ini`. |
+| `--backup-type TYPE` | Override ABI cartridge policy: `auto`, `eeprom512b`, `eeprom8k`, `eeprom64k`, `eeprom128k`, `flash256k`, `flash512k`, `flash1m`, `flash8m`. Explicit `auto` also overrides the ABI setting; it uses an existing supported save size, otherwise Flash512K. For a fresh European-release save select `eeprom64k`. |
+| `--save-backups N` | Retain 1–10000 timestamped session backups (default 5). |
+| `--restore-save newest` / `--restore-save PATH` | Restore a backup and exit without running frames. Close sessions using the target save first and explicitly select the chip type matching the backup capacity. The current save is backed up before replacement; see [save safety](GETTING_STARTED.md#saves). |
+| `--autosave-frames N` | Flush dirty saves every N frames; default 1800 in a window, disabled headless. `0` disables periodic flushing, not the final flush. |
+| `--launcher` | Open the settings launcher before starting a session. |
+| `--gpu3d-scale N` | Experimental hi-res 3D overlay, 1–4; default 1 (off). |
+| `--headless` | No window or audio device; requires `--frames` or `--pause-at-frame`. |
+| `--frames N` | Stop after N frames; headless runs print a speed summary. |
+| `--pause-at-frame N` | Run through zero-based frame N unpaced, then pause (or stop headless). |
+| `--rtc-epoch SECONDS` | Deterministic clock epoch; time advances with emulated frames. |
+| `--rtc-timezone-offset MINUTES` | Fixed offset for the emulated clock. |
+| `--input-script FILE` | Replay `frame button_mask touch_x touch_y` lines. Mask follows KEYINPUT order, with X at bit 10 and Y at bit 11; `-1 -1` releases touch. |
+| `--record-input FILE` | Record nonempty frame inputs in that grammar for replay with the same starting save. |
+| `--hash-file FILE` | Write `frame top_fnv1a64 bottom_fnv1a64` (RGB-byte hashes). |
+| `--dump-frames SPEC` | Dump selected frames, e.g. `100,500-900/100`, as top/bottom PPM and register text; hi-res PPMs are also emitted when enabled. |
+| `--dump-dir DIR` | Dump destination; default `build/dq9-frames`. |
+| `--dump-ram`, `--dump-vram` | Add RAM/video-memory snapshots to selected frame dumps. |
+| `--dump-audio FILE` | Write emitted audio to 16-bit stereo WAV, including headless runs. |
+| `--debug-tool` | Enable capture/annotation controls (F10 menu, F9 note, F8 step). |
+| `--frame-time-overlay` | Display frame timing without enabling the debug tool. |
+| `--debug-every N` | Print machine status every N frames. |
+| `--no-debug-dumps` | Omit RAM/VRAM snapshots from debug bundles. |
+| `--debug-selftest`, `--debug-workflow-selftest` | Run built-in diagnostic self-tests. |
+
+Save retention and autosave CLI options are native-host controls, not
+`frontend.conf` keys. The Godot host's save controls are documented separately in
+[Using Godot](USING_GODOT.md).

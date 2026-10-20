@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+# Only superseded PR runs are cancelled; pushes and scheduled runs remain independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -17,6 +24,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/workflows/python-tests.yml
       - name: Install dependencies
         run: python -m pip install PyYAML capstone unicorn cmake ninja
       - name: Run the synthetic Python test suite

@@ -2,7 +2,7 @@
 
 This repository does **not** contain the game. You need your own legally obtained copy of the European multilingual release of *Dragon Quest IX: Sentinels of the Starry Skies* (a `.nds` file). The scripts here turn that file into a program that runs on your PC. Everything they create stays on your computer, and you must never upload or share it.
 
-## Status (verified)
+## Status (reviewed 2026-10-20)
 
 Built from a fresh clone on Linux with a local EU image, the program starts, plays the Square Enix and video-codec logos, and reaches the opening credits with the **START** prompt in all five languages (checked headless at frame 1,500 with `--language en|fr|de|es|it`). With the cartridge backup chip set correctly (`--backup-type eeprom64k`; see [If something fails](#if-something-fails)), a scripted 28,500-frame headless run goes on past the title menu through the opening sequence into a field scene, and its per-frame output was identical to a separate local development build (an observation about scripted runs, not a playability claim). After such a replay, a short live windowed session (on a virtual display) responded to keyboard input: the in-game menu opened and closed and the character moved. **Not verified:** sustained interactive play, play beyond the first area, Windows (a build kit exists and is built by CI, but the author has not run a game on Windows), Steam Deck, audio quality, or in-game save/load correctness. Treat this as an early experimental build, not a finished port.
 
@@ -54,7 +54,7 @@ PLAY-DQ9.bat
 In the launcher select your ROM and language, then choose **EEPROM 64 KB** under
 **ROM / SAVE → Save chip** before Launch. The choice is remembered for later launcher starts.
 
-Details, requirements and the build-time caveat are in [Building on Windows](BUILDING_WINDOWS.md). Continuous integration builds the ROM-free runtime with the same Zig toolchain on Windows and packages the kit; the generated game itself has only been cross-built on Linux. **The author has not run a game on Windows**; if you try it, please report success or failure without attaching game files.
+Details, requirements and the build-time caveat are in [Building on Windows](BUILDING_WINDOWS.md). Continuous integration builds the ROM-free runtime with the same Zig toolchain on Windows and packages the source-only kit. A local Windows build was reported for v0.2.8, but a completed build is not a game-run check. **The author has not run a game on Windows**; if you try it, please report success or failure without attaching game files.
 
 ## Controls and hotkeys
 
@@ -102,13 +102,13 @@ Replace `newest` with a chosen backup path to restore that file. This command va
 
 Restore stages its safety snapshot under a `.pending` filename until the target commit succeeds. If filesystem permissions change during that operation, a raw `.pending` snapshot may remain; it is never rotated or selected by `newest`. The runtime logs its path if a completed restore cannot publish the snapshot under its normal backup name. It can be restored by explicitly passing that path after repairing permissions. Retention cleanup failures warn separately and retain extra backups; they do not turn an already-persisted save into a write failure.
 
-The Godot host uses the same default five timestamped backups and reports failure/recovery for its existing explicit flushes (debug-bundle capture and session close); it does not currently schedule periodic autosaves. Its C session interface does not yet expose backup retention or restore actions: close Godot and use the native restore command against the same save path. Repair a failed path and retry a debug-bundle capture before closing to confirm the save was written. A failed close flush is reported in the launcher and log, followed by the existing best-effort shutdown retry; it is not a persistence guarantee. A bundle capture whose save flush fails is reported as failed rather than copying a stale disk save as current.
+The Godot host uses the same default five timestamped backups and reports failure/recovery for explicit flushes (debug-bundle capture and session close); it does not currently schedule periodic autosaves. Its Settings and Pause panels now list backups with UTC dates, sizes and capacity-mismatch warnings, and offer a confirmed **Restore…** action. An open game is flushed and stopped before restore, then restarted from the restored cartridge save; a stopped game stays stopped. Restore is disabled throughout issue replay, including Play from here. Backup retention is not a Godot setting. See [Godot save controls](USING_GODOT.md#save-status-and-restoring-backups) for failure handling; the native restore command above remains available after closing Godot.
 
 ## Known limits
 
 - No save states: guest threads run on host fibers, which cannot be serialized. In-game saves use the cartridge save file only.
 - Hi-res 3D has no hardware parity claim; edge marking and dots stay one output pixel wide at higher scales.
-- Windows: the kit's ROM run is unverified; Steam Deck is unverified; play beyond the opening credits is unverified.
+- Windows game runs and Steam Deck hardware are unverified. Scripted Linux runs and short live input checks are not full-game compatibility or playability validation.
 - Performance figures in the release notes are from one machine and one headless run; they are not general claims.
 
 ## Languages

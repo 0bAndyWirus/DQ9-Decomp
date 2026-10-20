@@ -32,6 +32,20 @@ Windows `dq9.exe` uses the GUI subsystem, so the launcher opens without its own
 console. Diagnostics are appended to `runtime.log` beside `frontend.conf`.
 `PLAY-DQ9.bat` waits for the GUI process and returns its exit status.
 
+For support without launching a game, the Windows source kit's
+`COLLECT-DIAGNOSTICS.bat` creates a sanitized diagnostics ZIP; Linux can run
+`python tools/collect_diagnostics.py --kit-dir PATH`. Review the text before
+sharing, especially custom paths in build logs. See [diagnostic contents and
+limits](BUILDING_WINDOWS.md#source-build-kit-on-windows-start-here).
+
+The native window flushes dirty cartridge saves periodically and shows a
+**SAVED** badge on first success/recovery or a persistent **SAVE FAILED (WILL
+RETRY)** badge on failure. These are separate from debug notices and do not mean
+the guest has made an in-game save. Timestamped session backups and the
+capacity-checked `--restore-save` command are documented under
+[save safety](GETTING_STARTED.md#saves); close all sessions using the save before
+restoring. Godot has its own [backup browser and confirmed restore](USING_GODOT.md#save-status-and-restoring-backups).
+
 The direct launch form is unchanged:
 
 ```sh

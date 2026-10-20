@@ -32,7 +32,7 @@ cmake -S . -B build/game-ui -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/game-ui --target dq9
 ```
 
-`tools/build_port.py` can produce that directory, and the host needs the generated `build/gen/abi.ini` passed as `--abi-config` (see Getting started). Keep it and the resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
+`tools/build_port.py` can produce that directory and the required `build/gen/abi.ini`. Both hosts discover the ABI INI in their build tree when no explicit override is given; SDL accepts `--abi-config PATH` and both hosts accept `DQ9_ABI_CONFIG` for another location (see Getting started). Keep the generated INI and resulting executable private. Optional ccache/compiler/linker choices are local development settings, not performance guarantees.
 
 ## Godot prerequisites and build
 
@@ -89,7 +89,7 @@ Keep all gameplay screenshots, saves, texture/memory dumps, audio, input capture
 
 ## Local-only export
 
-`godot/export_presets.cfg` defines a Linux/X11 preset. With matching Godot 4.5 export templates installed, a local export can be created through Project → Export or:
+`godot/export_presets.cfg` defines Linux/X11 and Windows Desktop x86_64 presets. With matching Godot 4.5 export templates installed, a local Linux export can be created through Project → Export or:
 
 ```sh
 "$GODOT" --headless --path godot \
