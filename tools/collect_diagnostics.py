@@ -54,7 +54,7 @@ def read_text(path: Path) -> str:
     check_name(path.name)
     if path.is_symlink():
         raise ValueError(f"Refusing symlink input: {path.name}")
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8")
 
 
 def log_tail(path: Path) -> str:
@@ -63,17 +63,17 @@ def log_tail(path: Path) -> str:
         return "Build log not present.\n"
     if path.is_symlink():
         raise ValueError("Refusing symlink build log")
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    with path.open(encoding="utf-8") as stream:
         return "".join(deque(stream, maxlen=300))
 
 
 def command(args: list[str], root: Path) -> dict:
     try:
         result = subprocess.run(args, cwd=root, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=30)
+                                encoding="utf-8", timeout=30)
         return {"exit": result.returncode, "output": result.stdout.strip(),
                 "error": result.stderr.strip()}
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
         return {"unavailable": str(error)}
 
 

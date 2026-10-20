@@ -13,13 +13,13 @@ from tools.audit_package import KIT_BINARY_EXTENSIONS
 
 class DiagnosticsTests(unittest.TestCase):
     def test_redacts_unicode_spaces_bang_and_windows_slashes(self):
-        root = Path('/tmp/Élodie !/kit folder !')
+        root = Path('/tmp/Élodie !/kit folder !').resolve()
         home = '/home/Élodie !'
         text = f'{root}/build {home}/file ' + r'C:\Users\Élodie !\file C:/Users/Élodie !/file'
         result = diagnostics.redact(text, root, [home, r'C:\Users\Élodie !'])
         self.assertEqual(result, '<KIT>/build <HOME>/file <HOME>\\file <HOME>/file')
         nested = diagnostics.redact_values({'path': str(root / 'build')}, root)
-        self.assertEqual(json.loads(json.dumps(nested))['path'], '<KIT>/build')
+        self.assertEqual(json.loads(json.dumps(nested))['path'], '<KIT>' + os.sep + 'build')
 
     def test_refuses_shared_forbidden_suffixes_and_save_derivatives(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -54,7 +54,7 @@ class DiagnosticsTests(unittest.TestCase):
             (root / 'build/game/game').mkdir(parents=True)
             (root / 'godot/bin').mkdir(parents=True)
             (root / 'build/gen/abi.ini').write_text('[cartridge]\nbackup_type=eeprom64k\nsecret=PRIVATE\n')
-            (root / 'build/build-log.txt').write_text(f'build in {root}\n')
+            (root / 'build/build-log.txt').write_text(f'build in {root}\n', encoding='utf-8')
             for name in ['game.nds', 'save.sav.bak', 'build/gen/chunk.cpp',
                          'build/game/game/dq9.exe', 'godot/bin/session.dll', 'screenshot.png', 'inputs.txt']:
                 (root / name).write_bytes(b'PRIVATE CONTENT DO NOT COLLECT')
@@ -96,6 +96,13 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertTrue(summary['portable'])
             self.assertEqual(summary['settings'], {'rom_path_configured': True,
                              'save_path_configured': True, 'language': 'fr', 'volume': 67})
+
+    def test_invalid_log_encoding_refuses_instead_of_leaking_mangled_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'build-log.txt'
+            log.write_bytes(b'C:\\Users\\\xe9lodie\\kit')
+            with self.assertRaises(UnicodeError):
+                diagnostics.log_tail(log)
 
     def test_symlink_log_is_refused(self):
         if os.name == 'nt':
