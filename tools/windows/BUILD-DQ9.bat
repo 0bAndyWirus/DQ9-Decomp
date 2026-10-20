@@ -57,9 +57,12 @@ echo  Setup: creating a private Python environment in .venv ...
 if errorlevel 1 goto failure_pop
 :havevenv
 
+if exist ".venv\dq9-deps-v1.ok" goto depsok
 echo  Setup: installing build tools (first run only; a few hundred MB) ...
 ".venv\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check PyYAML capstone unicorn cmake ninja ziglang==0.16.0
 if errorlevel 1 goto failure_pop
+echo installed> ".venv\dq9-deps-v1.ok"
+:depsok
 
 if not defined DQ9_BACKUP_TYPE set "DQ9_BACKUP_TYPE=eeprom64k"
 echo  Building. The compile step is long and shows its progress.
