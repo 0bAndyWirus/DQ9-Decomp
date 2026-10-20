@@ -488,44 +488,242 @@ struct GameCard::Impl {
     void warn_save_ignored(std::size_t found) const {
         std::fprintf(stderr,
                      "[dsr] save file has %zu bytes but the selected cartridge backup type needs %zu: it is not loaded and "
-                     "will be replaced on the next save (the previous file is kept as <save>.bak). "
+                     "will be replaced on the next save (the previous file is preserved in backups/ beside it). "
                      "Pass --backup-type to match it, or use the chip that created it.\n",
                      found, backup_.size());
     }
 
-    // Keeps the save as it was before this run as <save>.bak, once per run and before the first
-    // overwrite, so a bad session (or a corrupted write) can be rolled back by hand. Best effort:
-    // a failed copy never blocks the real save.
-    void backup_previous_save_once() {
-        if (previous_save_backed_up_) return;
-        previous_save_backed_up_ = true;
-        std::error_code ec;
-        if (!std::filesystem::is_regular_file(save_path_, ec)) return;
-        std::filesystem::path backup = save_path_;
-        backup += ".bak";
-        std::filesystem::copy_file(save_path_, backup, std::filesystem::copy_options::overwrite_existing, ec);
+    // Managed names are <save filename>.YYYYMMDDTHHMMSS.nnnnnnnnnZ-NNNNNN.bak.
+    // Fixed-width UTC timestamps and a collision sequence sort in creation order, even if the
+    // host clock moves backwards. Only exact names and regular, non-symlink files are managed.
+    static constexpr std::size_t kSaveBackupSuffixSize = 37;
+
+    static bool managed_backup_name(const std::filesystem::path::string_type& name,
+                                    const std::filesystem::path::string_type& prefix) {
+        if (name.size() != prefix.size() + kSaveBackupSuffixSize ||
+            name.compare(0, prefix.size(), prefix) != 0)
+            return false;
+        const auto start = prefix.size();
+        for (std::size_t i = 0; i < kSaveBackupSuffixSize; ++i) {
+            const auto c = name[start + i];
+            const char separator = i == 8 ? 'T' : i == 15 ? '.' : i == 25 ? 'Z' :
+                                   i == 26 ? '-' : i == 33 ? '.' :
+                                   i == 34 ? 'b' : i == 35 ? 'a' : i == 36 ? 'k' : '\0';
+            if (separator != '\0' ? c != separator : c < '0' || c > '9') return false;
+        }
+        const auto number = [&](std::size_t offset, std::size_t count) {
+            unsigned value = 0;
+            for (std::size_t i = 0; i < count; ++i)
+                value = value * 10 + static_cast<unsigned>(name[start + offset + i] - '0');
+            return value;
+        };
+        const unsigned year = number(0, 4), month = number(4, 2), day = number(6, 2);
+        if (year < 1970 || month < 1 || month > 12 || day < 1 ||
+            number(9, 2) > 23 || number(11, 2) > 59 || number(13, 2) > 59)
+            return false;
+        static constexpr std::array<unsigned, 12> days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        return day <= days[month - 1] + (month == 2 && leap ? 1u : 0u);
     }
 
-    void flush_save() {
-        if (!save_dirty_ || save_path_.empty()) return;
-        const auto parent = save_path_.parent_path();
-        if (!parent.empty()) std::filesystem::create_directories(parent);
-        backup_previous_save_once();
+    std::vector<std::filesystem::path> managed_save_backups() const {
+        std::vector<std::filesystem::path> backups;
+        const auto directory = save_path_.parent_path() / "backups";
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(directory, ec);
+        if (ec) throw std::filesystem::filesystem_error("inspect save backups", directory, ec);
+        if (!exists) return backups;
+        auto prefix = save_path_.filename();
+        prefix += ".";
+        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+            if (managed_backup_name(entry.path().filename().native(), prefix.native()) &&
+                std::filesystem::is_regular_file(entry.symlink_status()))
+                backups.push_back(entry.path());
+        }
+        std::sort(backups.begin(), backups.end());
+        return backups;
+    }
+
+    static std::vector<std::uint8_t> read_save_bytes(const std::filesystem::path& source) {
+        const auto size = std::filesystem::file_size(source);
+        if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max()) ||
+            size > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max()))
+            throw std::runtime_error("save file is too large to read");
+        std::ifstream input(source, std::ios::binary);
+        if (!input) throw std::runtime_error("could not open save file for reading");
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+        if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()),
+                                         static_cast<std::streamsize>(bytes.size())))
+            throw std::runtime_error("could not read complete save file");
+        char extra = 0;
+        if (input.get(extra) || !input.eof())
+            throw std::runtime_error("save file changed while reading");
+        return bytes;
+    }
+
+    static std::string save_backup_timestamp() {
+        const auto now = std::chrono::system_clock::now();
+        const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+        const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now - seconds).count();
+        const auto time = std::chrono::system_clock::to_time_t(seconds);
+        std::tm utc{};
 #if defined(_WIN32)
-        std::filesystem::path temp_path = save_path_;
-        temp_path += L".tmp.";
-        temp_path += std::to_wstring(GetCurrentProcessId());
-        HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (gmtime_s(&utc, &time) != 0)
+#else
+        if (gmtime_r(&time, &utc) == nullptr)
+#endif
+            throw std::runtime_error("could not timestamp save backup");
+        if (utc.tm_year < 70 || utc.tm_year > 8099)
+            throw std::runtime_error("save backup timestamp is out of range");
+        char date[16]{};
+        if (std::strftime(date, sizeof(date), "%Y%m%dT%H%M%S", &utc) != 15)
+            throw std::runtime_error("save backup timestamp is out of range");
+        char fraction[12]{};
+        std::snprintf(fraction, sizeof(fraction), ".%09uZ", static_cast<unsigned>(nanos));
+        return std::string(date) + fraction;
+    }
+
+    std::filesystem::path next_save_backup_path(bool staged = false) const {
+        const auto directory = save_path_.parent_path() / "backups";
+        const auto backups = managed_save_backups();
+        std::string timestamp = save_backup_timestamp();
+        unsigned sequence = 0;
+        if (!backups.empty()) {
+            const auto latest = backups.back().filename().native();
+            const auto offset = save_path_.filename().native().size() + 1;
+            const std::string previous_timestamp(latest.begin() + offset, latest.begin() + offset + 26);
+            if (timestamp <= previous_timestamp) {
+                timestamp = previous_timestamp;
+                for (std::size_t i = 27; i < 33; ++i)
+                    sequence = sequence * 10 + static_cast<unsigned>(latest[offset + i] - '0');
+                ++sequence;
+            }
+        }
+        // Also avoid occupied names belonging to non-regular entries or interrupted temp writes.
+        for (; sequence < 1'000'000; ++sequence) {
+            char suffix[12]{};
+            std::snprintf(suffix, sizeof(suffix), "-%06u.bak", sequence);
+            auto filename = save_path_.filename();
+            filename += ".";
+            filename += timestamp;
+            filename += suffix;
+            const auto managed = directory / filename;
+            auto target = managed;
+            if (staged) target += ".pending";
+            const auto temp = save_temp_path(target);
+            if (std::filesystem::exists(std::filesystem::symlink_status(target)) ||
+                (staged && std::filesystem::exists(std::filesystem::symlink_status(managed))) ||
+                std::filesystem::exists(std::filesystem::symlink_status(temp)))
+                continue;
+            return target;
+        }
+        throw std::runtime_error("save backup timestamp sequence is exhausted");
+    }
+
+    std::filesystem::path backup_current_save(bool staged = false) {
+        std::error_code ec;
+        const auto status = std::filesystem::status(save_path_, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory)
+            throw std::filesystem::filesystem_error("inspect previous save", save_path_, ec);
+        if (!std::filesystem::exists(status)) return {};
+        if (!std::filesystem::is_regular_file(status))
+            throw std::runtime_error("previous save is not a regular file");
+        const auto bytes = read_save_bytes(save_path_);
+        std::filesystem::create_directories(save_path_.parent_path() / "backups");
+        for (;;) {
+            const auto target = next_save_backup_path(staged);
+            try {
+                atomic_write_save(target, bytes, false);
+            } catch (const std::system_error& error) {
+                if (error.code() == std::errc::file_exists) continue;
+                throw;
+            }
+            if (!staged) save_backup_rotation_pending_ = true;
+            return target;
+        }
+    }
+
+    // Publish without replacing even a destination created after candidate selection.
+    // On failure the source stays intact; after success, a leftover source is harmless cleanup.
+    static void publish_new_save_file(const std::filesystem::path& source,
+                                      const std::filesystem::path& target) {
+#if defined(_WIN32)
+        if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                    "publish save backup");
+#else
+        if (::link(source.c_str(), target.c_str()) != 0)
+            throw std::system_error(errno, std::generic_category(), "publish save backup");
+        if (::unlink(source.c_str()) != 0)
+            std::fprintf(stderr, "[dsr] warning: backup published, but its staging file could not be removed: %s\n",
+                         source.c_str());
+#endif
+    }
+
+    void publish_staged_save_backup(const std::filesystem::path& staged) {
+        for (;;) {
+            const auto target = next_save_backup_path();
+            try {
+                publish_new_save_file(staged, target);
+            } catch (const std::system_error& error) {
+                if (error.code() == std::errc::file_exists) continue;
+                throw;
+            }
+            save_backup_rotation_pending_ = true;
+            return;
+        }
+    }
+
+    void rotate_save_backups() {
+        if (!save_backup_rotation_pending_) return;
+        // Retention is cleanup, not the safety snapshot. Run only after commit: pruning must not
+        // lose a restore source on write failure, nor turn committed bytes into a failed save.
+        try {
+            const auto backups = managed_save_backups();
+            const auto remove_count = backups.size() > save_backup_limit_ ? backups.size() - save_backup_limit_ : 0;
+            for (std::size_t i = 0; i < remove_count; ++i) {
+                if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(backups[i])))
+                    throw std::runtime_error("save backup changed during rotation");
+                std::filesystem::remove(backups[i]);
+            }
+            save_backup_rotation_pending_ = false;
+            save_backup_rotation_reported_ = false;
+        } catch (const std::exception& error) {
+            if (!save_backup_rotation_reported_)
+                std::fprintf(stderr, "[dsr] warning: save written, but old backups could not be rotated: %s "
+                                     "(will retry after a later write)\n", error.what());
+            save_backup_rotation_reported_ = true;
+        }
+    }
+
+    static std::filesystem::path save_temp_path(const std::filesystem::path& target) {
+        auto temp = target;
+#if defined(_WIN32)
+        temp += L".tmp.";
+        temp += std::to_wstring(GetCurrentProcessId());
+#else
+        temp += ".tmp.";
+        temp += std::to_string(::getpid());
+#endif
+        return temp;
+    }
+
+    static void atomic_write_save(const std::filesystem::path& target,
+                                  const std::vector<std::uint8_t>& bytes,
+                                  bool replace_existing = true) {
+        const auto temp_path = save_temp_path(target);
+#if defined(_WIN32)
+        HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                  replace_existing ? CREATE_ALWAYS : CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE)
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
                                     "open save temp");
         std::size_t written = 0;
-        while (written < backup_.size()) {
+        while (written < bytes.size()) {
             const DWORD requested = static_cast<DWORD>(std::min(
-                backup_.size() - written, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+                bytes.size() - written, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
             DWORD amount = 0;
-            const BOOL write_ok = WriteFile(file, backup_.data() + written, requested, &amount, nullptr);
+            const BOOL write_ok = WriteFile(file, bytes.data() + written, requested, &amount, nullptr);
             if (!write_ok || amount == 0) {
                 const DWORD error = write_ok ? ERROR_WRITE_FAULT : GetLastError();
                 CloseHandle(file);
@@ -548,20 +746,14 @@ struct GameCard::Impl {
             throw std::system_error(static_cast<int>(error), std::system_category(),
                                     "close save temp");
         }
-        if (!MoveFileExW(temp_path.c_str(), save_path_.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            const DWORD error = GetLastError();
-            DeleteFileW(temp_path.c_str());
-            throw std::system_error(static_cast<int>(error), std::system_category(),
-                                    "rename save temp");
-        }
 #else
-        std::string temp_name = save_path_.string() + ".tmp." + std::to_string(::getpid());
-        const int fd = ::open(temp_name.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        const auto temp_name = temp_path.string();
+        const int fd = ::open(temp_name.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC |
+                              (replace_existing ? O_TRUNC : O_EXCL), 0600);
         if (fd < 0) throw std::system_error(errno, std::generic_category(), "open save temp");
         std::size_t written = 0;
-        while (written < backup_.size()) {
-            const ssize_t amount = ::write(fd, backup_.data() + written, backup_.size() - written);
+        while (written < bytes.size()) {
+            const ssize_t amount = ::write(fd, bytes.data() + written, bytes.size() - written);
             if (amount < 0 && errno == EINTR) continue;
             if (amount <= 0) {
                 const int error = amount < 0 ? errno : EIO;
@@ -582,13 +774,97 @@ struct GameCard::Impl {
             ::unlink(temp_name.c_str());
             throw std::system_error(error, std::generic_category(), "close save temp");
         }
-        if (::rename(temp_name.c_str(), save_path_.c_str()) != 0) {
-            const int error = errno;
-            ::unlink(temp_name.c_str());
-            throw std::system_error(error, std::generic_category(), "rename save temp");
-        }
 #endif
+        try {
+            if (!replace_existing) {
+                publish_new_save_file(temp_path, target);
+            } else {
+#if defined(_WIN32)
+                if (!MoveFileExW(temp_path.c_str(), target.c_str(),
+                                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                    throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                            "rename save temp");
+#else
+                if (::rename(temp_path.c_str(), target.c_str()) != 0)
+                    throw std::system_error(errno, std::generic_category(), "rename save temp");
+#endif
+            }
+        } catch (...) {
+            std::error_code ec;
+            std::filesystem::remove(temp_path, ec);
+            throw;
+        }
+    }
+
+    void flush_save() {
+        if (!save_dirty_ || save_path_.empty()) return;
+        const auto parent = save_path_.parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+        if (!previous_save_backed_up_ && !backup_current_save().empty()) previous_save_backed_up_ = true;
+        atomic_write_save(save_path_, backup_);
+        // A missing old save needs no backup. Only a successful commit completes that first write.
+        previous_save_backed_up_ = true;
         save_dirty_ = false;
+        save_write_status_ = SaveWriteStatus::Saved;
+        rotate_save_backups();
+    }
+
+    void restore_save(const std::filesystem::path& source) {
+        if (save_path_.empty()) throw std::invalid_argument("no save path was selected");
+        auto selected = source;
+        if (selected.empty()) {
+            const auto backups = managed_save_backups();
+            if (backups.empty()) throw std::runtime_error("no managed save backup is available");
+            selected = backups.back();
+        }
+        if (std::filesystem::file_size(selected) != backup_.size())
+            throw std::runtime_error("restore source raw size does not match the selected backup chip");
+        auto restored = read_save_bytes(selected);
+        if (restored.size() != backup_.size())
+            throw std::runtime_error("restore source changed size while reading");
+        const auto parent = save_path_.parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+        // Restores always preserve the current on-disk target, even after this session has saved.
+        // A restore's preservation snapshot must not become "newest" before the target commits.
+        // Even denied cleanup after a failed commit can only leave an unmanaged .pending file.
+        const auto preserved = backup_current_save(true);
+        try {
+            atomic_write_save(save_path_, restored);
+        } catch (...) {
+            if (!preserved.empty()) {
+#if defined(_WIN32)
+                const bool removed = DeleteFileW(preserved.c_str()) != 0;
+#else
+                const bool removed = ::unlink(preserved.c_str()) == 0;
+#endif
+                if (!removed)
+                    std::fprintf(stderr, "[dsr] warning: restore did not commit; its preservation snapshot "
+                                         "remains as an unmanaged .pending file in backups/\n");
+            }
+            throw;
+        }
+        backup_.swap(restored);
+        // Discard any unfinished SPI write rather than letting it dirty the newly restored bytes.
+        backup_selected_ = false;
+        backup_write_bytes_.clear();
+        backup_stage_ = BackupStage::Command;
+        backup_wel_ = false;
+        previous_save_backed_up_ = true;
+        save_dirty_ = false;
+        save_write_status_ = SaveWriteStatus::Saved;
+        save_failure_reported_ = false;
+        if (!preserved.empty()) {
+            try {
+                publish_staged_save_backup(preserved);
+            } catch (const std::exception& error) {
+                // Bytes are already committed. Preserve the stage for manual recovery rather than
+                // reporting a failed restore or exposing it as a partially published managed file.
+                std::fprintf(stderr, "[dsr] warning: restore committed, but its preservation snapshot "
+                                     "remains as an unmanaged .pending file in backups/: %s\n", error.what());
+                return;
+            }
+        }
+        rotate_save_backups();
     }
 
     std::size_t address_bytes() const {
@@ -852,6 +1128,10 @@ struct GameCard::Impl {
     std::vector<std::uint8_t> backup_;
     bool save_dirty_ = false;
     bool save_failure_reported_ = false;
+    SaveWriteStatus save_write_status_ = SaveWriteStatus::Idle;
+    std::size_t save_backup_limit_ = 5;
+    bool save_backup_rotation_pending_ = false;
+    bool save_backup_rotation_reported_ = false;
     bool chip_mismatch_hinted_ = false;
     std::size_t backup_data_bytes_ = 0;
     bool previous_save_backed_up_ = false;
@@ -1002,12 +1282,29 @@ std::uint32_t GameCard::chip_id() const { return kCardChipId; }
 std::uint64_t GameCard::rom_size() const { return impl_->rom_size_; }
 bool GameCard::chip_mismatch_suspected() const { return impl_->chip_mismatch_hinted_; }
 
+GameCard::SaveWriteStatus GameCard::save_write_status() const { return impl_->save_write_status_; }
+
+void GameCard::set_save_backup_limit(std::size_t limit) {
+    if (limit == 0) throw std::invalid_argument("save backup limit must be at least one");
+    impl_->save_backup_limit_ = limit;
+}
+
+void GameCard::restore_save(const std::filesystem::path& source) {
+    try {
+        impl_->restore_save(source);
+    } catch (...) {
+        impl_->save_write_status_ = SaveWriteStatus::Failed;
+        throw;
+    }
+}
+
 bool GameCard::flush_save() {
     try {
         impl_->flush_save();
         impl_->save_failure_reported_ = false;
         return true;
     } catch (const std::exception& error) {
+        impl_->save_write_status_ = SaveWriteStatus::Failed;
         // A full disk or a read-only folder must not end the session: the data stays dirty and the next
         // flush (autosave or exit) tries again. Report once per run of failures.
         if (!impl_->save_failure_reported_)

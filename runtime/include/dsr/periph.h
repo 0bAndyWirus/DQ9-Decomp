@@ -8,6 +8,7 @@
 //   Rtc:      ARM7 0x04000138.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -29,6 +30,8 @@ enum class BackupType : std::uint8_t {
 
 class GameCard {
 public:
+    enum class SaveWriteStatus : std::uint8_t { Idle, Saved, Failed };
+
     // rom_path: the user's local .nds image (read-only, never modified).
     // save_path: backup memory file (created on first save).
     GameCard(const std::filesystem::path& rom_path, const std::filesystem::path& save_path);
@@ -61,9 +64,20 @@ public:
     std::uint32_t chip_id() const;
     std::uint64_t rom_size() const;
 
-    // Flush backup memory to save_path if dirty. Called periodically and on exit. Returns false (after a
-    // one-time stderr warning) if the file could not be written; the data stays dirty for the next call.
+    // Flush dirty backup memory atomically. Before the first overwrite in a session, preserve the
+    // existing file in backups/ beside the save. A failed backup or write leaves the data dirty.
+    // Returns false after a one-time stderr warning on failure, so a later call can retry.
     bool flush_save();
+    // The last attempted write/restore result; a clean, no-op flush does not change it.
+    SaveWriteStatus save_write_status() const;
+    // Keep the newest limit managed backups after the next committed snapshot. Default 5; zero
+    // throws. Pruning failure retains extra backups, warns separately and never fails a written save.
+    void set_save_backup_limit(std::size_t limit);
+    // Restore exact raw bytes for the selected chip, preserving the current save first.
+    // Empty source selects the newest managed backup; no chip conversion occurs. Read, preservation
+    // and commit errors throw. If post-commit snapshot publication fails, warn and retain the raw
+    // .pending snapshot for explicit recovery; it never participates in automatic selection/rotation.
+    void restore_save(const std::filesystem::path& source = {});
 
     // True after an address-only backup read: this may indicate EEPROM addressing or a cancelled flash read.
     // Informational only; never changes the chip, write-enable latch or save contents.
