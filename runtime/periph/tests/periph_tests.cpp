@@ -251,6 +251,21 @@ void test_previous_save_backup(const std::filesystem::path& rom, const std::file
     }
 }
 
+void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesystem::path& save_dir) {
+    {   // Flash reads carry at least one data byte; a 3-byte-address read that ends at once is EEPROM style.
+        dsr::GameCard flash(rom, save_dir / "hint-flash.sav", dsr::BackupType::Flash512K);
+        (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00, 0x00});
+        assert(!flash.chip_mismatch_suspected());
+        (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00});
+        assert(flash.chip_mismatch_suspected());
+    }
+    {
+        dsr::GameCard eeprom(rom, save_dir / "hint-eeprom.sav", dsr::BackupType::Eeprom64K);
+        (void)aux_transfer(eeprom, {0x03, 0x00, 0x00, 0x00});
+        assert(!eeprom.chip_mismatch_suspected());
+    }
+}
+
 void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
                                          const std::filesystem::path& save_dir) {
     // The save's parent "folder" is a regular file, so the file can never be created.
@@ -479,6 +494,7 @@ int main() {
     test_card_rom_and_chip_id(rom, temp.path / "card.sav");
     test_card_low_address_alias(card_alias_rom, temp.path / "card-alias.sav");
     test_backup_eeprom(rom, temp.path / "eeprom.sav");
+    test_chip_mismatch_hint(rom, temp.path);
     test_unwritable_save_does_not_throw(rom, temp.path);
     test_larger_eeproms(rom, temp.path);
     test_previous_save_backup(rom, temp.path / "previous.sav");

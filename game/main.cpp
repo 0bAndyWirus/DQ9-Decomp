@@ -996,6 +996,7 @@ int main(int argc, char** argv) {
         } else if (pressed & dsr::kBtnB) end_annotation();
     };
     FrameIndex frame = 0;
+    bool chip_hint_shown = false; // one on-screen notice per run if the backup chip looks wrong
     enum class WorkflowPhase {
         WaitReplayPause, WaitReplayLiveInput, WaitForPause, WaitPaused, WaitMenuOpen,
         WaitMenuDispatch, WaitAnnotation, WaitText, WaitBundle,
@@ -1488,6 +1489,12 @@ int main(int argc, char** argv) {
             if (wanted != machine.gpu3d().output_scale()) machine.gpu3d().set_output_scale(wanted);
         }
         session.step(in);
+        if (frontend && !chip_hint_shown) {
+            if (const dsr::GameCard* card = machine.game_card(); card && card->chip_mismatch_suspected()) {
+                chip_hint_shown = true;
+                frontend->show_message("SAVE CHIP WRONG? TRY EEPROM 64 KB (LAUNCHER)", 12000);
+            }
+        }
         if (autosave_every > 0 && (frame + 1) % autosave_every == 0) session.flush_save();
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)

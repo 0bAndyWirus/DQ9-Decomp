@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## Unreleased
+
+- **Wrong save chip is noticed:** when the program reads the cartridge backup like an EEPROM (2-byte addresses, nothing more) while the emulated chip is a flash type, the runtime prints a hint on stderr and shows a notice in the window ("SAVE CHIP WRONG? TRY EEPROM 64 KB (LAUNCHER)"). Output is unchanged; the choice is still yours (`--backup-type`, launcher Save chip). Verified with the DQ9 EU image on Linux: shown with `flash512k`, not with `eeprom64k`.
+
 ## v0.2.6
 
 - **The generated `abi.ini` is found automatically:** `dq9` and the Godot host use `build/gen/abi.ini` of the tree they live in when neither `--abi-config` nor `DQ9_ABI_CONFIG` is set. Previously the Godot host (which cannot take a flag) showed blank screens unless the environment variable was set; a 3,000-frame run without the file differed from frame 50 on and never left a blank screen.
