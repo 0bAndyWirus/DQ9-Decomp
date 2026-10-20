@@ -324,6 +324,26 @@ class BuildPortTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 build_port.main(["--godot-only", "--runtime-only"])  # conflicting modes are an argparse error
 
+    def test_progress_bar_fills_proportionally_and_never_overflows(self):
+        self.assertEqual(build_port.progress_bar(0, 100, 10), "[----------]")
+        self.assertEqual(build_port.progress_bar(50, 100, 10), "[#####-----]")
+        self.assertEqual(build_port.progress_bar(100, 100, 10), "[##########]")
+        self.assertEqual(build_port.progress_bar(150, 100, 10), "[##########]")
+        self.assertEqual(build_port.progress_bar(1, 0, 10), "[##########]")
+
+    def test_build_progress_lines_show_a_bar_when_output_is_not_a_console(self):
+        script = "print('[1/4] a'); print('[2/4] b'); print('[4/4] c')"
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(build_port, "ROOT", Path(raw)):
+            build_port.configure_log()
+            out = io.StringIO()
+            try:
+                with mock.patch.object(build_port.sys, "stdout", out):
+                    build_port.run(sys.executable, "-c", script, "--build")
+            finally:
+                build_port._LOG = None
+        self.assertIn("0%", out.getvalue())
+        self.assertIn("[##############################] 100%", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

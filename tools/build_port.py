@@ -96,6 +96,12 @@ def step(title: str) -> None:
     print(f"\n[{_STEP}/{_STEP_TOTAL}] {title}", flush=True)
 
 
+def progress_bar(done: int, total: int, width: int = 30) -> str:
+    """ASCII only: a legacy Windows console code page cannot print block characters."""
+    filled = min(width, max(0, done * width // max(total, 1)))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
 def banner(title: str, *lines: str) -> None:
     width = max(len(title), *(len(line) for line in lines), 56) + 4
     print("\n" + "=" * width)
@@ -141,10 +147,11 @@ def run(*cmd: object, cwd: Path = ROOT, env: dict[str, str] | None = None,
             if match:
                 done, total = int(match.group(1)), int(match.group(2))
                 percent = done * 100 // max(total, 1)
+                bar = progress_bar(done, total)
                 if tty:
-                    print(f"\r    compiling {done}/{total}  ({percent}%)   ", end="", flush=True)
+                    print(f"\r    {bar} {percent:3d}%  {done}/{total}   ", end="", flush=True)
                 elif percent // 10 != last_shown // 10:
-                    print(f"    compiling {percent}%", flush=True)
+                    print(f"    {bar} {percent:3d}%", flush=True)
                 last_shown = percent
         code = proc.wait()
     if last_shown >= 0 and tty:

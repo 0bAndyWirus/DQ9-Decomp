@@ -42,7 +42,7 @@ WHAT THE BUILD DOES
  [3/5] analyses the ARM9/ARM7 code
  [4/5] translates it to C++ on your computer
  [5/5] compiles dq9.exe with Zig (downloaded through pip) and SDL2
-The window shows one line per step and a compile counter. The full output is
+The window shows one line per step and a compile progress bar. The full output is
 written to build\build-log.txt. Read the lines under a failed step first.
 Running BUILD-DQ9.bat again only rebuilds what changed.
 

@@ -6,7 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
-- **Cleaner Windows kit:** `BUILD-DQ9.bat` asks for the ROM (drag the file into the window) when none is given, finds Python 3.10+ itself (Microsoft Store stub ignored) with a clear message when missing, sets the EU save chip (`eeprom64k`, override with `DQ9_BACKUP_TYPE`) so a fresh save no longer stalls, and shows `[n/5]` steps with one summary line each and a compile counter instead of raw tool output. `tools/build_port.py --quiet` writes full output to `build/build-log.txt` and prints the last lines only when a command fails.
+- **Cleaner Windows kit:** `BUILD-DQ9.bat` asks for the ROM (drag the file into the window) when none is given, finds Python 3.10+ itself (Microsoft Store stub ignored) with a clear message when missing, sets the EU save chip (`eeprom64k`, override with `DQ9_BACKUP_TYPE`) so a fresh save no longer stalls, and shows `[n/5]` steps with one summary line each and a compile progress bar (`[####----] 42%  482/1134`) instead of raw tool output. `tools/build_port.py --quiet` writes full output to `build/build-log.txt` and prints the last lines only when a command fails.
 - **Godot on Windows:** new `BUILD-GODOT.bat` / `PLAY-GODOT.bat`, `build_port.py --godot`, `--godot-only` and `--fetch-godot-editor` (pinned godot-cpp 4.5 and Godot 4.5 editor downloads with checksum checks), `run_godot.ps1` finds the downloaded editor, and a new user guide `docs/USING_GODOT.md`. The Windows Godot steps were not run on Windows yet.
 - **Kit README** rewritten as a quick start with troubleshooting and an honest verification status.
 
