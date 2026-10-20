@@ -122,6 +122,7 @@ public:
             rom_path_ = rom.get_data(); save_path_ = save.get_data();
             language_ = static_cast<std::uint8_t>(language);
             input_ = {0, 0, 0, 0, 0};
+            chip_mismatch_ = false;
             error_.clear(); running_ = false; paused_ = false;
             {
                 std::lock_guard audio_lock(audio_mutex_);
@@ -362,6 +363,7 @@ public:
             out["audio_frames_pushed"] = static_cast<std::int64_t>(audio_frames_pushed_);
         }
         out["running"] = running_;
+        out["chip_mismatch"] = chip_mismatch_;
         out["paused"] = paused_;
         out["replay_active"] = replay_active_;
         out["replay_target"] = static_cast<std::int64_t>(replay_target_);
@@ -865,6 +867,7 @@ private:
                 {
                     std::lock_guard lock(mutex_);
                     frame_count_ = dsr_session_frame_count(session_);
+                    if (!chip_mismatch_) chip_mismatch_ = dsr_session_chip_mismatch_suspected(session_) != 0;
                     if (output_slot >= 0) published_slot_ = output_slot;
                     const std::uint64_t input_frame = frame_count_ == 0 ? 0 : frame_count_ - 1;
                     input_history_.push_back({input_frame, input});
@@ -998,6 +1001,7 @@ private:
     std::uint8_t language_ = 1;
     bool deterministic_rtc_ = false;
     std::string backup_type_;
+    bool chip_mismatch_ = false;
     std::int64_t rtc_epoch_seconds_ = 0;
     std::int32_t rtc_timezone_offset_minutes_ = 0;
     std::thread owner_thread_;

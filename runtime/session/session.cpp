@@ -103,6 +103,11 @@ bool Session::compose_both_hires(std::uint32_t* out, int scale) const {
     return true;
 }
 
+bool Session::chip_mismatch_suspected() {
+    const GameCard* card = machine_.game_card();
+    return card != nullptr && card->chip_mismatch_suspected();
+}
+
 bool Session::flush_save() {
     if (GameCard* card = machine_.game_card()) return card->flush_save();
     return true;
