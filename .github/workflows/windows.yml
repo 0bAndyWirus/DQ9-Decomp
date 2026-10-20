@@ -39,7 +39,16 @@ jobs:
             "-DDSR_SDL2_RUNTIME_DLL=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/SDL2.dll" `
             "-DDQ9_BIOS_REFERENCE_SOURCE=$PWD/reference/desmume-trace/source/src/bios.cpp"
       - name: Build
-        run: cmake --build build/win-ci -j 6
+        run: |
+          cmake --build build/win-ci -j 6
+          if ($LASTEXITCODE -ne 0) {
+            # Windows occasionally refuses to link a freshly written .exe ("Access is denied" / "file in use",
+            # antivirus or indexer scanning it). One serial retry resumes where the build stopped; a real
+            # compile or link error fails again and the job fails.
+            Write-Host "Build failed; retrying once with a single job"
+            cmake --build build/win-ci -j 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Run CTest
         env:
           SDL_VIDEODRIVER: dummy

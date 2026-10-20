@@ -153,6 +153,19 @@ def windows_cmake_options(deps: Path) -> list[str]:
     ]
 
 
+def build_with_retry(cmake: list[str], build_dir: Path, *targets: str) -> None:
+    """cmake --build; on Windows retry once serially, as it sometimes cannot link a freshly written .exe
+    ("Access is denied" / "file in use" while a scanner holds it). Real errors fail the retry too."""
+    command = [*cmake, "--build", build_dir, *(["--target", *targets] if targets else [])]
+    try:
+        run(*command)
+    except subprocess.CalledProcessError:
+        if os.name != "nt":
+            raise
+        print("build failed; retrying once with a single job", flush=True)
+        run(*command, "--parallel", "1")
+
+
 def ctest_executable() -> str:
     local = Path(sys.executable).parent / executable_name("ctest")
     if local.is_file():
@@ -281,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         run(*cmake, "-S", ROOT, "-B", args.build_dir, "-G", "Ninja",
             f"-DCMAKE_BUILD_TYPE={args.config}", "-UDQ9_GENERATED_DIR",
             "-DDQ9_BUILD_SDL=ON", "-DDQ9_BUILD_GODOT=OFF", *options)
-        run(*cmake, "--build", args.build_dir)
+        build_with_retry(cmake, args.build_dir)
         run(ctest_executable(), "--test-dir", args.build_dir, "--output-on-failure",
             env={"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy", "SDL_RENDER_DRIVER": "software"})
         return 0
@@ -350,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run(*cmake, "-S", ROOT, "-B", args.build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={args.config}",
         f"-DDQ9_GENERATED_DIR={GEN}", *windows_cmake_options(args.sdk_deps))
-    run(*cmake, "--build", args.build_dir, "--target", "dq9")
+    build_with_retry(cmake, args.build_dir, "dq9")
     exe = args.build_dir / "game" / executable_name("dq9")
     print(f"built {exe} (local only; never distribute)")
     print("run: " + launch_hint(exe, rom, abi))
