@@ -152,8 +152,13 @@ Reports are plain text exported outside the bundle, with every issue/status
 and review history, including hidden auto notes.
 
 `main.gd` flushes/releases the current game through `_release_machine`, copies
-`session_start.sav` to an OS-cache temporary save, loads the recorded language
-and deterministic RTC, then invokes worker replay. Original evidence and the
+`session_start.sav` to an OS-cache temporary save, applies the recorded language,
+cartridge backup selection and deterministic RTC before load, then invokes worker
+replay. `env.txt` records `backup_type: <canonical-name>` using native
+`--backup-type` names, with `auto` for an unset request. Missing or invalid backup
+metadata in older bundles selects `auto`, never the current normal-game setting.
+Replay does not change that setting; a capture during replay records the replay
+machine's own selection. Original evidence and the
 normal save are never used as writable replay saves. The reviewer shows progress
 and ETA, paused software screenshots/diffs, explicit live control and a return
 action. Cancel offers a normal-game return; returning/closing the game removes
@@ -162,10 +167,17 @@ warned about rather than silently reproducing a debug mixer configuration.
 
 ROM-free tests: `tests/test_issue_store.gd`. The xvfb integration
 `tests/test_issue_reviewer.gd -- <rom> <launch-save> <inputs> <native-dq9>
-<output-dir>` generates a local 300-frame session, verifies all worker hashes
-against native, routed UI actions, save-copy safety, immutable original files,
-and captures 1280×800 and 3072×1920 layouts. Committed fixture text is explicitly
-synthetic; screenshots, input and save data from local sessions stay local.
+<output-dir> [frames-requiring-save-write]` generates a local session from an
+empty launch save with explicit `eeprom64k`, verifies every worker hash against
+native, then captures/reloads the production replay and checks metadata, output
+and saved bytes. With the optional frame count, it also requires actual persisted
+64 KB saves from the worker, production capture and reloaded capture: supply a
+local input sequence and enough frames to reach a save write. Omitting it keeps
+the existing 300-frame UI/parity probe without requiring an early save write.
+The test also checks missing/invalid backup metadata falling back to Auto,
+unchanged ordinary settings, routed UI actions, save-copy safety, immutable
+original files, and 1280×800 and 3072×1920 layouts. Committed fixture text is
+explicitly synthetic; screenshots, input and save data from local sessions stay local.
 `tools/godot_smoke.sh` includes these and existing layout/click/restart tests;
 set `DQ9_NATIVE=/path/to/dq9` for a worktree build and optionally
 `DQ9_REVIEW_OUTPUT=/local/output` to retain reviewer captures.

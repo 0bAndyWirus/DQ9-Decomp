@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,7 +38,8 @@ public:
                  const std::filesystem::path& save, std::string language,
                  std::filesystem::path executable, bool dump_memory,
                  std::int64_t rtc_epoch = 0, std::int32_t rtc_timezone_offset_minutes = 0,
-                 std::filesystem::path abi_config = {});
+                 std::filesystem::path abi_config = {},
+                 std::optional<std::string> backup_type = std::nullopt);
     ~DebugSession();
     DebugSession(const DebugSession&) = delete;
     DebugSession& operator=(const DebugSession&) = delete;
@@ -65,6 +67,7 @@ private:
     std::filesystem::path abi_config_;
     std::filesystem::path executable_;
     std::string language_;
+    std::optional<std::string> backup_type_; // requested override, including explicit auto
     std::filesystem::path session_input_path_;
     std::ofstream session_input_;
     std::ofstream markers_;

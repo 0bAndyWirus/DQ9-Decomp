@@ -4,6 +4,13 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.2.8
+
+- **Replay keeps the save-chip choice:** native debug captures record `backup_type` and include explicit overrides in both shell and PowerShell replay commands, including explicit Auto over an ABI setting. Godot captures record the selection too; in-app issue replay applies it before loading the copied launch save, without borrowing or changing normal-game settings. Older captures without this metadata retain Auto behavior.
+- **Fresh-save replay regression:** an EEPROM64K capture previously replayed into a 512 KB flash save despite matching early screen hashes. The regression now starts from an empty save and compares persisted save bytes/capacity as well as frames, screenshots and RTC/ticks. Explicit EEPROM, explicit Auto over ABI EEPROM, and inherited ABI EEPROM cases pass.
+- **Standalone Godot replay scripts:** target the standard local `build/game/game/dq9` executable (`.exe` on Windows) and change to their own bundle directory, so relative replay files work when invoked from elsewhere.
+- **Interrupted input recordings fail clearly:** an incomplete final `frame mask x y` entry now exits with status 2 instead of being silently ignored at EOF. Empty files and trailing whitespace remain valid.
+
 ## v0.2.7
 
 - **Visible save-write failures:** the native window shows a long save-path warning when autosave first fails and one recovery notice when a later flush succeeds. The Godot host exposes the actual synchronous flush result and shows failure/recovery transitions without adding a periodic-save timer; a failed close flush is also reported. Failures keep pending save data for retry and do not stop play; the native final-save exit status is unchanged. Debug bundles now reject a failed flush instead of labelling an older disk save as current.

@@ -21,28 +21,28 @@ static func make_synthetic(base: String) -> PackedStringArray:
 	return roots
 
 # The real session is generated locally during the test, never stored in fixtures.
-static func make_real_bundle(base: String, rom: String, save: String, inputs: String, native: String) -> Dictionary:
+static func make_real_bundle(base: String, rom: String, save: String, inputs: String, native: String, backup_type: String, frame_count: int) -> Dictionary:
 	var bundle := base.path_join("godot/20261014-120000-4-real-session")
 	DirAccess.make_dir_recursive_absolute(bundle)
 	if DirAccess.copy_absolute(save, bundle.path_join("session_start.sav")) != OK: return {"error": "Cannot copy local launch save"}
 	var rows := PackedStringArray()
 	for line in FileAccess.get_file_as_string(inputs).split("\n", false):
 		var parts := line.strip_edges().split(" ", false)
-		if parts.size() == 4 and int(parts[0]) < 300: rows.append(line)
+		if parts.size() == 4 and int(parts[0]) < frame_count: rows.append(line)
 	_write(bundle.path_join("session_input.txt"), "\n".join(rows) + "\n")
-	_write(bundle.path_join("session_input.txt.frames"), "300\n")
-	_write(bundle.path_join("comment.txt"), "Real 300-frame replay fixture, generated from user-local files.\nframe: 299\nrtc_epoch: 0\nrtc_timezone_offset_minutes: 0\n")
-	_write(bundle.path_join("env.txt"), "rom_path: %s\nlanguage: en\nrtc_epoch: 0\nrtc_timezone_offset_minutes: 0\n" % rom)
-	_write(bundle.path_join("state.txt"), "audio_debug: solo=2 muted=3\nframe=299\naudio_queue_ms=40\nunderruns=0\n")
+	_write(bundle.path_join("session_input.txt.frames"), "%d\n" % frame_count)
+	_write(bundle.path_join("comment.txt"), "Real replay fixture, generated from user-local files.\nframe: %d\nrtc_epoch: 0\nrtc_timezone_offset_minutes: 0\n" % (frame_count - 1))
+	_write(bundle.path_join("env.txt"), "rom_path: %s\nlanguage: en\nbackup_type: %s\nrtc_epoch: 0\nrtc_timezone_offset_minutes: 0\n" % [rom, backup_type])
+	_write(bundle.path_join("state.txt"), "audio_debug: solo=2 muted=3\nframe=%d\naudio_queue_ms=40\nunderruns=0\n" % (frame_count - 1))
 	_write(bundle.path_join("audio_stats.txt"), "audio_driver: synthetic\nqueued_audio_ms: 40\nunderruns: 0\npeak: 0.1\n")
 	var native_save := base.path_join("native.sav")
 	DirAccess.copy_absolute(save, native_save)
 	var native_hashes := base.path_join("native.hashes")
 	var output := []
-	var status := OS.execute(native, PackedStringArray(["--headless", "--rom", rom, "--save", native_save, "--frames", "300", "--input-script", bundle.path_join("session_input.txt"), "--rtc-epoch", "0", "--rtc-timezone-offset", "0", "--hash-file", native_hashes, "--dump-frames", "299", "--dump-dir", base]), output, true)
+	var status := OS.execute(native, PackedStringArray(["--headless", "--rom", rom, "--save", native_save, "--backup-type", backup_type, "--frames", str(frame_count), "--input-script", bundle.path_join("session_input.txt"), "--rtc-epoch", "0", "--rtc-timezone-offset", "0", "--hash-file", native_hashes, "--dump-frames", str(frame_count - 1), "--dump-dir", base]), output, true)
 	if status != 0: return {"error": "Native fixture run exited %d: %s" % [status, str(output)]}
-	var top := _ppm(base.path_join("frame_0299_top.ppm"))
-	var bottom := _ppm(base.path_join("frame_0299_bottom.ppm"))
+	var top := _ppm(base.path_join("frame_%04d_top.ppm" % (frame_count - 1)))
+	var bottom := _ppm(base.path_join("frame_%04d_bottom.ppm" % (frame_count - 1)))
 	if top == null or bottom == null: return {"error": "Missing native fixture screenshots"}
 	top.save_png(bundle.path_join("screenshot_top.png")); bottom.save_png(bundle.path_join("screenshot_bottom.png"))
 	var both := Image.create(256, 384, false, Image.FORMAT_RGB8)

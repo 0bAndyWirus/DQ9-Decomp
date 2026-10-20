@@ -40,4 +40,26 @@ and xdotool.
 
 Temporary library output (`bin/`) and Godot editor cache (`.godot/`) are ignored. Screenshots and replayable debug-note bundles are written below `user://debug`; bundles contain frame-indexed input history, the session-start save, the save-at-note with SHA-256, deterministic RTC metadata, and a `replay.sh` invocation understood by `tools/debug_bundle.py replay`. `comment.txt` starts with free-text note and includes `frame: N`; `index.tsv` uses the tab-separated format consumed by `tools/debug_bundle.py list/show`. Godot captures can be replayed with the SDL `dq9` binary.
 
+`env.txt` includes `backup_type: <canonical-name>` (the requested native
+`--backup-type` choice, or `auto` when unset). In-app issue replay applies this
+before loading its copied launch save, independently of the normal-game Save
+chip setting. Old or invalid metadata defaults to Auto. Capturing during replay
+records the replay machine's choice, not the normal settings.
+
+For the real fresh-save capture/reload regression, use the existing reviewer
+probe with a local input sequence and a frame count long enough to write save
+data:
+
+```sh
+xvfb-run -a -s "-screen 0 3072x1920x24" godot --path godot \
+  --script res://tests/test_issue_reviewer.gd -- \
+  "$ROM" "$SOURCE_SAVE" "$INPUT" "$NATIVE_DQ9" "$OUTPUT" "$FRAMES"
+```
+
+This generates an empty launch save with explicit EEPROM 64 KB, compares all
+native/Godot frame hashes, captures and reloads through the production issue
+replay path, and requires 64 KB persisted saves with identical bytes. The source
+save remains untouched. Without `$FRAMES`, the existing 300-frame UI/parity
+probe remains available but does not require a save write that early.
+
 These debug files can contain local image paths, saves, screenshots, input and audio. They stay local and are never uploaded by the host. Local packaging does not publish them.

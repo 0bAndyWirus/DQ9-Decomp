@@ -306,13 +306,15 @@ std::map<FrameIndex, ScriptedInput> load_script(const std::filesystem::path& pat
     FrameIndex frame;
     unsigned mask;
     int x, y;
-    while (in >> frame >> mask >> x >> y) {
+    for (;;) {
+        in >> std::ws;
+        if (in.eof()) break;
+        if (!(in >> frame >> mask >> x >> y)) {
+            std::fprintf(stderr, "dq9: input script %s: malformed entry after %zu valid line(s); expected `frame mask x y`\n",
+                         path.string().c_str(), script.size());
+            std::exit(2);
+        }
         script[frame] = ScriptedInput{static_cast<std::uint16_t>(mask), x, y};
-    }
-    if (!in.eof()) { // stopped on something that is not `frame mask x y`: the rest would silently be dropped
-        std::fprintf(stderr, "dq9: input script %s: malformed entry after %zu valid line(s); expected `frame mask x y`\n",
-                     path.string().c_str(), script.size());
-        std::exit(2);
     }
     return script;
 }
@@ -619,7 +621,7 @@ int main(int argc, char** argv) {
         debug_session = std::make_unique<dq9::DebugSession>(
             paths.data_dir, opt.rom, save_path, language_name(opt.language),
             std::filesystem::absolute(dsr::host::path_from_utf8(argv[0])), opt.capture_memory_dumps,
-            rtc_epoch, rtc_timezone_offset, opt.abi_config);
+            rtc_epoch, rtc_timezone_offset, opt.abi_config, opt.backup_type);
     }
     dsr::MachineConfig mc;
     mc.rom_path = opt.rom;

@@ -560,6 +560,9 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	_last_save_ok = true
 	# Software screenshots are the exact reference even when normal play uses GPU 3D.
 	machine.set_gpu3d_enabled(false)
+	var backup_type: String = str(environment.get("backup_type", "auto"))
+	if backup_type not in Logic.BACKUP_TYPES: backup_type = "auto"
+	machine.set_backup_type(backup_type)
 	var metadata := IssueReviewer.Store.fields(issue.comment)
 	machine.set_rtc_epoch(int(environment.get("rtc_epoch", metadata.get("rtc_epoch", 0))), int(environment.get("rtc_timezone_offset_minutes", metadata.get("rtc_timezone_offset_minutes", 0))))
 	var error: String = machine.load_game(rom_path, replay_save_path, Logic.firmware_language(issue.language))
