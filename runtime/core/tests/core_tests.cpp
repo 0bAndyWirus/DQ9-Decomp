@@ -399,14 +399,14 @@ void test_rtc_core_io_contract() {
         std::uint8_t value = 0;
         for (unsigned bit = 0; bit < 8; ++bit) {
             gpio(0x64);
-            gpio(0x66);
             value |= (machine.read8(CpuId::Arm7, 0x04000138) & 1u) << bit;
+            gpio(0x66);
         }
         return value;
     };
     const auto begin = [&](std::uint8_t command) {
         gpio(0x72);
-        gpio(0x74);
+        gpio(0x76);
         send(command);
     };
     begin(0xa6); // Date/time read.
@@ -414,10 +414,10 @@ void test_rtc_core_io_contract() {
     for (auto& byte : date) byte = receive();
     gpio(0x62);
     check(date[3] == 1, "RTC weekday agrees with oracle Sunday=0, Monday=1 convention");
-    begin(0x16); // Status2 write.
+    begin(0x46); // Status2 write, mirrored command order.
     send(0x04);
     gpio(0x62);
-    begin(0x96); // Status2 read.
+    begin(0xc6); // Status2 read, mirrored command order.
     check(receive() == 0x04, "RTC status2 write completes after one parameter byte");
     gpio(0x62);
 }
