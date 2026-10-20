@@ -267,8 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", default="Release")
     p.add_argument("--generate-only", action="store_true", help="stop after generating C++")
     p.add_argument("--backup-type", choices=BACKUP_TYPE_CHOICES, default="auto",
-                   help="cartridge backup chip written to the local abi.ini (default auto: inferred from an existing "
-                        "save file, else flash512k). Try eeprom64k if a fresh save reports a corrupt quick-save log.")
+                   help="cartridge backup chip written to the local abi.ini (default auto: the runtime infers it from an "
+                        "existing save file or from how the program accesses the backup).")
     p.add_argument("--rebuild-workspace", action="store_true",
                    help="discard the extracted workspace and generated code first (use when switching to a different image)")
     p.add_argument("--check", action="store_true", help="only report whether this machine and image are ready, then exit")
@@ -367,9 +367,6 @@ def main(argv: list[str] | None = None) -> int:
     exe = args.build_dir / "game" / executable_name("dq9")
     print(f"built {exe} (local only; never distribute)")
     print("run: " + launch_hint(exe, rom, abi))
-    if args.backup_type == "auto":
-        print("note: if a fresh save shows \"The quick save log is corrupted\" on the title screen, the cartridge backup chip "
-              "guess is wrong: add --backup-type eeprom64k to the run command (see docs/GETTING_STARTED.md).")
     return 0
 
 

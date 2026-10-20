@@ -259,6 +259,61 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00});
         assert(flash.chip_mismatch_suspected());
     }
+    {   // Auto: the same access switches to a 64 KB EEPROM before anything was written; no notice is needed.
+        const auto save = save_dir / "hint-auto.sav";
+        std::filesystem::remove(save);
+        dsr::GameCard automatic(rom, save);
+        (void)aux_transfer(automatic, {0x03, 0x00, 0x00, 0x00});
+        assert(!automatic.chip_mismatch_suspected());
+        (void)aux_transfer(automatic, {0x06});
+        (void)aux_transfer(automatic, {0x02, 0x01, 0x22, 0x5a});               // a 2-byte-address EEPROM write ...
+        const auto read = aux_transfer(automatic, {0x03, 0x01, 0x22, 0x00});   // ... reads back
+        assert(read.back() == 0x5a);
+        automatic.flush_save();
+        assert(std::filesystem::file_size(save) == 64u * 1024u);
+    }
+    {   // Existing save data is never discarded by the inference: only a notice is possible.
+        const auto save = save_dir / "hint-existing.sav";
+        std::vector<std::uint8_t> existing(512u * 1024u, 0xff);
+        existing[1234] = 0x42;
+        {
+            std::ofstream out(save, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(existing.data()), static_cast<std::streamsize>(existing.size()));
+        }
+        {
+            dsr::GameCard kept(rom, save);   // Auto: the 512 KB size selects flash
+            (void)aux_transfer(kept, {0x03, 0x00, 0x00, 0x00});
+            assert(kept.chip_mismatch_suspected());
+            kept.flush_save();
+        }
+        assert(std::filesystem::file_size(save) == existing.size());
+        std::ifstream in(save, std::ios::binary);
+        std::vector<std::uint8_t> after((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(after == existing);
+        // A blank (all 0xff) save of the same size holds nothing to lose: the inference may switch.
+        std::fill(existing.begin(), existing.end(), 0xff);
+        {
+            std::ofstream out(save, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(existing.data()), static_cast<std::streamsize>(existing.size()));
+        }
+        dsr::GameCard blank(rom, save);
+        (void)aux_transfer(blank, {0x03, 0x00, 0x00, 0x00});
+        assert(!blank.chip_mismatch_suspected());
+    }
+    {   // After a write the chip is no longer swapped: a mismatch is only reported.
+        const auto save = save_dir / "hint-late.sav";
+        std::filesystem::remove(save);
+        dsr::GameCard late(rom, save);
+        (void)aux_transfer(late, {0x06});
+        (void)aux_transfer(late, {0x02, 0x00, 0x00, 0x00, 0x01});   // flash page program: 3-byte address
+        assert(late.flush_save());                                  // flushed: "not dirty" must not re-enable inference
+        (void)aux_transfer(late, {0x03, 0x00, 0x00, 0x00});
+        assert(late.chip_mismatch_suspected());
+        assert(late.flush_save());
+        std::ifstream in(save, std::ios::binary);
+        std::vector<std::uint8_t> kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(kept.size() == 512u * 1024u && kept[0] == 0x01);     // the written byte survived
+    }
     {
         dsr::GameCard eeprom(rom, save_dir / "hint-eeprom.sav", dsr::BackupType::Eeprom64K);
         (void)aux_transfer(eeprom, {0x03, 0x00, 0x00, 0x00});

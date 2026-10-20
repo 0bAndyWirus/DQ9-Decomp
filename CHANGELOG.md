@@ -7,6 +7,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 ## Unreleased
 
 - **Wrong save chip is noticed:** when the program reads the cartridge backup like an EEPROM (2-byte addresses, nothing more) while the emulated chip is a flash type, the runtime prints a hint on stderr and shows a notice in the window ("SAVE CHIP WRONG? TRY EEPROM 64 KB (LAUNCHER)"). Output is unchanged; the choice is still yours (`--backup-type`, launcher Save chip). The Godot host shows the same notice (stats flag `chip_mismatch`, `dsr_session_chip_mismatch_suspected()`). Verified with the DQ9 EU image on Linux in both hosts: shown with `flash512k`, not with `eeprom64k`.
+- **Save chip is inferred when left on auto:** a flash chip never answers a read that ends right after its 3-byte address, while a 2-byte-address EEPROM does. If the program does that before anything was written, no chip was chosen and no non-blank save data was loaded (existing saves are never discarded), the runtime now switches to a 64 KB EEPROM at once (the answers given so far are identical for both chips) and says so on stderr. This removes the "quick save log is corrupted" trap for the default setup: a 28,500-frame scripted run with no chip flag reproduced the per-frame output of a run with `--backup-type eeprom64k` and of a separate local development build. Explicit flash choices are never overridden (a notice is shown instead). Verified on Linux with the DQ9 EU image only; no title table is involved.
 
 ## v0.2.6
 
