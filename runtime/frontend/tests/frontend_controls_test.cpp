@@ -26,6 +26,7 @@ int main() {
     auto frontend = dsr::create_sdl_frontend();
     dsr::FrontendConfig config;
     config.debug_tool_enabled = true;
+    config.window_scale = 2; // 512x768 fits the dummy video driver's 1024x768 desktop, so remembered sizes are never clamped
     assert(frontend->init(config));
     dsr::DebugOverlayState overlay;
     overlay.debug_tool_enabled = true;
@@ -177,8 +178,8 @@ int main() {
         assert(!hotkey_input.screenshot_requested);
         tap(SDL_SCANCODE_F11);
         assert(hotkey_input.screenshot_requested);
-        std::filesystem::remove(conf_dir / "frontend.conf");
-        frontend.reset();
+        frontend.reset();                                    // writes the remembered size ...
+        std::filesystem::remove(conf_dir / "frontend.conf"); // ... which this block must not inherit
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
     }
@@ -236,18 +237,27 @@ int main() {
         // The windowed size is remembered across runs (written when the frontend is destroyed).
         const auto conf_dir = directory / "dq9-decomp";
         std::filesystem::create_directories(conf_dir);
-        std::ofstream(conf_dir / "frontend.conf") << "window_width=701\nwindow_height=913\n";
-        frontend.reset();
+        frontend.reset();                                    // the old frontend writes its own size on exit
+        std::ofstream(conf_dir / "frontend.conf") << "window_width=701\nwindow_height=613\n";
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));
         int ww = 0, wh = 0;
         SDL_GetWindowSize(SDL_GetWindowFromID(1), &ww, &wh);
-        assert(ww == 701 && wh == 913);
-        SDL_SetWindowSize(SDL_GetWindowFromID(1), 640, 880);
+        assert(ww == 701 && wh == 613);
+        SDL_SetWindowSize(SDL_GetWindowFromID(1), 640, 580);
         frontend.reset();
         std::ifstream in(conf_dir / "frontend.conf");
         const std::string saved((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        assert(saved.find("window_width=640") != std::string::npos && saved.find("window_height=880") != std::string::npos);
+        assert(saved.find("window_width=640") != std::string::npos && saved.find("window_height=580") != std::string::npos);
+        // A remembered size larger than the desktop (another monitor, hand-edited file) is cut to it.
+        std::ofstream(conf_dir / "frontend.conf") << "window_width=9000\nwindow_height=9000\n";
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+        SDL_Rect usable{};
+        assert(SDL_GetDisplayUsableBounds(0, &usable) == 0);
+        SDL_GetWindowSize(SDL_GetWindowFromID(1), &ww, &wh);
+        assert(ww == usable.w && wh == usable.h);
+        frontend.reset();
         std::filesystem::remove(conf_dir / "frontend.conf");
         frontend = dsr::create_sdl_frontend();
         assert(frontend->init(config));

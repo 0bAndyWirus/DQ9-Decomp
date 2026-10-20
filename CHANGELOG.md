@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Remembered window size is fitted to the desktop:** a size saved on a larger monitor (or typed by hand, e.g. 100000x100000) is cut to the usable display area instead of opening an oversized window.
 - **Command line:** a value that is not a number (`--frames abc`) now prints `dq9: invalid value for --frames` and exits with status 2 instead of aborting with an uncaught exception.
 - **Save write failures no longer end the session:** a read-only folder, full disk or locked file used to abort the process with an uncaught exception (in a window, at the first autosave). The runtime now prints one warning, keeps the data and retries at the next autosave and at exit; headless runs exit with status 1 if the final write failed.
 - **Save size notice:** when an existing save file does not fit the selected cartridge backup type (for example a 512 KB file with `--backup-type eeprom64k`), the runtime now says so on stderr instead of silently starting with a blank save; the old file is still kept as `.bak`.

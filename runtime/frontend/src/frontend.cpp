@@ -138,8 +138,15 @@ public:
                              (config_.fullscreen ? static_cast<Uint32>(SDL_WINDOW_FULLSCREEN_DESKTOP) : 0u);
         const int scale = std::max(1, config_.window_scale);
         const bool remembered = config_.window_width > 0 && config_.window_height > 0;
-        const int w = config_.fullscreen && running_on_steam_deck() ? 1280 : remembered ? config_.window_width : 256 * scale;
-        const int h = config_.fullscreen && running_on_steam_deck() ? 800 : remembered ? config_.window_height : 384 * scale;
+        int w = config_.fullscreen && running_on_steam_deck() ? 1280 : remembered ? config_.window_width : 256 * scale;
+        int h = config_.fullscreen && running_on_steam_deck() ? 800 : remembered ? config_.window_height : 384 * scale;
+        if (remembered) {
+            SDL_Rect usable{};
+            if (SDL_GetDisplayUsableBounds(0, &usable) == 0) {
+                w = frontend_detail::fit_window_extent(w, usable.w);
+                h = frontend_detail::fit_window_extent(h, usable.h);
+            }
+        }
         window_ = SDL_CreateWindow(config_.title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
         if (!window_) return false;
         renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED);
