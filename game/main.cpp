@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <limits>
@@ -194,7 +195,9 @@ void load_recorded_rtc(Options& options) {
 }
 
 
-Options parse_args(int argc, char** argv) {
+const char* g_parsing_option = nullptr; // for the message when a numeric value does not parse
+
+Options parse_args_unchecked(int argc, char** argv) {
     Options o;
     o.abi_config = dsr::guest_abi_config_path_from_environment();
 #if defined(_WIN32)
@@ -204,6 +207,7 @@ Options parse_args(int argc, char** argv) {
 #endif
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
+        g_parsing_option = argv[i];
         auto value = [&]() -> std::string_view {
             if (i + 1 >= argc) usage(2);
             return argv[++i];
@@ -281,6 +285,15 @@ Options parse_args(int argc, char** argv) {
     }
     load_recorded_rtc(o);
     return o;
+}
+
+Options parse_args(int argc, char** argv) {
+    try {
+        return parse_args_unchecked(argc, argv);
+    } catch (const std::logic_error&) { // std::stoi/stoll: invalid_argument or out_of_range
+        std::fprintf(stderr, "dq9: invalid value for %s\n", g_parsing_option ? g_parsing_option : "an option");
+        usage(2);
+    }
 }
 
 std::map<FrameIndex, ScriptedInput> load_script(const std::filesystem::path& path) {
