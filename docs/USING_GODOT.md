@@ -30,6 +30,57 @@ Double-click **`PLAY-GODOT.bat`**. It opens the launcher directly, including on 
 
 The European release needs the **EEPROM 64 KB** save chip. `BUILD-DQ9.bat` writes that into `build\gen\abi.ini`, and the Godot host finds that file by itself, so a normal build needs no action. If the game stalls at "The quick save log is corrupted", open the settings panel (ROM / SAVE) and set **Save chip** to **EEPROM 64 KB**, then restart. Changing the chip does not convert an existing save file; use a fresh save file for a different chip.
 
+### Save status and restoring backups
+
+**Start / Settings** and **Paused / Debug** both contain **Save backups**, a
+persistent save-status label, a timestamped list and **Restore…**. The list uses
+the native backup filename order, newest first, and shows UTC timestamps and raw
+byte sizes; the full filename is available as a tooltip. A differently sized
+backup is marked incompatible and cannot be restored. Restore never selects a
+different save chip or converts a save.
+
+- With a game open, both panels inspect that game's actual launch ROM, save,
+  language, requested chip and ABI configuration, even if settings have since
+  been edited. During issue replay they show the replay copy; restore is
+  disabled until you return to the normal game, including after **Play from here**.
+- With no game open, choose/type the ROM, save path and chip, then press
+  **Refresh backups** (or Enter in a path field). The host loads a temporary
+  native machine to obtain its real capacity and managed backup list, without
+  starting or stepping emulation. Merely listing does not write a save. Lists
+  refresh on panel-open or request, not continuously while typing or playing;
+  exceptionally large lists display only the newest 50 entries.
+  Listing errors (for example, an unreadable backup directory) are shown as errors
+  with restore unavailable, never as a successful "no backups" result. Fix the
+  path/permissions and refresh to retry.
+- Select a compatible backup and press **Restore…**. The confirmation identifies
+  the destination and warns that progress after the selected backup is replaced:
+  this restores cartridge save data, **not** the current game frame/save state.
+  Cancelling changes nothing.
+- Confirming while a game is open first preserves the selected source in a
+  private temporary file, flushes the live save, closes the old machine, then
+  restores through a freshly loaded, unstarted native machine and restarts.
+  **If the live flush fails, restore is cancelled and the live session is kept**;
+  repair the save path and retry. A later load/restore failure leaves the game
+  closed with an error. Restoring from stopped settings leaves it closed.
+  The native runtime rechecks the raw source size against the selected chip's
+  actual capacity and backs up the current on-disk save before atomic replacement.
+
+**Saved** means the last completed explicit flush succeeded (or had no pending
+writes), not that the guest has recorded new progress. **Save failed** stays
+visible after a failure, including a failed close flush; a later successful
+flush updates it and shows the existing recovery notice. A new load's initial
+success flag is not treated as a successful retry. There is no periodic host
+flush: debug-note capture and close/restore preflight use the existing flush
+requests. Ordinary close still has a final best-effort shutdown retry after a
+failed close flush, whose result is not confirmed by the panel; repair and retry
+before closing rather than relying on that retry.
+
+For native API callers, the extension provides `get_save_backups()`,
+`get_save_capacity()` and `restore_save(path)`; see
+[the lifecycle API](../godot/API.md#lifecycle-and-thread-ownership) for the
+fresh-loaded/unstarted requirement and return values.
+
+
 ## 3. Controls
 
 | DS button | Keyboard | Gamepad |

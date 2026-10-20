@@ -118,6 +118,54 @@ extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
 extern "C" int dsr_session_save(dsr_session_handle* session) {
     return session && session->session.flush_save() ? 0 : 1;
 }
+extern "C" uint64_t dsr_session_get_save_capacity(dsr_session_handle* session) {
+    return session ? static_cast<uint64_t>(session->session.save_capacity()) : 0;
+}
+
+extern "C" int dsr_session_get_save_backups(dsr_session_handle* session,
+                                             dsr_save_backup_callback callback, void* context,
+                                             char* error_out, size_t error_capacity) {
+    if (!session || !callback) {
+        set_error(error_out, error_capacity, "invalid save backup listing arguments");
+        return 1;
+    }
+    try {
+        const auto backups = session->session.save_backups();
+        for (const auto& backup : backups) {
+            const auto path = dsr::host::path_to_utf8(backup.path);
+            if (callback(context, path.c_str(), static_cast<uint64_t>(backup.size)) != 0) {
+                set_error(error_out, error_capacity, "save backup callback rejected an entry");
+                return 1;
+            }
+        }
+        set_error(error_out, error_capacity, "");
+        return 0;
+    } catch (const std::exception& error) {
+        set_error(error_out, error_capacity, error.what());
+    } catch (...) {
+        set_error(error_out, error_capacity, "unknown save backup listing failure");
+    }
+    return 1;
+}
+
+extern "C" int dsr_session_restore_save(dsr_session_handle* session, const char* source,
+                                          char* error_out, size_t error_capacity) {
+    if (!session) {
+        set_error(error_out, error_capacity, "invalid save restore session");
+        return 1;
+    }
+    try {
+        session->session.restore_save(source ? dsr::host::path_from_utf8(source) : std::filesystem::path{});
+        set_error(error_out, error_capacity, "");
+        return 0;
+    } catch (const std::exception& error) {
+        set_error(error_out, error_capacity, error.what());
+    } catch (...) {
+        set_error(error_out, error_capacity, "unknown save restore failure");
+    }
+    return 1;
+}
+
 extern "C" int dsr_session_chip_mismatch_suspected(dsr_session_handle* session) {
     return session && session->session.chip_mismatch_suspected() ? 1 : 0;
 }

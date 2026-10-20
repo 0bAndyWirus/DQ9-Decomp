@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace dsr {
 
@@ -73,6 +74,14 @@ public:
     // Keep the newest limit managed backups after the next committed snapshot. Default 5; zero
     // throws. Pruning failure retains extra backups, warns separately and never fails a written save.
     void set_save_backup_limit(std::size_t limit);
+    struct SaveBackup {
+        std::filesystem::path path;
+        std::uintmax_t size;
+    };
+    // Exact managed, regular, non-symlink backups, newest filename first (not host mtime).
+    // Includes raw sizes that do not match the current chip; listing never converts or writes.
+    std::vector<SaveBackup> save_backups() const;
+    std::size_t save_capacity() const;
     // Restore exact raw bytes for the selected chip, preserving the current save first.
     // Empty source selects the newest managed backup; no chip conversion occurs. Read, preservation
     // and commit errors throw. If post-commit snapshot publication fails, warn and retain the raw

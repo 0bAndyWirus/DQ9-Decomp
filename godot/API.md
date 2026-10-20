@@ -21,6 +21,30 @@ The extension bundles no title-specific layout or values.
 - `set_speed(float)` selects frames per second relative to the 59.8261 Hz normal rate. `1` is realtime; `0` is unpaced; values are clamped to 0..16.
 - `set_buttons(mask)` uses DS bits A=1, B=2, Select=4, Start=8, Right=16, Left=32, Up=64, Down=128, R=256, L=512, X=1024, Y=2048. `set_touch(x,y,down)` uses bottom-screen pixel coordinates and clamps to 0..255, 0..191.
 - `flush_save() -> bool` requests the owner thread to flush the loaded session save and waits for the actual result. `true` means pending writes completed or there was nothing to write; `false` means a write failed or no loaded session can accept the request. Failures leave the in-memory data dirty so the next flush can retry; they do not stop emulation. The Godot host does not schedule periodic flushes: existing calls are debug-bundle capture and session close, followed by a final best-effort shutdown flush. Debug-bundle capture reports a failure rather than copying a stale disk save as the current state.
+- `get_save_backups() -> Array` requests the loaded session's managed backup list
+  on its owner thread. Each dictionary has `path: String` and `size: int` (raw
+  bytes). Entries retain **native filename order, newest first**, not filesystem
+  modification-time order. Names include UTC nanoseconds and a collision
+  sequence, so sorting human-readable second-resolution labels would lose the
+  native ordering. An unloaded machine returns an empty list.
+- `get_save_backup_error() -> String` returns the error from the most recent
+  `get_save_backups()` request, or an empty string when listing succeeded,
+  including a successful empty list. Read it immediately after listing: an empty
+  array alone does not distinguish no backups from a filesystem/listing failure.
+  The getter performs no new scan. The panels display listing failures and leave
+  the restore list empty rather than reporting that there are no backups.
+- `get_save_capacity() -> int` returns the loaded cartridge's actual resolved
+  save capacity in bytes, or zero when no session is loaded. This is not merely
+  the requested chip string returned by `get_backup_type()`.
+- `restore_save(path: String) -> String` asks the owner thread to use the native
+  atomic save restore. Empty return means success; any nonempty string is an
+  error. The destination machine must be **freshly loaded and unstarted**:
+  `start`, stepping or replay makes direct restore invalid, even after pausing
+  or calling `stop`. The raw source must exactly match the actual cartridge
+  capacity; restore never changes the chip. The runtime rechecks the source,
+  preserves the existing destination in a backup and atomically replaces its
+  bytes. An empty path selects the newest managed backup. These calls neither
+  start nor step emulation.
 - Worker-side input replay: `set_input_script(rows: PackedStringArray) -> String`
   accepts zero-based `frame buttons x y` rows on a freshly loaded, stopped
   session. Missing frames have no input, duplicate frames use the last row, and
@@ -110,17 +134,59 @@ Replay diagnostics also expose `replay_active` and the zero-based `replay_target
 `loaded` reports whether a live session is available. `last_save_ok` is the result
 of the most recent completed explicit or shutdown flush, published under the
 worker mutex; it starts as `true` on each `load_game` and is not proof that the
-guest has saved any progress. The launcher shows a long failure toast on a
+guest has saved any progress. Both launcher settings and pause/debug panels show
+the latest confirmed **Saved** / **Save failed** result, or that no flush has
+been observed yet. The launcher retains the existing long failure toast on a
 `true` -> `false` transition and one recovery toast after a later successful
-flush, not on every presented frame. A failed close flush is also shown in the
-launcher and logged before the existing final shutdown retry; closing still
-discards the in-memory session, so repair the path and retry before closing.
+flush, not on every presented frame. A new session's initial `true` is not a
+confirmed recovery from an earlier failure. A failed close flush remains visible
+in the launcher and is logged before the final best-effort shutdown retry; that
+retry's result is not confirmed by the panel. Ordinary closing still discards
+the in-memory session, so repair the path and retry before closing.
+
+The panels list timestamped backups for the actual current game's launch
+configuration, not newly edited settings. Issue-replay copies are identified
+and restore stays disabled throughout replay and subsequent live play from the
+issue. Without a game, an explicit/panel-open refresh loads a temporary native
+machine against the typed ROM/save/chip plus ABI configuration, obtains capacity
+and backups, and frees it without running guest frames. The UI preserves native
+ordering, bounds the visible list to the newest 50 entries, and offers capacity
+mismatch hints; the native restore remains authoritative.
+
+`main.gd` exposes `_confirm_restore(path: String)` for the modal confirmation and
+`_restore_backup(path: String)` for the confirmed action. It snapshots the
+requested chip and ABI/ROM/save/language configuration plus actual capacity.
+When replacing an open game it stages the chosen source privately (a successful
+first-write flush may rotate the original backup), pauses and flushes the old
+session, and **aborts without freeing it on flush failure**, restoring its prior
+pause state. After a successful flush it fully closes that machine, loads a new
+unstarted one with the same configuration, rechecks capacity, performs native
+restore and restarts. A later load/restore error leaves the game closed; a
+stopped-settings restore succeeds without starting the game. Temporary copies
+are removed after the attempt. These are cartridge-save restores, not save states.
 
 The C boundary `dsr_session_save(session) -> int` in
 `runtime/include/dsr/session_c.h` returns **0 on success**, including no pending
 writes, and **nonzero on write failure or a NULL handle**. Like stepping and
 destruction, it must run on the session owner thread. Both the session library
 and its consumers must be rebuilt for the changed return type.
+
+Local save/restore checks, from the repository root:
+
+```sh
+godot --headless --path godot --script res://tests/test_logic.gd
+DQ9_ABI_CONFIG="/absolute/path/to/generated/abi.ini" \
+  xvfb-run -a godot --path godot --script res://tests/test_save_restore.gd -- --rom "/absolute/path/to/local-rom.nds"
+```
+
+Replace the example paths with your locally generated ABI configuration and
+private ROM. The second command requires a matching locally built extension;
+it exercises native backup ordering, capacity/paused-session refusal,
+confirmation/restart with byte equality, isolation from edited settings,
+stopped restore and listing-error reporting. Saves and screenshots are disposable
+local test output; do not upload them or the ROM. These commands are checks to
+run, not evidence of verification on a particular platform.
+
 
 ## Issue reviewer and status store
 

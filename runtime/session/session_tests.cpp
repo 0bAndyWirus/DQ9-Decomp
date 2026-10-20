@@ -4,6 +4,12 @@
 #include "dsr/gpu3d.h"
 
 #include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 // A full-screen opaque red 3D clear plane on BG0 at scale N: the hi-res overlay must be
@@ -50,9 +56,109 @@ static void test_compose_hires(int scale, std::uint32_t powcnt1, bool engine_a_o
     assert(!session.compose_hires(out.data(), scale, &on_top));
 }
 
+static void test_save_restore() {
+    struct TempDir {
+        std::filesystem::path path = std::filesystem::temp_directory_path() /
+            ("dsr-session-save-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        TempDir() { std::filesystem::create_directory(path); }
+        ~TempDir() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } temp;
+    const auto write = [](const std::filesystem::path& path, const std::string& bytes) {
+        std::ofstream output(path, std::ios::binary);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        assert(output.good());
+    };
+    const auto read = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const auto rom = temp.path / "synthetic.nds";
+    const auto save = temp.path / "session.sav";
+    const auto backups = temp.path / "backups";
+    const std::string original(512, '\x19'), restored(512, '\x63');
+    write(rom, std::string(0x20000, '\0'));
+    write(save, original);
+    dsr::MachineConfig config;
+    config.rom_path = rom;
+    config.save_path = save;
+    config.direct_boot = false;
+    config.guest_abi.backup_type = dsr::BackupType::Eeprom512B;
+    {
+        dsr::Session listing(config);
+        assert(listing.save_capacity() == 512);
+        assert(listing.save_backups().empty());
+    }
+    assert(read(save) == original);
+    assert(!std::filesystem::exists(backups));
+    std::filesystem::create_directory(backups);
+    const auto older = backups / "session.sav.20260101T000000.000000000Z-000001.bak";
+    const auto newer = backups / "session.sav.20260101T000000.000000000Z-000002.bak";
+    write(newer, std::string(8192, '\x47'));
+    write(older, restored);
+    std::filesystem::last_write_time(older,
+        std::filesystem::file_time_type::clock::now() + std::chrono::hours(24));
+    {
+        dsr::Session session(config);
+        const auto listed = session.save_backups();
+        assert(listed.size() == 2);
+        assert(listed[0].path == newer && listed[0].size == 8192);
+        assert(listed[1].path == older && listed[1].size == 512);
+        bool mismatched = false;
+        try {
+            session.restore_save(); // Newest is wrong-sized: do not silently choose an older match.
+        } catch (const std::runtime_error& error) {
+            mismatched = std::string(error.what()).find("raw size") != std::string::npos;
+        }
+        assert(mismatched);
+        assert(session.frame_count() == 0);
+        assert(session.save_capacity() == 512);
+        assert(read(save) == original);
+        assert(session.save_backups().size() == listed.size());
+        session.restore_save(older);
+        assert(session.frame_count() == 0);
+        assert(session.save_capacity() == 512);
+        assert(read(save) == restored);
+        const auto after_restore = session.save_backups();
+        assert(after_restore.size() == 3);
+        assert(read(after_restore.front().path) == original); // Current target preserved by GameCard.
+        assert(session.flush_save());
+        assert(session.save_backups().size() == after_restore.size());
+        session.step({});
+        const auto paused_ticks = session.ticks();
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            bool refused = false;
+            try {
+                session.restore_save(older);
+            } catch (const std::logic_error& error) {
+                refused = std::string(error.what()).find("unstarted") != std::string::npos;
+            }
+            assert(refused); // Not stepping again (a paused/stopped host) never makes restore safe.
+            assert(session.ticks() == paused_ticks);
+            assert(session.frame_count() == 1);
+            assert(session.save_capacity() == 512);
+            assert(read(save) == restored);
+            assert(session.save_backups().size() == after_restore.size());
+        }
+    }
+    assert(read(save) == restored);
+    config.rom_path.clear();
+    dsr::Session no_cartridge(config);
+    assert(no_cartridge.save_capacity() == 0);
+    assert(no_cartridge.save_backups().empty());
+    bool refused = false;
+    try {
+        no_cartridge.restore_save(older);
+    } catch (const std::logic_error&) {
+        refused = true;
+    }
+    assert(refused);
+}
+
 int main() {
     test_compose_hires(2, 0x8207U, true);
     test_compose_hires(3, 0x0207U, false); // engine A on the bottom screen
+    test_save_restore();
     dsr::MachineConfig config;
     config.direct_boot = false;
     dsr::Session session(config);
