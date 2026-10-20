@@ -2,6 +2,7 @@
 
 #include "dsr/gpu3d.h"
 #include "gpu2d_test.h"
+#include "composition_order.h"
 
 #include <algorithm>
 #include <array>
@@ -1410,6 +1411,17 @@ struct Gpu2D::Impl {
         }
         // The copy-only case above has already produced the whole line.
         const int blended_end = copy_only ? 0 : static_cast<int>(kScreenWidth);
+        std::array<gpu2d_detail::CompositionOrder, 5> composition_orders{};
+        if (!copy_only) {
+            std::array<std::uint8_t, 4> priorities{};
+            for (unsigned bg = 0; bg < 4; ++bg) {
+                priorities[bg] = static_cast<std::uint8_t>(engine_half(engine, 0x08U + bg * 2U) & 3U);
+            }
+            for (unsigned priority = 0; priority < composition_orders.size(); ++priority) {
+                composition_orders[priority] =
+                    gpu2d_detail::composition_order((dispcnt >> 8U) & 15U, priorities, priority);
+            }
+        }
         for (int x = 0; x < blended_end; ++x) {
             const auto xi = static_cast<std::size_t>(x);
             const std::uint8_t mask = masks[xi];
@@ -1458,17 +1470,12 @@ struct Gpu2D::Impl {
             };
             const Pixel& object = obj_pixels[xi];
             const bool object_visible = object.opaque && (mask & (1U << 4U)) != 0U;
-            const int object_priority = object.priority;
-            for (int priority = 3; priority >= 0; --priority) {
-                for (std::uint8_t i = 0; i < bg_order_count[priority]; ++i) {
-                    const std::uint8_t bg = bg_order[priority][i];
-                    const Pixel& pixel = bg_pixels[bg][xi];
-                    if (pixel.opaque && (mask & (1U << bg)) != 0U) {
-                        composite(pixel, bg);
-                    }
-                }
-                if (object_visible && object_priority == priority) {
-                    composite(object, kObjLayer);
+            const auto& order = composition_orders[object_visible ? object.priority : 4U];
+            for (unsigned i = 0; i < order.count; ++i) {
+                const auto layer = order.layers[i];
+                const Pixel& pixel = layer == kObjLayer ? object : bg_pixels[layer][xi];
+                if (pixel.opaque && (mask & (1U << layer)) != 0U) {
+                    composite(pixel, layer);
                 }
             }
             output[xi] = dst;

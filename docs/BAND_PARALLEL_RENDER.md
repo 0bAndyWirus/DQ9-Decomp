@@ -71,6 +71,14 @@ Supported x86-64 builds select the available vector implementation; other target
 
 GPU2D text backgrounds are sampled in tile-row spans. Map entries and aligned tile rows are read once where valid, while indexed/extended-palette paths preserve bytewise overlap reads. Scroll/tile boundaries, mosaic, windows, blending, and brightness ordering remain unchanged. This optimization does not parallelize the two engines.
 
+The blended GPU2D compositor prepares back-to-front layer orders once per
+scanline, including each possible OBJ priority and the no-OBJ case. Pixels
+select that immutable order while retaining window/opacity filtering and
+sequential blending. Equal-priority OBJ remains above backgrounds; background
+ties retain descending layer-number paint order. The ROM-free
+`composition_order` GPU2D test exhausts enable/priority combinations and checks
+order-sensitive synthetic blending with deterministic random masks and colors.
+
 ## Synthetic identity and mutation requirements
 
 `runtime/gpu3d/tests/test_gpu3d.cpp` compares complete synthetic scenes and named framebuffer fields between inline and threaded modes. Fixtures exercise:
