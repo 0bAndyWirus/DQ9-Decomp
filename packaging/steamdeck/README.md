@@ -86,7 +86,9 @@ The built-in mapping is positional, like the DS:
 | touchscreen | stylus on the bottom-screen image |
 | R3 | toggle stylus mode: right stick moves the pen, R2 presses it |
 | View + L1 | cycle screen layout |
-| View + R1 | swap screens |
+| View + R1 (hold) | fast-forward |
+| View + R3 | swap screens |
+| View + Menu | screenshot |
 
 The **Gamepad with Mouse Trackpad** Steam Input template also lets the trackpad
 move the mouse pointer and click the bottom screen. Leave native touchscreen
@@ -121,3 +123,11 @@ Existing environment settings take precedence.
 `~` denotes the current user's home directory. `XDG_CONFIG_HOME` and
 `XDG_DATA_HOME` override the corresponding defaults. Back up the save before
 updating a local package; Steam Cloud does not sync non-Steam shortcuts.
+
+The native save policy also applies to a local Deck build: dirty saves flush
+periodically in a window, with five timestamped session backups by default.
+See [save safety and restore](../../docs/GETTING_STARTED.md#saves) and the
+[CLI reference](../../docs/CONFIGURATION.md#native-command-line-reference).
+A fresh European-release save needs `--backup-type eeprom64k` or the equivalent
+generated ABI/launcher setting; this is not automatic title detection.
+These documented controls and policies are not evidence of a Steam Deck hardware run.

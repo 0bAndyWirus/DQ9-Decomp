@@ -42,7 +42,7 @@ Ordered gates; no delivery dates or completion estimates. A failed gate stops de
 
 **Acceptance:** Build and launch the actual native game process on the target device; verify an end-to-end real game path with input, state transition, rendering/audio as applicable, and locally supplied resources. Demonstrate that execution is native code rather than an emulator. Keep full-game behavior and full decompilation as project objectives; a prototype or isolated vertical slice does not satisfy this requirement.
 
-**Status (2026-10-20):** Original ARM/Thumb recompiler components, hardware runtime services, and SDL/Godot host sources are present. `tools/build_port.py` builds a host from your own image that boots to the opening credits (checked headless in all five languages); no game build is shipped and play beyond that point is unverified. Full-game behavior, device performance, and Windows / Steam Deck hardware compatibility remain unclaimed.
+**Status (2026-10-20):** Original ARM/Thumb recompiler components, hardware runtime services, and SDL/Godot host sources are present. `tools/build_port.py` builds a host from your own image that boots to the opening credits (checked headless in all five languages). Scripted Linux runs also reached an early field scene and short live input checks responded; see [the dated observations and limits](GETTING_STARTED.md#status-reviewed-2026-10-20). No game build is shipped. Full-game behavior, sustained interactive play, device performance, and Windows / Steam Deck hardware compatibility remain unclaimed.
 
 
 ## 2. Native platform and presentation prototype

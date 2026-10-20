@@ -4,11 +4,11 @@ Short answers about what DQ9-Decomp is and is not. The authoritative documents a
 
 ## Can I play Dragon Quest IX on PC using this repository?
 
-Only from your own copy, and only partly. The repository ships no game, no generated game code and no builds, but `tools/build_port.py` turns your own `.nds` file into a local program that was verified to reach the opening credits and START prompt in English, French, German, Spanish and Italian. Play beyond that point is unverified. See the [plain-language guide](GETTING_STARTED.md) and the [README status](../README.md#status).
+Only from your own copy, and only partly. The repository ships no game, no generated game code and no builds, but `tools/build_port.py` turns your own `.nds` file into a local program that was verified to reach the opening credits and START prompt in English, French, German, Spanish and Italian. A scripted Linux run also reached an early field scene, and a short live input check was performed; these are not full-game compatibility or playability validation. See the [plain-language guide](GETTING_STARTED.md) and the [README status](../README.md#status).
 
 ## Does the project contain ROMs, assets or decompiled game code?
 
-No. The repository contains original code only: recompiler, hardware runtime, SDL2 and Godot host sources, tools, tests and documentation. It does not contain ROMs, extracted assets, scripts or text, decompiled or disassembled game code, generated game sources, symbol or address dumps, saves, debugger dumps or compiled builds, and it publishes no binary releases. The [MIT License](../LICENSE) covers the original project code only, not the game or other third-party works. Ownership of a copy does not by itself authorise copying, decompiling, circumventing protections or distributing derivatives. See [LEGAL.md](../LEGAL.md) and the [data boundary](PROJECT_CHARTER.md#data-and-legal-boundary).
+No. The repository contains original code only: recompiler, hardware runtime, SDL2 and Godot host sources, tools, tests and documentation. It does not contain ROMs, extracted assets, scripts or text, decompiled or disassembled game code, generated game sources, symbol or address dumps, saves, debugger dumps or compiled builds. Public prereleases provide source-and-scripts kits only, not game executables or binary game releases. The [MIT License](../LICENSE) covers the original project code only, not the game or other third-party works. Ownership of a copy does not by itself authorise copying, decompiling, circumventing protections or distributing derivatives. See [LEGAL.md](../LEGAL.md) and the [data boundary](PROJECT_CHARTER.md#data-and-legal-boundary).
 
 ## Which Dragon Quest IX version is researched?
 

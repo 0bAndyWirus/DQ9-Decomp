@@ -35,6 +35,13 @@ python3 -m unittest discover -s tests -v
 
 Windows: [docs/BUILDING_WINDOWS.md](docs/BUILDING_WINDOWS.md). Tests that need local images, generated code, an external emulator or Godot are optional probes outside the default suites. Do not report skipped tests as passes.
 
+The Python suite includes an offline Markdown path/heading-anchor check
+(`python3 -m unittest discover -s tests -p test_docs_links.py -v`). It ignores
+external URLs and fenced command examples; no network access or game inputs are
+needed. Keep documentation links and CLI examples in sync with their targets.
+Linux runtime and Python CI also run weekly. A newer run of the same pull
+request cancels its superseded run; push and scheduled runs are not cancelled.
+
 ## Licensing
 
 Contributions must be your own original work, and you must have the right to contribute them. They are licensed under the [MIT License](LICENSE), which covers original project code only, not the game or third-party works. Respect third-party licenses (see [NOTICE](NOTICE)).

@@ -1,6 +1,6 @@
 # Using the Godot version
 
-The Godot host is an alternative front end for the same native runtime as the SDL `dq9` program. It adds seven screen layouts, key and gamepad rebinding, an optional higher-resolution 3D path, a pause/debug panel and replayable debug notes. It is **experimental**: use the SDL build (`PLAY-DQ9.bat`) when you simply want to play.
+The Godot host is an alternative front end for the same native runtime as the SDL `dq9` program. It adds seven screen layouts, key and gamepad rebinding, an optional higher-resolution 3D path, a pause/debug panel and replayable debug notes. It is **experimental**; the SDL build (`PLAY-DQ9.bat`) remains the reference host, not a guarantee of game compatibility.
 
 Like the SDL build, it needs your own European `.nds` file and code generated from it on your computer. Nothing here ships a game, and the DLLs you build embed game-derived code, so never share them.
 
@@ -76,7 +76,7 @@ failed close flush, whose result is not confirmed by the panel; repair and retry
 before closing rather than relying on that retry.
 
 For native API callers, the extension provides `get_save_backups()`,
-`get_save_capacity()` and `restore_save(path)`; see
+`get_save_backup_error()`, `get_save_capacity()` and `restore_save(path)`; see
 [the lifecycle API](../godot/API.md#lifecycle-and-thread-ownership) for the
 fresh-loaded/unstarted requirement and return values.
 

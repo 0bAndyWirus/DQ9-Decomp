@@ -2,6 +2,37 @@
 
 Exit codes are CLI process statuses. `0` means success unless a tool documents another result; tools without documented result codes generally use nonzero for an error. “Safe during active integration” means the tool does not mutate the EU workspace or `extracted/`; tools that read live EU state to generate output are marked **No** where an integration can make that result inconsistent.
 
+## Building, launching and support
+
+`python tools/build_port.py --help` lists build options. The usual local-image
+flow is in [Getting started](GETTING_STARTED.md); `--check --rom PATH` runs
+preflight only, `--backup-type TYPE` writes cartridge policy into the generated
+ABI INI, and `--rebuild-workspace` rebuilds only tool-owned extraction state.
+`--runtime-only` needs no image. `--godot`, `--godot-only` and
+`--fetch-godot-editor` select the optional Godot build/editor flow.
+
+The Windows source kit automates setup with `BUILD-DQ9.bat` (optional
+`--godot`), `BUILD-GODOT.bat`, `PLAY-DQ9.bat` and `PLAY-GODOT.bat`.
+`COLLECT-DIAGNOSTICS.bat` wraps
+`python tools/collect_diagnostics.py --kit-dir PATH`; it collects sanitized tool
+and build information without running the game. Review its text before sharing.
+See [Windows instructions](BUILDING_WINDOWS.md) for the privacy boundary and
+failure statuses. `tools/package_windows_kit.py --tag TAG` produces the public
+**source-only** kit; it is not the local binary-package script below.
+
+On Linux, `python tools/install_desktop_entry.py` installs a local launcher
+entry; `--uninstall` removes it. `--exe PATH`, `--abi-config PATH` and
+`--dir DIR` select the local executable, ABI INI and applications directory.
+
+For the native runtime, `dq9 --help` (or `build/game/game/dq9 --help`) lists
+session, deterministic replay and capture switches. Every option is documented
+in the [native command-line reference](CONFIGURATION.md#native-command-line-reference),
+including `--autosave-frames`, `--save-backups` and `--restore-save`. These are
+not build-script options. Godot's backup browser and confirmed restore action
+are described in [Using Godot](USING_GODOT.md).
+
+## Development and analysis scripts
+
 | Script | Purpose | Exit-code convention | Safe during active integration? |
 |---|---|---|---|
 | `tools/align_hashes.py` | Align native and oracle hash timelines with a piecewise frame offset. | `0` success; nonzero on invalid input/error. | Yes |
