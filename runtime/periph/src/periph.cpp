@@ -471,12 +471,26 @@ struct GameCard::Impl {
             std::copy(bytes.begin(), bytes.end(), backup_.begin());
             return;
         }
+        if (bytes.empty()) return;
         if (save_path_.extension() != ".dsv" || bytes.size() < kDsvFooterSize ||
-            !std::equal(kDsvCookie.begin(), kDsvCookie.end(), bytes.end() - 16)) return;
+            !std::equal(kDsvCookie.begin(), kDsvCookie.end(), bytes.end() - 16)) {
+            warn_save_ignored(bytes.size());
+            return;
+        }
         const std::size_t footer = bytes.size() - kDsvFooterSize;
         const std::uint32_t padded_size = get_le32(bytes.data() + footer + 4);
         if (padded_size == backup_.size() && padded_size <= footer)
             std::copy_n(bytes.begin(), backup_.size(), backup_.begin());
+        else
+            warn_save_ignored(bytes.size());
+    }
+
+    void warn_save_ignored(std::size_t found) const {
+        std::fprintf(stderr,
+                     "[dsr] save file has %zu bytes but the selected cartridge backup type needs %zu: it is not loaded and "
+                     "will be replaced on the next save (the previous file is kept as <save>.bak). "
+                     "Pass --backup-type to match it, or use the chip that created it.\n",
+                     found, backup_.size());
     }
 
     // Keeps the save as it was before this run as <save>.bak, once per run and before the first
