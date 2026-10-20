@@ -39,3 +39,7 @@ __pycache__/
 *.zip
 *.pck
 tools/local/
+
+# Portable mode data (saves, settings) next to a locally built program
+portable/
+portable.txt

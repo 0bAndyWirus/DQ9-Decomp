@@ -1,4 +1,5 @@
 #include "dsr/frontend.h"
+#include "dsr/host_path.h"
  
 #include "frontend_logic.h"
 #include "controller_support.h"
@@ -1464,6 +1465,13 @@ UserPaths default_user_paths() {
     if (const char* value = std::getenv("XDG_DATA_HOME")) environment.data_home = value;
     if (const char* value = std::getenv("HOME")) environment.home = value;
 #endif
+    if (char* base = SDL_GetBasePath()) {
+        const std::filesystem::path executable_dir = host::path_from_utf8(base);
+        SDL_free(base);
+        std::error_code error;
+        if (std::filesystem::is_regular_file(executable_dir / "portable.txt", error))
+            environment.portable_root = executable_dir / "portable";
+    }
     return frontend_detail::user_paths_from_environment(environment);
 }
 bool running_on_steam_deck() {

@@ -17,6 +17,9 @@ struct UserPathEnvironment {
     bool windows = false;
     std::filesystem::path config_home, data_home, home;
     std::filesystem::path appdata, local_appdata, user_profile;
+    // Non-empty when a `portable.txt` sits next to the executable: settings and saves then live under
+    // <portable_root>/config and <portable_root>/data and nothing is written to the user profile.
+    std::filesystem::path portable_root;
 };
 UserPaths user_paths_from_environment(const UserPathEnvironment& environment);
 
