@@ -301,11 +301,18 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         assert(!blank.chip_mismatch_suspected());
     }
     {   // After a write the chip is no longer swapped: a mismatch is only reported.
-        dsr::GameCard late(rom, save_dir / "hint-late.sav");
+        const auto save = save_dir / "hint-late.sav";
+        std::filesystem::remove(save);
+        dsr::GameCard late(rom, save);
         (void)aux_transfer(late, {0x06});
         (void)aux_transfer(late, {0x02, 0x00, 0x00, 0x00, 0x01});   // flash page program: 3-byte address
+        assert(late.flush_save());                                  // flushed: "not dirty" must not re-enable inference
         (void)aux_transfer(late, {0x03, 0x00, 0x00, 0x00});
         assert(late.chip_mismatch_suspected());
+        assert(late.flush_save());
+        std::ifstream in(save, std::ios::binary);
+        std::vector<std::uint8_t> kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(kept.size() == 512u * 1024u && kept[0] == 0x01);     // the written byte survived
     }
     {
         dsr::GameCard eeprom(rom, save_dir / "hint-eeprom.sav", dsr::BackupType::Eeprom64K);

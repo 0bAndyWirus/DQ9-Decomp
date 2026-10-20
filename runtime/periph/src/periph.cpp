@@ -783,6 +783,11 @@ struct GameCard::Impl {
             backup_write_bytes_.clear();
             backup_id_pos_ = 0;
             backup_data_bytes_ = 0;
+            // Any write-type command ends the chip inference for good, even if it changes nothing or the save
+            // was flushed since: the buffer may now hold data the guest expects to read back.
+            if (value == 0x02 || value == 0x0a || value == 0xdb || value == 0xd8 || value == 0xc7 || value == 0x60 ||
+                value == 0x01)
+                infer_chip_from_program_ = false;
             switch (value) {
             case 0x06: backup_wel_ = true; backup_stage_ = BackupStage::Ignore; break;
             case 0x04: backup_wel_ = false; backup_stage_ = BackupStage::Ignore; break;
