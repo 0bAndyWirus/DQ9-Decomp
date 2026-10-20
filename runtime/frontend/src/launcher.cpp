@@ -25,6 +25,7 @@ constexpr int kW = 1024;
 constexpr int kTabPitch = 186; // five tabs across the 928 px panel
 constexpr int kH = 720;
 constexpr UiRect kLaunchButton{758, 642, 218, 50};
+constexpr UiRect kQuitButton{610, 642, 132, 50};
 constexpr std::array<std::string_view, 5> kPages{"LANGUAGE", "CONTROLS", "ROM / SAVE", "OPTIONS", "HOTKEYS"};
 constexpr int kHotkeyPage = 4;
 constexpr int kOptionCount = 16;
@@ -126,8 +127,8 @@ void write_config(const UserPaths& paths, const frontend_detail::ConfigData& con
 
 class Launcher {
 public:
-    Launcher(SDL_Renderer* renderer, frontend_detail::ConfigData& config)
-        : canvas_(renderer), config_(config) { refresh_controllers(); }
+    Launcher(SDL_Renderer* renderer, frontend_detail::ConfigData& config, std::string startup_error = {})
+        : canvas_(renderer), config_(config), startup_error_(std::move(startup_error)) { refresh_controllers(); }
     ~Launcher() {
         for (auto* controller : controllers_) SDL_GameControllerClose(controller);
     }
@@ -210,7 +211,7 @@ public:
                     if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
                         if (text_field_ >= 0) { text_field_ = -1; SDL_StopTextInput(); }
                         else running = false;
-                    } else if (event.key.keysym.scancode == SDL_SCANCODE_F5) { accepted = true; running = false; }
+                    } else if (event.key.keysym.scancode == SDL_SCANCODE_F5) { accepted = ready(); running = !accepted; }
                     else if (event.key.keysym.scancode >= SDL_SCANCODE_F1 && event.key.keysym.scancode <= SDL_SCANCODE_F4) {
                         page_ = static_cast<int>(event.key.keysym.scancode - SDL_SCANCODE_F1);
                         focus_ = 0;
@@ -231,7 +232,7 @@ public:
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
                         if (text_field_ >= 0) { text_field_ = -1; SDL_StopTextInput(); }
                         else running = false;
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_START) { accepted = true; running = false; }
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_START) { accepted = ready(); running = !accepted; }
                     else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) move_focus(-1);
                     else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) move_focus(1);
                     else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) adjust(-1);
@@ -252,6 +253,11 @@ public:
         
     }
 private:
+    bool ready() {
+        if (!startup_error_.empty()) return false;
+        const auto path = launcher_rom_path(host::path_from_utf8(config_.rom_path));
+        return !config_.rom_path.empty() && check_rom_image(path).empty();
+    }
     void refresh_controllers() {
         for (auto* controller : controllers_) SDL_GameControllerClose(controller);
         controllers_.clear();
@@ -382,7 +388,12 @@ private:
         }
         if (y >= kLaunchButton.y && y < kLaunchButton.y + kLaunchButton.h &&
             x >= kLaunchButton.x && x < kLaunchButton.x + kLaunchButton.w) {
-            accepted = true; running = false; return;
+            accepted = ready(); running = !accepted; return;
+        }
+        if (x >= kQuitButton.x && x < kQuitButton.x + kQuitButton.w &&
+            y >= kQuitButton.y && y < kQuitButton.y + kQuitButton.h) {
+            running = false;
+            return;
         }
         if (page_ == 0 && y >= 250 && y < 250 + 5 * 50) {
             config_.language = std::string(kLanguages[static_cast<std::size_t>((y - 250) / 50)]);
@@ -435,7 +446,8 @@ private:
         else draw_options();
         canvas_.text(48, 633, "F1-F4 PAGES   TAB NEXT PAGE (5: HOTKEYS)   ARROWS NAVIGATE   ENTER SELECT   ESC CANCEL", kMuted, 1);
         draw_rom_status();
-        canvas_.button(kLaunchButton, "LAUNCH (F5)", false);
+        canvas_.button(kQuitButton, "QUIT", false);
+        canvas_.button(kLaunchButton, "START (F5)", false);
         const char* capture_path = std::getenv("DSR_LAUNCHER_CAPTURE");
         if (!capture_done_ && capture_path && *capture_path) {
             capture_done_ = true;
@@ -504,15 +516,19 @@ private:
         canvas_.button({86, 298, 852, 58}, save_display, focus_ == 1, true);
         canvas_.button({86, 405, 360, 54}, "AUTO-DETECT ROM / ENV", focus_ == 2);
         canvas_.button({470, 405, 468, 54}, "SAVE CHIP: " + frontend_detail::backup_type_label(config_.backup_type), focus_ == 3);
-        canvas_.text(86, 490, "ROM PATH MAY ALSO COME FROM THE DQ9_ROM ENVIRONMENT VARIABLE.", kMuted, 1);
+        canvas_.text(86, 490, "CLICK THE ROM FIELD AND TYPE A PATH, OR DROP AN .NDS FILE ON THIS WINDOW.", kMuted, 1);
         canvas_.text(86, 518, "THE DEFAULT SAVE IS <USER DATA DIRECTORY>/dq9.sav.", kMuted, 1);
-        canvas_.text(86, 546, "SAVE CHIP AUTO USES THE BUILD'S SETTING OR THE SAVE FILE SIZE. IF THE TITLE SAYS", kMuted, 1);
-        canvas_.text(86, 574, "THE QUICK SAVE LOG IS CORRUPTED, CHOOSE EEPROM 64 KB.", kMuted, 1);
+        canvas_.text(86, 546, "SAVE CHIP STARTS WITH THE BUILD'S ABI.INI SETTING ON FIRST RUN.", kMuted, 1);
+        canvas_.text(86, 574, "AUTO USES EXISTING SAVE SIZE, OTHERWISE FLASH. CHOOSE THE CHIP FOR YOUR IMAGE.", kMuted, 1);
         if (text_field_ >= 0) canvas_.text(86, 622, "EDIT TEXT; ENTER TO ACCEPT; ESC TO CANCEL.", UiColor{134, 216, 255, 255}, 1);
     }
     // One-line readiness check next to the Launch button, so a missing ROM is visible before
     // launching rather than as an error afterwards. Re-checked only when the path changes.
     void draw_rom_status() {
+        if (!startup_error_.empty()) {
+            canvas_.text(48, 668, startup_error_, UiColor{255, 176, 96, 255}, 1);
+            return;
+        }
         const std::string& path = text_field_ == 0 ? rom_text_.value() : config_.rom_path;
         if (path != rom_checked_path_) {
             rom_checked_path_ = path;
@@ -579,7 +595,7 @@ private:
     frontend_detail::ConfigData& config_;
     std::vector<std::pair<std::string, std::string>> devices_;
     std::vector<SDL_GameController*> controllers_;
-    int page_ = 0;
+    int page_ = 2; // First show the ROM picker rather than hide it behind a tab.
     int focus_ = 0;
     int bind_side_ = 0;
     int pending_bind_ = -1;
@@ -590,6 +606,7 @@ private:
     std::string rom_checked_path_;
     bool rom_found_ = false;
     std::string rom_problem_;
+    std::string startup_error_;
 };
 } // namespace
 
@@ -598,6 +615,8 @@ bool run_sdl_launcher(LauncherOptions& options) {
     std::error_code ec;
     std::filesystem::create_directories(paths.config_dir, ec);
     frontend_detail::ConfigData config = frontend_detail::default_config();
+    if (frontend_detail::is_backup_type_name(options.backup_type))
+        config.backup_type = options.backup_type;
     bool first_run = false;
     const auto config_file = paths.config_dir / "frontend.conf";
     if (std::ifstream in{config_file}; in) {
@@ -612,7 +631,8 @@ bool run_sdl_launcher(LauncherOptions& options) {
     }
     if (!options.rom_path.empty()) config.rom_path = host::path_to_utf8(options.rom_path);
     if (!options.save_path.empty()) config.save_path = host::path_to_utf8(options.save_path);
-    if (frontend_detail::is_backup_type_name(options.backup_type) && options.backup_type != "auto")
+    if (frontend_detail::is_backup_type_name(options.backup_type) &&
+        (first_run || options.backup_type_explicit))
         config.backup_type = options.backup_type;
     if (options.debug_tool) config.debug_tool = true;
     if (config.rom_path.empty()) {
@@ -644,7 +664,7 @@ bool run_sdl_launcher(LauncherOptions& options) {
     if (!renderer && window) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
     bool accepted = false;
     if (renderer) {
-        Launcher launcher(renderer, config);
+        Launcher launcher(renderer, config, options.startup_error);
         accepted = launcher.run();
     }
     if (renderer) SDL_DestroyRenderer(renderer);

@@ -2,17 +2,48 @@
 #undef NDEBUG
 #endif
 #include "dsr/frontend.h"
+#include "dsr/host_path.h"
 #include <SDL.h>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 namespace {
-struct Sequence { SDL_Joystick* joystick; unsigned phase = 0; };
+struct Sequence {
+    SDL_Joystick* joystick;
+    std::string dropped_path;
+    unsigned phase = 0;
+};
+void write_image(const std::filesystem::path& path) {
+    // Entirely synthetic structural NDS image; no game code or assets.
+    std::vector<unsigned char> bytes(0x10000, 0);
+    const auto put32 = [&](std::size_t at, std::uint32_t value) {
+        for (int i = 0; i < 4; ++i) bytes[at + i] = static_cast<unsigned char>(value >> (8 * i));
+    };
+    put32(0x20, 0x4000);
+    put32(0x2C, 0x4000);
+    put32(0x30, 0x8000);
+    put32(0x3C, 0x2000);
+    put32(0x80, 0x10000);
+    std::uint16_t crc = 0xFFFF;
+    for (std::size_t i = 0; i < 0x15E; ++i) {
+        crc ^= bytes[i];
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc & 1) ? static_cast<std::uint16_t>((crc >> 1) ^ 0xA001)
+                            : static_cast<std::uint16_t>(crc >> 1);
+    }
+    bytes[0x15E] = static_cast<unsigned char>(crc);
+    bytes[0x15F] = static_cast<unsigned char>(crc >> 8);
+    std::ofstream image(path, std::ios::binary);
+    image.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    assert(image.good());
+}
 void key(SDL_Scancode scancode) {
     SDL_Event event{};
     event.type = SDL_KEYDOWN;
@@ -25,7 +56,10 @@ void key(SDL_Scancode scancode) {
 Uint32 sequence(Uint32 interval, void* data) {
     auto& state = *static_cast<Sequence*>(data);
     switch (state.phase++) {
-    case 0: assert(SDL_JoystickSetVirtualHat(state.joystick, 0, SDL_HAT_RIGHT) == 0); break;
+    case 0:
+        key(SDL_SCANCODE_F1); // The launcher initially shows the ROM picker.
+        assert(SDL_JoystickSetVirtualHat(state.joystick, 0, SDL_HAT_RIGHT) == 0);
+        break;
     case 1: assert(SDL_JoystickSetVirtualHat(state.joystick, 0, SDL_HAT_CENTERED) == 0); break;
     case 2:
         key(SDL_SCANCODE_F2);
@@ -69,7 +103,7 @@ Uint32 sequence(Uint32 interval, void* data) {
         // A dropped file becomes the ROM path (SDL hands ownership of the string to the receiver).
         SDL_Event drop{};
         drop.type = SDL_DROPFILE;
-        const char* dropped = "/dq9-dropped/Game Image.nds";
+        const char* dropped = state.dropped_path.c_str();
         drop.drop.file = static_cast<char*>(SDL_malloc(std::strlen(dropped) + 1));
         std::strcpy(drop.drop.file, dropped);
         assert(SDL_PushEvent(&drop) == 1);
@@ -84,6 +118,28 @@ Uint32 sequence(Uint32 interval, void* data) {
     }
     }
     return interval;
+}
+struct RejectionSequence { unsigned phase = 0; };
+Uint32 reject_sequence(Uint32 interval, void* data) {
+    auto& state = *static_cast<RejectionSequence*>(data);
+    if (state.phase++ == 0) {
+        key(SDL_SCANCODE_F5);
+        return interval;
+    }
+    SDL_Event event{};
+    event.type = SDL_QUIT; // Give Start a separate event-loop turn before quitting.
+    assert(SDL_PushEvent(&event) == 1);
+    return 0;
+}
+void assert_rejected(dsr::LauncherOptions options) {
+    assert(SDL_Init(SDL_INIT_TIMER) == 0);
+    RejectionSequence state;
+    const SDL_TimerID timer = SDL_AddTimer(150, reject_sequence, &state);
+    assert(timer != 0);
+    const bool accepted = dsr::run_sdl_launcher(options);
+    SDL_RemoveTimer(timer);
+    assert(!accepted);
+    assert(state.phase == 2); // Rejection, not an early SDL initialization failure.
 }
 }
 #endif
@@ -112,7 +168,10 @@ int main() {
     assert(SDL_GameControllerAddMapping(mapping.c_str()) >= 0);
     SDL_Joystick* joystick = SDL_JoystickOpen(device);
     assert(joystick);
-    Sequence state{joystick};
+    std::filesystem::create_directories(directory);
+    const auto image_path = directory / "Game Image.nds";
+    write_image(image_path);
+    Sequence state{joystick, dsr::host::path_to_utf8(image_path)};
     assert(SDL_AddTimer(150, sequence, &state) != 0);
     {
         const auto conf_dir = std::filesystem::path(directory) / "dq9-decomp";
@@ -128,9 +187,21 @@ int main() {
     assert(options.frontend.window_scale == 4);
     assert(options.frontend.window_width == 0 && options.frontend.window_height == 0);
     assert(state.phase >= 8); // Outside-button clicks must not launch early.
-    assert(options.rom_path == std::filesystem::path("/dq9-dropped/Game Image.nds"));
+    assert(options.rom_path == image_path);
     assert(options.frontend.keycodes[11] == 22); // the abandoned rebind of row 11 changed nothing
     assert(options.frontend.gamepad_buttons[0] == SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    dsr::LauncherOptions missing;
+    missing.rom_path = directory / "missing.nds";
+    assert_rejected(missing);
+    const auto invalid_path = directory / "invalid.nds";
+    std::ofstream(invalid_path, std::ios::binary) << "not an NDS image";
+    dsr::LauncherOptions invalid;
+    invalid.rom_path = invalid_path;
+    assert_rejected(invalid);
+    dsr::LauncherOptions startup_error;
+    startup_error.rom_path = image_path;
+    startup_error.startup_error = "Synthetic build configuration error";
+    assert_rejected(startup_error);
     std::filesystem::remove_all(directory);
 #endif
 }

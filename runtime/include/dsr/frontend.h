@@ -110,6 +110,9 @@ struct LauncherOptions {
     std::string backup_type = "auto"; // cartridge save chip name (see --backup-type); "auto" = not forced
     std::filesystem::path rom_path;
     std::filesystem::path save_path;
+    // Resolved by the host before opening the launcher; an error blocks Start.
+    std::string startup_error;
+    bool backup_type_explicit = false;
     bool debug_tool = false;
     bool frame_time_overlay = false;
     bool capture_memory_dumps = true;
