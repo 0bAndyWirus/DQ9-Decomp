@@ -4,6 +4,14 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.0
+
+- **Timing model (changes frame phase):** ARM9 charges 161/64 cycles per instruction with fractional carry (derived from 22.4 M oracle instructions over a cartridge load), Slot-1 holds READY through a block with a bounded card-DMA drain, and data/delay SWIs use the oracle's cycle totals. Card-command timing at the title-to-preview load moves from 1035/1050/1099 to 1035/1045/1090 (oracle 1035/1044/1087); the oracle's top screen matches pixel-exactly at native +7 frames. Boot hash streams change from frame 49 (about 2,200 of 3,000 frames) because of phase; saves are unaffected. Regenerate local guest code after updating. Not a complete parity claim.
+- **RTC and touch:** the RTC serial protocol (command order, GPIO direction, falling-edge sampling) now returns the programmed time instead of zeros, and touch ADC conversion is exactly reversible at 16 counts per pixel so the guest sees the pixel that was pressed.
+- **GPU3D:** homogeneous clipping interpolates inside to outside and snaps the clipped coordinate to +/-w, clipped subpixel slivers keep rasterising, and A3I5 alpha expansion truncates identically in scalar and bulk decoders. Captured-scene differences against the oracle fell from 923 to 793 pixels in one comparison; the boot hash streams do not change.
+- **Docs and CI:** setup, save/restore and CLI documentation audited (every `dq9` flag documented), offline Markdown link tests, weekly scheduled Linux/Python CI and cancellation of superseded PR runs.
+- **Tests:** randomized stale-state and uniform-clear GPU3D regressions. Seven runtime optimisation experiments were measured and none was kept: gains did not survive paired medians on a noisy machine.
+
 ## v0.3.1
 
 - **Godot save restore:** settings and pause panels list timestamped save backups and restore one with confirmation through the native atomic, capacity-checked replacement (never converts chip type), with a persistent Saved / Save failed status. Verified on Linux with the real extension (exact 65,536-byte restore); Windows is not verified.
