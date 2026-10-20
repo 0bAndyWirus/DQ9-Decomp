@@ -134,6 +134,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 | | |
 |---|---|
 | [Getting started](docs/GETTING_STARTED.md) | Plain-language guide: can I play it, and what can I run |
+| [Using the Godot version](docs/USING_GODOT.md) | Build, start, controls, layouts and troubleshooting for the Godot host |
 | [FAQ](docs/FAQ.md) | Short answers: playability, data boundary, EU version, platforms |
 | [Charter](docs/PROJECT_CHARTER.md) | Purpose, scope and the data boundary |
 | [Architecture](docs/ARCHITECTURE.md) | Components, execution model, presentation invariants |

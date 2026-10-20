@@ -107,6 +107,8 @@ For runtime-only configuration, omit the generated-directory option. Add `-DDQ9_
 
 ## Godot Windows extension
 
+In the Windows kit, `BUILD-GODOT.bat` does this for you: it downloads the pinned godot-cpp 4.5 bindings (SHA-256 verified) and the Godot 4.5 editor (SHA-512 verified), then builds the extension with the same Zig toolchain as the game (`python tools/build_port.py --godot-only --fetch-godot-editor --quiet`). `PLAY-GODOT.bat` starts it. These Windows steps are written but have not been run on a real Windows machine yet; see [Using the Godot version](USING_GODOT.md). The manual route below is for Linux cross-builds and custom setups.
+
 Use matching external [godot-cpp 4.5 bindings](https://github.com/godotengine/godot-cpp/tree/godot-4.5-stable), selected through `GODOT_CPP_DIR`:
 
 ```sh

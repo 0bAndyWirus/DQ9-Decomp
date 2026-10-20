@@ -137,6 +137,141 @@ jobs:
           }
           # Both expected native failures were asserted; do not return their status to CI.
           exit 0
+      - name: Check BUILD-DQ9 and PLAY-GODOT entry points (ROM-free)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $work = Join-Path $env:RUNNER_TEMP 'DQ9 entry ! points'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $rom = Join-Path $work 'game !.nds'
+          Set-Content -Encoding ascii $rom 'fixture'
+
+          function Invoke-Entry {
+            param([string]$Bat, [string]$ArgText = '', [string]$Stdin = '')
+            $inFile = Join-Path $work 'stdin.txt'
+            $outFile = Join-Path $work 'stdout.txt'
+            $errFile = Join-Path $work 'stderr.txt'
+            Set-Content -Encoding ascii $inFile $Stdin
+            # /s strips the outer quotes, so paths with spaces and ! survive cmd.
+            $line = '/d /s /c ""' + $Bat + '" ' + $ArgText + '"'
+            $p = Start-Process -FilePath $env:ComSpec -ArgumentList $line `
+              -RedirectStandardInput $inFile -RedirectStandardOutput $outFile `
+              -RedirectStandardError $errFile -PassThru -WindowStyle Hidden
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "$Bat did not finish (waiting for input?)" }
+            $p.WaitForExit()
+            [pscustomobject]@{
+              Code = $p.ExitCode
+              Text = [IO.File]::ReadAllText($outFile) + [IO.File]::ReadAllText($errFile)
+            }
+          }
+          function Assert-Equal($actual, $expected, $what) {
+            if ("$actual" -ne "$expected") { throw "${what}: expected [$expected] but got [$actual]" }
+          }
+          function Assert-Match($text, $pattern, $what) {
+            if ($text -notmatch $pattern) { throw "${what}: output lacked /$pattern/ in:`n$text" }
+          }
+          function Read-Record($path) { [IO.File]::ReadAllText($path).Trim() }
+
+          # ---- BUILD-DQ9.bat with a real venv and a recording stand-in for build_port.py ----
+          $build = Join-Path $work 'build kit'
+          New-Item -ItemType Directory -Force (Join-Path $build 'tools') | Out-Null
+          Copy-Item tools/windows/BUILD-DQ9.bat $build
+          $record = Join-Path $build 'record.txt'
+          @'
+          import os, sys
+          here = os.path.dirname(os.path.abspath(__file__))
+          with open(os.path.join(here, "..", "record.txt"), "w") as f:
+              f.write("|".join(sys.argv[1:]))
+          sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
+          '@ | Set-Content -Encoding ascii (Join-Path $build 'tools/build_port.py')
+          $bat = Join-Path $build 'BUILD-DQ9.bat'
+
+          # No usable Python and no .venv: clear message, status 1, nothing built.
+          $savedPath = $env:PATH
+          try {
+            $env:PATH = Join-Path $env:SystemRoot 'System32'
+            $r = Invoke-Entry $bat ('"' + $rom + '"')
+          } finally { $env:PATH = $savedPath }
+          Assert-Equal $r.Code 1 'no-python status'
+          Assert-Match $r.Text 'Python 3\.10 or newer was not found' 'no-python message'
+          if (Test-Path $record) { throw 'build tool must not run without Python' }
+
+          # Python found: the private .venv is created, then an offline pip failure stops the script with status 1.
+          $discovery = Join-Path $work 'discovery kit'
+          New-Item -ItemType Directory -Force (Join-Path $discovery 'tools') | Out-Null
+          Copy-Item tools/windows/BUILD-DQ9.bat $discovery
+          Copy-Item (Join-Path $build 'tools/build_port.py') (Join-Path $discovery 'tools')
+          $env:PIP_NO_INDEX = '1'
+          try { $r = Invoke-Entry (Join-Path $discovery 'BUILD-DQ9.bat') ('"' + $rom + '"') } finally { $env:PIP_NO_INDEX = $null }
+          Assert-Equal $r.Code 1 'offline pip status'
+          if (-not (Test-Path (Join-Path $discovery '.venv\Scripts\python.exe'))) { throw 'BUILD-DQ9 did not create .venv from the discovered Python' }
+          if (Test-Path (Join-Path $discovery 'record.txt')) { throw 'build tool must not run after a failed dependency install' }
+
+          # Python discovery creates the private environment; mark tools installed so pip is not needed.
+          python -m venv (Join-Path $build '.venv')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Content -Encoding ascii (Join-Path $build '.venv\dq9-deps-v1.ok') 'installed'
+
+          # Drag-and-drop prompt: the path arrives quoted on stdin and must be unquoted and made absolute.
+          $r = Invoke-Entry $bat '' ('"' + $rom + '"')
+          Assert-Equal $r.Code 0 'prompt status'
+          Assert-Equal (Read-Record $record) "--rom|$rom|--backup-type|eeprom64k|--quiet" 'prompt arguments'
+          Remove-Item $record
+
+          # Argument form with --godot and a save-chip override.
+          $env:DQ9_BACKUP_TYPE = 'flash512k'
+          try { $r = Invoke-Entry $bat ('"' + $rom + '" --godot') } finally { $env:DQ9_BACKUP_TYPE = $null }
+          Assert-Equal $r.Code 0 'godot status'
+          Assert-Equal (Read-Record $record) "--rom|$rom|--backup-type|flash512k|--quiet|--godot|--fetch-godot-editor" 'godot arguments'
+          Remove-Item $record
+
+          # A failing build returns status 1 and points at the log.
+          $env:FAKE_EXIT = '5'
+          try { $r = Invoke-Entry $bat ('"' + $rom + '"') } finally { $env:FAKE_EXIT = $null }
+          Assert-Equal $r.Code 1 'failed build status'
+          Assert-Match $r.Text 'BUILD-DQ9 failed' 'failed build message'
+          Assert-Match $r.Text 'build-log\.txt' 'failed build log hint'
+          Remove-Item $record
+
+          # Missing ROM: status 1, no build. Empty prompt: usage and status 2.
+          $r = Invoke-Entry $bat ('"' + (Join-Path $work 'missing.nds') + '"')
+          Assert-Equal $r.Code 1 'missing ROM status'
+          Assert-Match $r.Text 'ROM file not found' 'missing ROM message'
+          if (Test-Path $record) { throw 'build tool must not run for a missing ROM' }
+          $r = Invoke-Entry $bat '' ''
+          Assert-Equal $r.Code 2 'empty prompt status'
+          Assert-Match $r.Text 'Usage' 'empty prompt message'
+
+          # ---- PLAY-GODOT.bat argument and exit-status forwarding to a recording run_godot.ps1 ----
+          $godot = Join-Path $work 'godot kit'
+          New-Item -ItemType Directory -Force (Join-Path $godot 'tools') | Out-Null
+          Copy-Item tools/windows/PLAY-GODOT.bat $godot
+          @'
+          Set-Content -Encoding ascii (Join-Path (Split-Path $PSScriptRoot -Parent) 'godot-record.txt') ($args -join '|')
+          exit ([int]$env:FAKE_EXIT)
+          '@ | Set-Content -Encoding ascii (Join-Path $godot 'tools/run_godot.ps1')
+          $playGodot = Join-Path $godot 'PLAY-GODOT.bat'
+          $godotRecord = Join-Path $godot 'godot-record.txt'
+
+          $r = Invoke-Entry $playGodot
+          Assert-Equal $r.Code 0 'godot launcher status'
+          Assert-Equal (Read-Record $godotRecord) '--menu' 'godot launcher arguments'
+          Remove-Item $godotRecord
+
+          $r = Invoke-Entry $playGodot ('"' + $rom + '"')
+          Assert-Equal $r.Code 0 'godot direct status'
+          Assert-Equal (Read-Record $godotRecord) "en|--rom|$rom" 'godot direct arguments'
+          Remove-Item $godotRecord
+
+          $r = Invoke-Entry $playGodot ('"' + $rom + '" de')
+          Assert-Equal (Read-Record $godotRecord) "de|--rom|$rom" 'godot language arguments'
+          Remove-Item $godotRecord
+
+          $env:FAKE_EXIT = '7'
+          try { $r = Invoke-Entry $playGodot ('"' + $rom + '"') } finally { $env:FAKE_EXIT = $null }
+          Assert-Equal $r.Code 7 'godot failure status'
+          Assert-Match $r.Text 'status 7' 'godot failure message'
+          Write-Host 'BUILD-DQ9 and PLAY-GODOT entry points behave as specified.'
+          exit 0
       - name: Audit source-only Windows kit
         run: python tools/package_windows_kit.py --tag ci
 

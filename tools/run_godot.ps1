@@ -11,12 +11,17 @@ if ($launchArgs.Count -gt 0 -and $launchArgs[0] -in @('en', 'fr', 'de', 'es', 'i
 }
 $godot = $env:GODOT
 if (-not $godot) {
+    # BUILD-GODOT.bat downloads a checksum-verified editor here.
+    $localEditor = Join-Path $root 'build\tools\godot\Godot_v4.5-stable_win64.exe'
+    if (Test-Path $localEditor) { $godot = $localEditor }
+}
+if (-not $godot) {
     $command = Get-Command godot.exe, godot4.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) { $godot = $command.Source }
 }
-if (-not $godot -or -not (Get-Command $godot -ErrorAction SilentlyContinue)) { throw 'Install the Godot 4.5 Windows x64 editor and set GODOT to its executable (or put godot.exe on PATH).' }
+if (-not $godot -or -not (Get-Command $godot -ErrorAction SilentlyContinue)) { throw 'No Godot 4.5 editor found. Run BUILD-GODOT.bat (downloads it), or set GODOT to your Godot 4.5 Windows x64 executable.' }
 foreach ($dll in @('dq9_godot.windows.template_release.x86_64.dll', 'dsr_session.dll')) {
-    if (-not (Test-Path (Join-Path $root "godot\bin\$dll"))) { throw "Missing godot\bin\$dll; build the Windows extension first." }
+    if (-not (Test-Path (Join-Path $root "godot\bin\$dll"))) { throw "Missing godot\bin\$dll. Run BUILD-GODOT.bat first (after BUILD-DQ9.bat)." }
 }
 $rom = $env:DQ9_ROM
 $save = $env:DQ9_SAVE

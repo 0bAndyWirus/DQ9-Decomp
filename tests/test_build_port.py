@@ -245,6 +245,105 @@ class BuildPortTests(unittest.TestCase):
         self.assertIn('"my game.nds"', windows)
         self.assertNotIn("--debug-tool", windows)
 
+    def test_quiet_run_logs_everything_and_shows_the_tail_and_log_path_on_failure(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            with mock.patch.object(build_port, "ROOT", root):
+                log = build_port.configure_log()
+                try:
+                    build_port.run(sys.executable, "-c", "print('quiet-ok-line')")
+                    stderr = io.StringIO()
+                    with mock.patch.object(build_port.sys, "stderr", stderr), \
+                            self.assertRaises(build_port.subprocess.CalledProcessError) as raised:
+                        build_port.run(sys.executable, "-c", "print('boom-detail'); raise SystemExit(3)")
+                finally:
+                    build_port._LOG = None
+            self.assertEqual(raised.exception.returncode, 3)
+            text = log.read_text(encoding="utf-8")
+            self.assertIn("quiet-ok-line", text)
+            self.assertIn("boom-detail", text)
+            self.assertIn("boom-detail", stderr.getvalue())
+            self.assertIn(str(log), stderr.getvalue())
+
+    def test_quiet_run_prints_only_the_summary_line_when_asked(self):
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(build_port, "ROOT", Path(raw)):
+            build_port.configure_log()
+            out = io.StringIO()
+            try:
+                with mock.patch.object(build_port.sys, "stdout", out):
+                    build_port.run(sys.executable, "-c", "print('noise'); print('final summary')", summary=True)
+            finally:
+                build_port._LOG = None
+        self.assertEqual(out.getvalue().strip(), "final summary")
+
+    def test_pinned_downloads_are_refused_on_digest_mismatch_and_leave_nothing_behind(self):
+        def download(url, destination):
+            Path(destination).write_bytes(b"tampered")
+
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw) / "tool.zip"
+            with mock.patch.object(build_port.urllib.request, "urlretrieve", side_effect=download):
+                with self.assertRaises(SystemExit):
+                    build_port.download_verified("https://example.invalid/x", target, "sha512", "0" * 128)
+            self.assertEqual(list(Path(raw).iterdir()), [])
+            good = hashlib.sha512(b"tampered").hexdigest()
+            with mock.patch.object(build_port.urllib.request, "urlretrieve", side_effect=download) as fetch:
+                build_port.download_verified("https://example.invalid/x", target, "sha512", good)
+                build_port.download_verified("https://example.invalid/x", target, "sha512", good)
+            self.assertEqual(fetch.call_count, 1)  # a verified file is reused
+
+    def test_zip_extraction_refuses_traversal_and_links(self):
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evil = root / "evil.zip"
+            with zipfile.ZipFile(evil, "w") as bundle:
+                bundle.writestr("../escape.txt", "x")
+            with self.assertRaises(ValueError):
+                build_port.extract_zip(evil, root / "out")
+            link = root / "link.zip"
+            with zipfile.ZipFile(link, "w") as bundle:
+                info = zipfile.ZipInfo("shortcut")
+                info.external_attr = 0o120777 << 16
+                bundle.writestr(info, "target")
+            with self.assertRaises(ValueError):
+                build_port.extract_zip(link, root / "out")
+            self.assertFalse((root / "escape.txt").exists())
+            fine = root / "fine.zip"
+            with zipfile.ZipFile(fine, "w") as bundle:
+                bundle.writestr("pkg/file.txt", "ok")
+            build_port.extract_zip(fine, root / "out")
+            self.assertEqual((root / "out" / "pkg" / "file.txt").read_text(), "ok")
+
+    def test_godot_build_requires_generated_code_and_game_is_not_needed(self):
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(build_port, "GEN", Path(raw) / "gen"):
+            with self.assertRaises(SystemExit) as raised:
+                build_port.main(["--godot-only"])
+            self.assertIn("Build the game first", str(raised.exception))
+            with self.assertRaises(SystemExit):
+                build_port.main(["--godot-only", "--runtime-only"])  # conflicting modes are an argparse error
+
+    def test_progress_bar_fills_proportionally_and_never_overflows(self):
+        self.assertEqual(build_port.progress_bar(0, 100, 10), "[----------]")
+        self.assertEqual(build_port.progress_bar(50, 100, 10), "[#####-----]")
+        self.assertEqual(build_port.progress_bar(100, 100, 10), "[##########]")
+        self.assertEqual(build_port.progress_bar(150, 100, 10), "[##########]")
+        self.assertEqual(build_port.progress_bar(1, 0, 10), "[##########]")
+
+    def test_build_progress_lines_show_a_bar_when_output_is_not_a_console(self):
+        script = "print('[1/4] a'); print('[2/4] b'); print('[4/4] c')"
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(build_port, "ROOT", Path(raw)):
+            build_port.configure_log()
+            out = io.StringIO()
+            try:
+                with mock.patch.object(build_port.sys, "stdout", out):
+                    build_port.run(sys.executable, "-c", script, "--build")
+            finally:
+                build_port._LOG = None
+        self.assertIn("0%", out.getvalue())
+        self.assertIn("[##############################] 100%", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
