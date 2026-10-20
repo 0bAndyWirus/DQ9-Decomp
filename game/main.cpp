@@ -435,8 +435,12 @@ std::string language_name(std::uint8_t language) {
 int main(int argc, char** argv) {
 #if defined(_WIN32)
     SDL_SetMainReady();
-    // SDL_MAIN_HANDLED keeps a normal console entry point. Read the native
-    // command line ourselves so paths are not truncated to the Windows ACP.
+    // GUI-subsystem builds have no console. Keep diagnostics beside settings.
+    const auto log_dir = dsr::default_user_paths().config_dir;
+    std::error_code log_error;
+    std::filesystem::create_directories(log_dir, log_error);
+    if (!log_error) _wfreopen((log_dir / "runtime.log").c_str(), L"a", stderr);
+    // Read the native command line so paths are not truncated to the Windows ACP.
     int wide_argc = 0;
     std::unique_ptr<wchar_t*, decltype(&LocalFree)> wide_arguments(
         CommandLineToArgvW(GetCommandLineW(), &wide_argc), &LocalFree);
@@ -515,6 +519,25 @@ int main(int argc, char** argv) {
             return 2;
         }
         launch_options.rom_path = opt.rom;
+        if (opt.abi_config.empty()) {
+            char* base = SDL_GetBasePath();
+            opt.abi_config = dsr::find_guest_abi_config(dsr::host::path_from_utf8(base ? base : ""));
+            SDL_free(base);
+        }
+        std::error_code abi_error;
+        if (opt.abi_config.empty() || !std::filesystem::is_regular_file(opt.abi_config, abi_error)) {
+            launch_options.startup_error = "ABI.INI MISSING. RUN BUILD-DQ9.BAT WITH YOUR ROM FIRST.";
+        } else {
+            try {
+                constexpr const char* chip_names[]{"auto", "eeprom512b", "eeprom8k", "eeprom64k",
+                    "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"};
+                launch_options.backup_type = chip_names[static_cast<unsigned>(
+                    dsr::load_guest_abi_config(opt.abi_config).backup_type)];
+            } catch (const std::exception&) {
+                launch_options.startup_error = "ABI.INI INVALID. RUN BUILD-DQ9.BAT TO REBUILD.";
+            }
+        }
+        launch_options.backup_type_explicit = opt.backup_type.has_value();
         launch_options.save_path = opt.save;
         launch_options.language = language_name(opt.language);
         if (opt.backup_type) launch_options.backup_type = *opt.backup_type;
@@ -1729,3 +1752,9 @@ int main(int argc, char** argv) {
     }
     return final_save_ok && audio_dump_ok ? 0 : 1;
 }
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    return main(0, nullptr);
+}
+#endif

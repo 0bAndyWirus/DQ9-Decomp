@@ -176,11 +176,29 @@ int main() {
     assert(backup_type_label("eeprom64k") == "EEPROM 64 KB" && backup_type_label("auto") == "AUTO");
     for (const auto name : kBackupTypeNames) assert(is_backup_type_name(backup_type_label(name) == "AUTO" ? "auto" : name));
     {
-        ConfigData c = default_config();
-        c.backup_type = "eeprom64k";
-        const ConfigData back = parse_config(serialize_config(c), default_config());
-        assert(back.backup_type == "eeprom64k");
-        assert(parse_config("backup_type=bogus\n", default_config()).backup_type == "auto");   // unknown names are ignored
+        const ConfigData defaults = default_config();
+        assert(defaults.backup_type == "auto");
+        for (const auto name : kBackupTypeNames) {
+            ConfigData c = defaults;
+            c.backup_type = name;
+            const ConfigData back = parse_config(serialize_config(c), defaults);
+            assert(back.backup_type == name);
+        }
+        ConfigData inherited = defaults;
+        inherited.backup_type = "eeprom64k";
+        // Old files omit the save-chip setting: preserve the caller's baseline.
+        const auto old = parse_config("layout=2\nscale=4\nkey_0=55\n", inherited);
+        assert(old.backup_type == "eeprom64k");
+        const auto upgraded = parse_config(serialize_config(old), defaults);
+        assert(upgraded.backup_type == "eeprom64k");
+        assert(upgraded.frontend.layout == ScreenLayout::TopFocus && upgraded.frontend.window_scale == 4);
+        assert(upgraded.keycodes[0] == 55);
+        assert(parse_config("backup_type=auto\n", inherited).backup_type == "auto");
+        for (const char* text : {"backup_type=bogus\n", "backup_type=EEPROM64K\n",
+                                 "backup_type=\n", "backup_type=0\n"}) {
+            assert(parse_config(text, defaults).backup_type == "auto");
+            assert(parse_config(text, inherited).backup_type == "eeprom64k");
+        }
     }
     assert(game_language_for_locales({}) == "en");
     assert(game_language_for_locales({"fr_FR.UTF-8"}) == "fr");

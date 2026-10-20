@@ -89,6 +89,8 @@ jobs:
           @'
           #include <stdio.h>
           #include <string.h>
+          #include <stdlib.h>
+          #include <windows.h>
           int main(int argc, char **argv) {
               const char *abi;
               int status;
@@ -113,8 +115,11 @@ jobs:
               fclose(config);
               return first == 'f' ? status : 23;
           }
+          int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command, int show) {
+              return main(__argc, __argv);
+          }
           '@ | Set-Content -Encoding ascii $source
-          python -m ziglang cc $source -o (Join-Path $game 'dq9.exe')
+          python -m ziglang cc -mwindows $source -o (Join-Path $game 'dq9.exe')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $play = Join-Path $kit 'PLAY-DQ9.bat'
