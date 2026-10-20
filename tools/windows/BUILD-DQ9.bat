@@ -21,7 +21,8 @@ if errorlevel 1 goto failure_pop
 if errorlevel 1 goto failure_pop
 echo.
 echo Build complete. Keep all generated files and game binaries private.
-echo Run: PLAY-DQ9.bat "%ROM%" en
+echo Run: PLAY-DQ9.bat
+echo In the launcher, choose your ROM and set Save chip to EEPROM 64 KB for Dragon Quest IX EU.
 popd
 exit /b 0
 :usage

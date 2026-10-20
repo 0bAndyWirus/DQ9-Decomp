@@ -22,7 +22,7 @@ cd DQ9-Decomp
 python3 -m venv .venv && . .venv/bin/activate
 python -m pip install PyYAML capstone unicorn cmake ninja
 
-python tools/build_port.py --rom "/path/to/your-copy.nds"
+python tools/build_port.py --rom "/path/to/your-copy.nds" --backup-type eeprom64k
 ```
 
 Before anything slow runs, the script checks Python, the pip packages, CMake/Ninja, a C++ compiler, free disk space and the image header, and stops with a `FAIL` line naming the fix; `python tools/build_port.py --check --rom PATH` runs only those checks.
@@ -30,10 +30,13 @@ Before anything slow runs, the script checks Python, the pip packages, CMake/Nin
 The build takes about five minutes. At the end it prints the exact command to start the game, which looks like this:
 
 ```sh
-build/game/game/dq9 --rom "/path/to/your-copy.nds" --abi-config build/gen/abi.ini --language en
+build/game/game/dq9 --rom "/path/to/your-copy.nds" --abi-config build/gen/abi.ini --backup-type eeprom64k --language en
 ```
 
 The game needs the generated `build/gen/abi.ini` or it stalls on blank screens. You no longer have to pass it: when neither `--abi-config` nor `DQ9_ABI_CONFIG` is given, `dq9` (and the Godot host) use the `build/gen/abi.ini` of the tree they were built in (found next to the program or up to five folders above it) and say so on stderr. Pass `--abi-config PATH` to use another file.
+
+For a fresh European-release save, choose **EEPROM 64 KB**. The build command above writes this
+choice into your local ABI configuration; the runtime's generic Auto fallback is not sufficient.
 
 What the script does, in plain words: it unpacks your file with `dsd`, translates the game's ARM code into C++ on your machine, works out the game's internal thread layout from your own file, and compiles it with the open-source hardware runtime in this repository. Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
 
@@ -45,8 +48,11 @@ Windows builds from your own `.nds` with a **source-and-scripts kit** (no game a
 
 ```bat
 BUILD-DQ9.bat "C:\path\game.nds"
-PLAY-DQ9.bat "C:\path\game.nds" en
+PLAY-DQ9.bat
 ```
+
+In the launcher select your ROM and language, then choose **EEPROM 64 KB** under
+**ROM / SAVE → Save chip** before Launch. The choice is remembered for later launcher starts.
 
 Details, requirements and the build-time caveat are in [Building on Windows](BUILDING_WINDOWS.md). Continuous integration builds the ROM-free runtime with the same Zig toolchain on Windows and packages the kit; the generated game itself has only been cross-built on Linux. **The author has not run a game on Windows**; if you try it, please report success or failure without attaching game files.
 

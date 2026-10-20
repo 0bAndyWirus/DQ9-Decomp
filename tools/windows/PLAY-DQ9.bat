@@ -10,16 +10,16 @@ if not exist "build\game\game\dq9.exe" (
   popd
   exit /b 1
 )
-if "%~1"=="" (
-  "build\game\game\dq9.exe" --launcher --abi-config "build\gen\abi.ini"
-  set "RESULT=%errorlevel%"
-  popd
-  exit /b %RESULT%
-)
+if "%~1"=="" goto launcher
 set "ROM=%~f1"
 set "LANG=en"
 if not "%~2"=="" set "LANG=%~2"
 "build\game\game\dq9.exe" --rom "%ROM%" --abi-config "build\gen\abi.ini" --language "%LANG%"
+set "RESULT=%errorlevel%"
+popd
+exit /b %RESULT%
+:launcher
+"build\game\game\dq9.exe" --launcher --abi-config "build\gen\abi.ini"
 set "RESULT=%errorlevel%"
 popd
 exit /b %RESULT%

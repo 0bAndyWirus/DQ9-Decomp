@@ -11,6 +11,8 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Standalone Godot replay scripts:** target the standard local `build/game/game/dq9` executable (`.exe` on Windows) and change to their own bundle directory, so relative replay files work when invoked from elsewhere.
 - **Interrupted input recordings fail clearly:** an incomplete final `frame mask x y` entry now exits with status 2 instead of being silently ignored at EOF. Empty files and trailing whitespace remain valid.
 - **Readable notices in small windows:** save warnings, pause feedback and the fast-forward badge fit supported 1x/2x windows instead of losing their action text off the right edge. The renderer uses a smaller font or bounded word-wrap; long device/path text is visibly elided without per-frame heap allocation.
+- **Windows launcher failures stay failures:** no-argument `PLAY-DQ9.bat` captures the child exit status after the program returns, without delayed expansion that could corrupt `!` in paths. A real Windows CI probe exercises native failure codes and file access through paths containing spaces and `!`.
+- **First-run setup selects the right chip:** Linux examples explicitly choose EEPROM64K, and Windows build-completion/kit instructions open the launcher and ask for EEPROM 64 KB before launching. Generic runtime/ABI defaults remain unchanged.
 
 ## v0.2.7
 

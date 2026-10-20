@@ -119,10 +119,13 @@ With a separately supplied generated-code directory, the SDL host can be compile
 cmake -S . -B build/game -DCMAKE_BUILD_TYPE=Release \
   -DDQ9_GENERATED_DIR="/absolute/path/generated-code"
 cmake --build build/game --target dq9
-build/game/game/dq9 --rom "$DQ9_ROM" --save "$DQ9_SAVE"
+build/game/game/dq9 --rom "$DQ9_ROM" --save "$DQ9_SAVE" --backup-type eeprom64k
 ```
 
 Set `DQ9_ROM` to an already locally available compatible image and `DQ9_SAVE` to a writable local save path. No title-specific ABI layout is bundled: `DQ9_ABI_CONFIG` (or `--abi-config`) selects a caller-supplied local configuration.
+
+Use **EEPROM 64 KB** for a fresh European-release save (also selectable in the launcher). The
+generic Auto fallback is a flash chip and can otherwise produce a corrupt quick-save-log screen.
 
 Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_WINDOWS.md) · [Steam Deck](packaging/steamdeck/README.md). Game-host packages contain code generated from the game, so they are local-only and must never be uploaded or distributed, including to CI or GitHub releases. The project publishes no binary releases.
 
