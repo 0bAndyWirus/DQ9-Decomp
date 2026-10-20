@@ -7,10 +7,16 @@ SAVE="${DQ9_SAVE:-}"
 INPUT=""
 FRAMES=120
 CHECKPOINTS=""
+COLD_CACHE=false
+EXTENSION_BIN="${DQ9_GODOT_BIN:-$ROOT/godot/bin}"
 NATIVE="${DQ9_NATIVE:-$ROOT/build/game-fast/game/dq9}"
 usage() {
   cat <<'EOF'
 Usage: tools/godot_smoke.sh --rom PATH --save PATH --input PATH --checkpoints LIST [--frames N]
+       tools/godot_smoke.sh --cold-cache [--extension-bin PATH]
+--cold-cache runs only the ROM-free fresh-registration check,
+using a disposable source-only project (never deletes your project's .godot cache).
+--extension-bin selects existing built libraries; defaults to DQ9_GODOT_BIN or godot/bin.
 Select an already available compatible image with --rom PATH or DQ9_ROM.
 The source save (--save or DQ9_SAVE), input script and comma-separated capture
 checkpoints must be supplied. Frames default to 120 and must include every checkpoint.
@@ -21,6 +27,10 @@ EOF
 position=0
 while (($#)); do
   case "$1" in
+    --cold-cache) COLD_CACHE=true; shift ;;
+    --extension-bin)
+      (($# >= 2)) || { echo "$1 requires a value" >&2; exit 2; }
+      EXTENSION_BIN=$2; shift 2 ;;
     --rom|--save|--input|--frames|--checkpoints)
       (($# >= 2)) || { echo "$1 requires a value" >&2; usage >&2; exit 2; }
       case "$1" in
@@ -45,6 +55,28 @@ while (($#)); do
       position=$((position + 1)); shift ;;
   esac
 done
+if ! command -v "$GODOT" >/dev/null; then echo "Godot executable not found: $GODOT" >&2; exit 2; fi
+if [[ "$COLD_CACHE" == true ]]; then
+  [[ -d "$EXTENSION_BIN" ]] || { echo "Extension directory not found: $EXTENSION_BIN" >&2; exit 2; }
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/dq9-godot-cold.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+  mkdir -p "$WORK/project/tests" "$WORK/project/bin"
+  cp "$ROOT/godot/project.godot" "$ROOT/godot/dq9.gdextension" "$ROOT/godot/export_presets.cfg" "$WORK/project/"
+  cp -R "$ROOT/godot/scripts" "$ROOT/godot/scenes" "$ROOT/godot/shaders" "$WORK/project/"
+  cp "$ROOT/godot/tests/test_cold_extension.gd" "$WORK/project/tests/"
+  # Copy libraries only, not arbitrary images/saves from a local bin directory.
+  library_count=0
+  for library in "$EXTENSION_BIN"/*.so "$EXTENSION_BIN"/*.dll "$EXTENSION_BIN"/*.dylib; do
+    [[ -f "$library" ]] || continue
+    cp "$library" "$WORK/project/bin/"
+    library_count=$((library_count + 1))
+  done
+  ((library_count > 0)) || { echo "No extension libraries found: $EXTENSION_BIN" >&2; exit 2; }
+  [[ ! -e "$WORK/project/.godot" ]]
+  "$GODOT" --version
+  "$GODOT" --headless --path "$WORK/project" --script res://tests/test_cold_extension.gd
+  exit 0
+fi
 if [[ -z "$ROM" || -z "$SAVE" || -z "$INPUT" || -z "$CHECKPOINTS" ]]; then
   echo "--rom/DQ9_ROM, --save/DQ9_SAVE, --input and --checkpoints are required" >&2
   exit 2
@@ -59,7 +91,6 @@ IFS=, read -r -a checkpoint_frames <<<"$CHECKPOINTS"
 for checkpoint in "${checkpoint_frames[@]}"; do
   ((checkpoint < FRAMES)) || { echo "Checkpoint $checkpoint must be below --frames $FRAMES" >&2; exit 2; }
 done
-if ! command -v "$GODOT" >/dev/null; then echo "Godot executable not found: $GODOT" >&2; exit 2; fi
 # ROM-free host regressions are part of the same gate as exact emulation.
 "$GODOT" --headless --path "$ROOT/godot" --script res://tests/test_extension_lifecycle.gd
 "$GODOT" --headless --path "$ROOT/godot" --script res://tests/test_logic.gd

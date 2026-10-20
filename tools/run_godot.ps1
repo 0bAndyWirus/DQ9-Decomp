@@ -46,13 +46,9 @@ if (-not $menu) { $commandArgs += '--autostart' }
 $commandArgs += $launchArgs
 Push-Location $root
 try {
-    # A clean package has no .godot import cache or extension registration.
-    $project = Join-Path $root 'godot'
-    if (-not (Test-Path (Join-Path $project '.godot\extension_list.cfg'))) {
-        & $godot --headless --editor --path $project --import
-        if ($LASTEXITCODE -ne 0) { throw "Godot resource/extension import failed ($LASTEXITCODE)." }
-    }
-    & $godot @commandArgs
+    # main.gd explicitly loads the extension on a cold project; no editor import is needed.
+    try { & $godot @commandArgs }
+    catch { throw "Could not start Godot executable '$godot'. Run BUILD-GODOT.bat or set GODOT to a working Godot 4.5 Windows x64 executable. $($_.Exception.Message)" }
     $code = $LASTEXITCODE
 } finally { Pop-Location }
 exit $code

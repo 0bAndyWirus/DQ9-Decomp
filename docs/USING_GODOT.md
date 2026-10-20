@@ -20,7 +20,7 @@ Output goes to the terminal as short steps; the full log is `build\build-log.txt
 
 ## 2. Start it
 
-Double-click **`PLAY-GODOT.bat`**. The first start imports the project once (a few seconds, needs a writable kit folder), then the launcher opens.
+Double-click **`PLAY-GODOT.bat`**. It opens the launcher directly, including on a clean project: the app loads its extension explicitly, without a first-start editor import or `.godot` cache. A normal cold launch with the real extension and rendered game frames has been checked on Linux with Godot 4.5; **the Windows game launch remains unverified**. ROM-free Windows CI checks the launcher process and argument forwarding, not the game.
 
 - **Launcher:** press **Browse** and choose your `.nds`, pick the language, then **Start**. The ROM path, language, layout, volume and key bindings are remembered in Godot's `user://settings.cfg`.
 - **Direct start:** `PLAY-GODOT.bat "C:\path\game.nds" fr` starts the game at once. The language argument is optional and defaults to `en`.
@@ -72,7 +72,7 @@ In settings, set the 3D renderer to **GPU hi-res (experimental)** and pick a sca
 | Start shows an extension error | The DLL was built with a different Godot version or is missing; rebuild with `BUILD-GODOT.bat` and use Godot 4.5. |
 | Blank screens | `build\gen\abi.ini` is missing; rerun `BUILD-DQ9.bat`. |
 | Stalls at "quick save log is corrupted" | Set **Save chip** to **EEPROM 64 KB** and use a fresh save (see above). |
-| Import fails | The kit folder must be writable; do not run from inside the ZIP or a protected folder. |
+| "Could not start Godot executable" | Rerun `BUILD-GODOT.bat`, or set `GODOT` to a working Godot 4.5 Windows x64 executable. Launch directly; an editor import is not a prerequisite. |
 
 The build log is `build\build-log.txt`. Do not post it publicly without reading it: it contains local paths.
 
@@ -83,3 +83,67 @@ From the pause panel you can capture a note: a frame-indexed input history, the 
 ## Linux
 
 Build the extension with `python tools/build_port.py --rom PATH --godot` (or `--godot-only` after a game build), then run `tools/run_godot.sh --menu`. The binding checkout is downloaded and verified the same way. Windows is the platform this guide targets; Godot support on Windows has not been run end to end by the author.
+
+## Local Windows Desktop export (experimental)
+
+The tracked **Windows Desktop** preset targets **x86_64**, with a separate PCK.
+Build the Windows extension first with `BUILD-GODOT.bat`. Confirm that
+`godot/bin/` contains both
+`dq9_godot.windows.template_release.x86_64.dll` and `dsr_session.dll`.
+The extension descriptor registers the session DLL as a Windows dependency;
+the preset also includes `bin/*.dll`. Do not rename either library.
+
+1. Use a matching Godot editor and export templates (the extension is built with
+   Godot 4.5 bindings). Install the matching templates yourself through the
+   editor's **Manage Export Templates** dialog. The repository neither downloads
+   nor pins export templates.
+2. Keep your image, extracted files and saves **outside** the `godot/` project.
+   Review the project folder before exporting: only original host resources and
+   the locally built libraries belong there. The presets exclude common game
+   image/save patterns (`*.nds`, `*.srl`, `*.rom`, `*.iso`, `*.bin`, `*.sav`,
+   `*.sav.*`, `*.dsv`, `*.dsv.*`) and standalone tests. Filters are not a content
+   scanner; a renamed private file still must never enter the project.
+3. Open `godot/project.godot`, choose **Project > Export > Windows Desktop**,
+   then **Export Project**, or run locally:
+
+   ```powershell
+   & 'C:\path\Godot.exe' --headless --path godot --export-release 'Windows Desktop' 'C:\local-output\dq9-godot.exe'
+   ```
+
+4. Keep the executable, PCK and exported DLLs together. Select your external
+   image/save in the launcher. The European release still requires EEPROM 64 KB
+   for a fresh save. Export does not bundle an image, save or ABI configuration.
+
+**Windows export and the exported game have not been verified on Windows.**
+The preset was parsed on Linux by Godot 4.5's Windows export dry run in a
+source-only probe project; it stopped with the expected missing-template error.
+This is not evidence of a completed Windows export. Generated game code and
+binaries remain local: do not publish the export, even if its project resources
+contain no image or save.
+
+### ROM-free cold-cache extension check (Linux)
+
+With an already built Linux extension and a Godot 4.5 editor:
+
+```sh
+GODOT=/path/to/Godot_v4.5-stable_linux.x86_64 \
+  tools/godot_smoke.sh --cold-cache --extension-bin /path/to/godot/bin
+```
+
+`--extension-bin` defaults to `DQ9_GODOT_BIN`, then this checkout's `godot/bin`.
+The command copies only host sources and library files into a disposable project
+with **no `.godot/` directory**, explicitly loads the real GDExtension, creates a
+`DqMachine`, and checks its image bindings. It uses no image or save and leaves
+the checkout's import cache untouched. Dynamically linked session libraries must
+remain accessible through the extension's normal loader paths.
+Success prints the editor version and
+`PASS: cold-cache extension loaded; DqMachine created; image bindings available`.
+The standalone test rejects pre-registered classes so a warm cache cannot
+silently substitute for the fresh-registration check.
+
+This runtime check is separate from editor import and export validation.
+No abort is accepted as success. Cold headless editor import can abort (observed
+with Godot 4.7.2, upstream [#111645](https://github.com/godotengine/godot/issues/111645));
+a Linux 4.5 import with the existing extension also aborted during shutdown,
+although its standalone cold-cache check passed. Do not treat this as a passing
+editor-import gate or broaden crash tolerances.
