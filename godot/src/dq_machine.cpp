@@ -296,6 +296,13 @@ public:
         out["textures_cached"] = 0;
         return out;
     }
+    // Cartridge save chip name as `--backup-type` ("auto", "eeprom64k", ...); call before load_game.
+    // An unknown name makes load_game report the error.
+    void set_backup_type(const godot::String& name) {
+        std::lock_guard lock(mutex_);
+        backup_type_ = name.utf8().get_data();
+    }
+    godot::String get_backup_type() const { return godot::String::utf8(backup_type_.c_str()); }
     void set_rtc_epoch(std::int64_t epoch_seconds, int timezone_offset_minutes) {
         std::lock_guard lock(mutex_);
         if (loaded_ || timezone_offset_minutes < -840 || timezone_offset_minutes > 840) return;
@@ -474,6 +481,8 @@ protected:
                                    &DqMachine::start_replay, DEFVAL(false));
         godot::ClassDB::bind_method(godot::D_METHOD("cancel_replay"), &DqMachine::cancel_replay);
         godot::ClassDB::bind_method(godot::D_METHOD("get_replay_hashes"), &DqMachine::get_replay_hashes);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_backup_type", "name"), &DqMachine::set_backup_type);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_backup_type"), &DqMachine::get_backup_type);
         godot::ClassDB::bind_method(godot::D_METHOD("set_rtc_epoch", "epoch_seconds", "timezone_offset_minutes"), &DqMachine::set_rtc_epoch);
         godot::ClassDB::bind_method(godot::D_METHOD("set_buttons", "mask"), &DqMachine::set_buttons);
         godot::ClassDB::bind_method(godot::D_METHOD("set_touch", "x", "y", "down"), &DqMachine::set_touch);
@@ -724,6 +733,7 @@ private:
         config.deterministic_rtc = static_cast<std::uint8_t>(deterministic_rtc_);
         config.rtc_epoch_seconds = rtc_epoch_seconds_;
         config.rtc_timezone_offset_minutes = rtc_timezone_offset_minutes_;
+        config.backup_type = backup_type_.c_str();
         char error[512]{};
         session_ = dsr_session_create(&config, error, sizeof(error));
         if (!session_) {
@@ -987,6 +997,7 @@ private:
     std::vector<ReplayHash> replay_hashes_;
     std::uint8_t language_ = 1;
     bool deterministic_rtc_ = false;
+    std::string backup_type_;
     std::int64_t rtc_epoch_seconds_ = 0;
     std::int32_t rtc_timezone_offset_minutes_ = 0;
     std::thread owner_thread_;

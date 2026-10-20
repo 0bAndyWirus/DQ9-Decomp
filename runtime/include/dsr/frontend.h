@@ -107,6 +107,7 @@ struct FrontendConfig {
 struct LauncherOptions {
     FrontendConfig frontend;
     std::string language = "en";
+    std::string backup_type = "auto"; // cartridge save chip name (see --backup-type); "auto" = not forced
     std::filesystem::path rom_path;
     std::filesystem::path save_path;
     bool debug_tool = false;

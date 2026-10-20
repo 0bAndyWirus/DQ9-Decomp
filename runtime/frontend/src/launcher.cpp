@@ -268,7 +268,7 @@ private:
     void move_focus(int delta) {
         if (text_field_ >= 0) return;
         if (page_ == 0) { adjust(delta); return; } // the language page is a single choice list
-        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 3 : page_ == kHotkeyPage ? kHotkeyCount + 1 : kOptionCount;
+        const int count = page_ == 0 ? 1 : page_ == 1 ? 13 : page_ == 2 ? 4 : page_ == kHotkeyPage ? kHotkeyCount + 1 : kOptionCount;
         focus_ = (focus_ + delta + count) % count;
     }
     void adjust(int delta) {
@@ -293,6 +293,7 @@ private:
             default: toggle_option(); break;
             }
         } else if (page_ == 2 && focus_ == 2) detect_paths();
+        else if (page_ == 2 && focus_ == 3) config_.backup_type = frontend_detail::cycle_backup_type(config_.backup_type, delta);
     }
     void activate() {
         if (page_ == 0) adjust(1);
@@ -304,7 +305,8 @@ private:
                 text_field_ = focus_;
                 text_buffer(text_field_).set(focus_ == 0 ? config_.rom_path : config_.save_path);
                 SDL_StartTextInput();
-            } else detect_paths();
+            } else if (focus_ == 3) adjust(1);
+            else detect_paths();
         } else if (page_ == kHotkeyPage) {
             if (focus_ == kHotkeyCount) reset_hotkeys();
             else { pending_bind_ = focus_; bind_side_ = 0; }
@@ -407,7 +409,10 @@ private:
         }
         if (page_ == 2 && y >= 186 && y < 244) { focus_ = 0; activate(); return; }
         if (page_ == 2 && y >= 298 && y < 356) { focus_ = 1; activate(); return; }
-        if (page_ == 2 && y >= 405 && y < 465) { focus_ = 2; detect_paths(); return; }
+        if (page_ == 2 && y >= 405 && y < 465) {
+            if (x >= 470) { focus_ = 3; adjust(1); } else { focus_ = 2; detect_paths(); }
+            return;
+        }
         if (page_ == 3 && y >= 147 && y < 147 + kOptionCount * kOptionPitch) {
             focus_ = (y - 147) / kOptionPitch;
             if (focus_ == 2 || focus_ == 3 || focus_ == 4 || focus_ == 6 || focus_ == 7 ||
@@ -498,9 +503,12 @@ private:
         canvas_.text(86, 274, "SAVE FILE", kMuted, 1);
         canvas_.button({86, 298, 852, 58}, save_display, focus_ == 1, true);
         canvas_.button({86, 405, 360, 54}, "AUTO-DETECT ROM / ENV", focus_ == 2);
+        canvas_.button({470, 405, 468, 54}, "SAVE CHIP: " + frontend_detail::backup_type_label(config_.backup_type), focus_ == 3);
         canvas_.text(86, 490, "ROM PATH MAY ALSO COME FROM THE DQ9_ROM ENVIRONMENT VARIABLE.", kMuted, 1);
         canvas_.text(86, 518, "THE DEFAULT SAVE IS <USER DATA DIRECTORY>/dq9.sav.", kMuted, 1);
-        if (text_field_ >= 0) canvas_.text(86, 566, "EDIT TEXT; ENTER TO ACCEPT; ESC TO CANCEL.", UiColor{134, 216, 255, 255}, 1);
+        canvas_.text(86, 546, "SAVE CHIP AUTO USES THE BUILD'S SETTING OR THE SAVE FILE SIZE. IF THE TITLE SAYS", kMuted, 1);
+        canvas_.text(86, 574, "THE QUICK SAVE LOG IS CORRUPTED, CHOOSE EEPROM 64 KB.", kMuted, 1);
+        if (text_field_ >= 0) canvas_.text(86, 622, "EDIT TEXT; ENTER TO ACCEPT; ESC TO CANCEL.", UiColor{134, 216, 255, 255}, 1);
     }
     // One-line readiness check next to the Launch button, so a missing ROM is visible before
     // launching rather than as an error afterwards. Re-checked only when the path changes.
@@ -604,6 +612,8 @@ bool run_sdl_launcher(LauncherOptions& options) {
     }
     if (!options.rom_path.empty()) config.rom_path = host::path_to_utf8(options.rom_path);
     if (!options.save_path.empty()) config.save_path = host::path_to_utf8(options.save_path);
+    if (frontend_detail::is_backup_type_name(options.backup_type) && options.backup_type != "auto")
+        config.backup_type = options.backup_type;
     if (options.debug_tool) config.debug_tool = true;
     if (config.rom_path.empty()) {
         if (auto detected = detect_rom(); !detected.empty()) config.rom_path = host::path_to_utf8(detected);
@@ -651,6 +661,7 @@ bool run_sdl_launcher(LauncherOptions& options) {
     write_config(paths, config);
     options.frontend = config.frontend;
     options.language = config.language;
+    options.backup_type = config.backup_type;
     options.rom_path = host::path_from_utf8(config.rom_path);
     options.save_path = host::path_from_utf8(config.save_path);
     options.debug_tool = config.debug_tool;

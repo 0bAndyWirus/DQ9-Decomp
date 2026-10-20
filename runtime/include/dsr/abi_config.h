@@ -65,4 +65,9 @@ GuestAbiConfig load_guest_abi_config(const std::filesystem::path& path);
 BackupType parse_backup_type(std::string_view name);
 std::filesystem::path guest_abi_config_path_from_environment();
 
+// Locates the locally generated configuration when neither a flag nor DQ9_ABI_CONFIG names one: `abi.ini`
+// next to `start`, else `build/gen/abi.ini` in `start` or up to five parent folders (an executable inside the
+// build tree of the repository that produced it). Empty if nothing is found.
+std::filesystem::path find_guest_abi_config(const std::filesystem::path& start);
+
 } // namespace dsr

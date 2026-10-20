@@ -33,7 +33,7 @@ The build takes about five minutes. At the end it prints the exact command to st
 build/game/game/dq9 --rom "/path/to/your-copy.nds" --abi-config build/gen/abi.ini --language en
 ```
 
-`--abi-config` is required: without it the game stalls on blank screens. The build creates that file for you (`build/gen/abi.ini`).
+The game needs the generated `build/gen/abi.ini` or it stalls on blank screens. You no longer have to pass it: when neither `--abi-config` nor `DQ9_ABI_CONFIG` is given, `dq9` (and the Godot host) use the `build/gen/abi.ini` of the tree they were built in (found next to the program or up to five folders above it) and say so on stderr. Pass `--abi-config PATH` to use another file.
 
 What the script does, in plain words: it unpacks your file with `dsd`, translates the game's ARM code into C++ on your machine, works out the game's internal thread layout from your own file, and compiles it with the open-source hardware runtime in this repository. Protected overlay code is resolved from your own image with `tools/unwrap_protected_overlay.py`. This is a form of circumventing the cartridge's code protection; it works only on your own file and nothing derived from it is distributed. Whether that is permitted where you live is your responsibility; see [LEGAL.md](../LEGAL.md).
 
@@ -99,7 +99,7 @@ The European release contains English, French, German, Spanish and Italian. Pass
 - `cannot use ...: does not look like a Nintendo DS image` / `image is truncated`: the file is not a complete DS image (wrong file, partial copy). The launcher shows the same warning next to Launch.
 - `The existing workspace ... was extracted from a different image` (or `has no record of the image`): the build keeps the extracted data of one image under `extracted/workspace`. To build a different image, or one extracted by an older script version, run the printed `python tools/build_port.py --rebuild-workspace --rom ...` command; it removes only the tool's own `extract`, `config` and `build` folders there and the generated code, never your image or other folders.
 - Title screen says **"The quick save log is corrupted"** on a fresh save: the emulated cartridge backup chip does not match the one the game expects. Without a hint the runtime assumes a 512 KB flash chip (or infers the chip from the size of an existing save file). For this release use the 64 KB EEPROM setting: run `dq9 ... --backup-type eeprom64k`, or add `[cartridge]` / `backup_type = eeprom64k` to `build/gen/abi.ini` (or build with `python tools/build_port.py --rom ... --backup-type eeprom64k`). The save file size changes with the chip, so the old save is ignored and kept as `dq9.sav.bak` on the next save. Valid names: `auto`, `eeprom512b`, `eeprom8k`, `eeprom64k`, `eeprom128k`, `flash256k`, `flash512k`, `flash1m`, `flash8m`.
-- Blank screens: you forgot `--abi-config build/gen/abi.ini`.
+- Blank screens: the generated `abi.ini` was not found. Run the program from inside the repository's build tree, or pass `--abi-config build/gen/abi.ini` (Godot: set `DQ9_ABI_CONFIG`).
 - Anything else: open an issue with your OS, compiler version and the last 30 lines of output. **Do not attach game files, saves or screenshots of the game.**
 
 ## Developers: runtime tests without a game

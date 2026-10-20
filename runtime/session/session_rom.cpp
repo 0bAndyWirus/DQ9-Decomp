@@ -17,6 +17,8 @@ Session::Session(const SessionConfig& config)
           const auto abi_path = config.abi_config_path.empty()
               ? guest_abi_config_path_from_environment() : config.abi_config_path;
           machine.guest_abi = load_guest_abi_config(abi_path);
+          if (!config.backup_type.empty() && config.backup_type != "auto")
+              machine.guest_abi.backup_type = parse_backup_type(config.backup_type); // throws on an unknown name
           machine.arm9_table = gen_table_arm9();
           machine.arm7_table = gen_table_arm7();
           machine.arm9_regions = gen_dispatch_regions_arm9();
