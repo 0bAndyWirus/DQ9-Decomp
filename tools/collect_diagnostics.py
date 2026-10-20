@@ -37,7 +37,8 @@ def check_name(name: str) -> None:
 
 
 def redact(text: str, root: Path, homes: list[str] | None = None) -> str:
-    paths = [(str(root.resolve()), "<KIT>")]
+    # Windows temp paths may use an 8.3 alias; redact both spellings.
+    paths = [(str(root.absolute()), "<KIT>"), (str(root.resolve()), "<KIT>")]
     paths += [(value, "<HOME>") for value in (homes if homes is not None else
               [str(Path.home()), os.environ.get("USERPROFILE", ""), os.environ.get("HOME", "")]) if value]
     # Longest first so a kit nested under the profile retains the more useful label.
@@ -199,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path,
                         help="optional destination for inspecting a read-only kit (default: kit folder)")
     args = parser.parse_args(argv)
-    root = args.kit_dir.resolve()
+    root = args.kit_dir.absolute()
     output = (args.output_dir or root) / ("diagnostics-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".zip")
     try:
         write_archive(output, collect(root))
