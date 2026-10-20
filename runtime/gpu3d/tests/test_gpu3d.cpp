@@ -2385,6 +2385,24 @@ void test_shade_pixel_matches_reference() {
         ok &= dsr::gpu3d_detail::Gpu3DTestAccess::shade_pixel(gpu, polygon, color, u, v) ==
               reference_shade(source.view(), polygon, color, u, v, highlight, toon);
     }
+    // A5I3 supplies every texture alpha without interpolation. Compare all
+    // polygon-attribute/texture-alpha pairs against the original six-bit path.
+    source.palettes[0][2] = 0xFFU;
+    source.palettes[0][3] = 0x7FU;
+    for (unsigned a = 0; a < 32; ++a) source.textures[0][a] = (a << 3U) | 1U;
+    gpu.io_write(0x04000060U, 1U, 16);
+    for (unsigned mode : {0U, 2U}) {
+        for (unsigned a = 0; a < 32; ++a) {
+            dsr::Gpu3DPolygon polygon{};
+            polygon.attr = (a << 16U) | (mode << 4U);
+            polygon.texture = (6U << 26U) | (2U << 20U);
+            for (unsigned t = 0; t < 32; ++t) {
+                const std::array<float, 3> color{17.0F, 39.0F, 63.0F};
+                ok &= dsr::gpu3d_detail::Gpu3DTestAccess::shade_pixel(gpu, polygon, color, t, 0) ==
+                      reference_shade(source.view(), polygon, color, t, 0, false, toon);
+            }
+        }
+    }
     if (!check(ok, "generic shading matches original across all modes, alphas and texture formats")) std::exit(1);
 }
 
