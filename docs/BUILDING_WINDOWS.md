@@ -29,7 +29,7 @@ For a fresh European-release save, choose **EEPROM 64 KB** on the launcher's
 **ROM / SAVE → Save chip** control before Launch. The direct ROM/language form
 uses the generated ABI configuration's chip rather than the launcher's saved choice.
 The build creates `.venv`, installs the Python dependencies and Zig, downloads
-ds-decomp with a pinned SHA-256 check and the official SDL2 SDK, then generates
+ds-decomp and the official SDL2 SDK with pinned SHA-256 checks, then generates
 and compiles code from your own dump. It can take 30–90 minutes; this Windows
 build time has not been measured by the author. The launcher supplies the generated
 `build\gen\abi.ini` and does not enable the debug tool.
