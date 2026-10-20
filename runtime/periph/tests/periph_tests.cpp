@@ -251,6 +251,20 @@ void test_previous_save_backup(const std::filesystem::path& rom, const std::file
     }
 }
 
+void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
+                                         const std::filesystem::path& save_dir) {
+    // The save's parent "folder" is a regular file, so the file can never be created.
+    const auto blocker = save_dir / "blocker";
+    { std::ofstream(blocker, std::ios::binary) << "x"; }
+    const auto save = blocker / "x.sav";
+    dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+    assert(card.flush_save());                       // nothing dirty yet: nothing to write
+    (void)aux_transfer(card, {0x06});
+    (void)aux_transfer(card, {0x02, 0x01, 0x22});
+    assert(!card.flush_save());                      // reports failure instead of throwing
+    assert(!card.flush_save());                      // still dirty, still failing, still no throw
+}
+
 void test_larger_eeproms(const std::filesystem::path& rom,
                          const std::filesystem::path& save_dir) {
     const auto check = [&](dsr::BackupType type, const std::vector<std::uint8_t>& write,
@@ -465,6 +479,7 @@ int main() {
     test_card_rom_and_chip_id(rom, temp.path / "card.sav");
     test_card_low_address_alias(card_alias_rom, temp.path / "card-alias.sav");
     test_backup_eeprom(rom, temp.path / "eeprom.sav");
+    test_unwritable_save_does_not_throw(rom, temp.path);
     test_larger_eeproms(rom, temp.path);
     test_previous_save_backup(rom, temp.path / "previous.sav");
     test_backup_flash_round_trip(rom, temp.path / "saves" / "nested" / "flash.sav");

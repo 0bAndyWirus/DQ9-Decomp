@@ -103,8 +103,9 @@ bool Session::compose_both_hires(std::uint32_t* out, int scale) const {
     return true;
 }
 
-void Session::flush_save() {
-    if (GameCard* card = machine_.game_card()) card->flush_save();
+bool Session::flush_save() {
+    if (GameCard* card = machine_.game_card()) return card->flush_save();
+    return true;
 }
 
 } // namespace dsr
