@@ -81,6 +81,7 @@ func _parse_args() -> void:
 			"--rom": if i+1 < args.size(): settings.rom_path = args[i+1]
 			"--save": if i+1 < args.size(): settings.save_path = args[i+1]
 			"--language": if i+1 < args.size(): settings.language = args[i+1].to_lower()
+			"--backup-type": if i+1 < args.size(): settings.backup_type = args[i+1].to_lower()
 			"--autostart": _ui.autostart = true
 
 func _build_ui() -> void:
@@ -191,6 +192,14 @@ func _make_settings() -> PanelContainer:
 	lang.select(maxi(0,LANGS.find(settings.language)))
 	lang_row.add_child(lang)
 	_ui.lang=lang
+	var chip_row:=HBoxContainer.new(); col.add_child(chip_row)
+	var chip_label:=Label.new(); chip_label.text="Save chip"; chip_label.custom_minimum_size.x=110; chip_row.add_child(chip_label)
+	var chip:=OptionButton.new(); chip.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	for text in Logic.BACKUP_LABELS: chip.add_item(text)
+	chip.select(maxi(0,Logic.BACKUP_TYPES.find(settings.backup_type)))
+	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
+	chip_row.add_child(chip)
+	_ui.chip=chip
 	_section(col,"Display")
 	var options:=HBoxContainer.new(); col.add_child(options)
 	var layoutbox:=OptionButton.new()
@@ -245,7 +254,7 @@ func _make_settings() -> PanelContainer:
 	start.add_theme_stylebox_override("normal",start_style)
 	var start_hover:=start_style.duplicate() as StyleBoxFlat; start_hover.bg_color=Color(0.17,0.52,0.37); start.add_theme_stylebox_override("hover",start_hover)
 	start.add_theme_font_size_override("font_size",20)
-	start.pressed.connect(func():settings.rom_path=rom.text;settings.save_path=save.text;settings.language=LANGS[lang.selected];_persist();_start_game()); buttons.add_child(start)
+	start.pressed.connect(func():settings.rom_path=rom.text;settings.save_path=save.text;settings.language=LANGS[lang.selected];settings.backup_type=Logic.BACKUP_TYPES[chip.selected];_persist();_start_game()); buttons.add_child(start)
 	var close:=Button.new(); close.text="Close"; close.pressed.connect(_hide_settings); buttons.add_child(close)
 	var reviewer := Button.new(); reviewer.text = "Issue reviewer… (F7)"; reviewer.pressed.connect(_open_issue_reviewer); buttons.add_child(reviewer)
 	return panel
@@ -345,6 +354,7 @@ func _start_game() -> void:
 		var timezone := Time.get_time_zone_from_system()
 		machine.set_rtc_epoch(int(Time.get_unix_time_from_system()), int(timezone.get("bias", 0)))
 	var actual_save_path := ProjectSettings.globalize_path(settings.save_path)
+	if machine.has_method("set_backup_type"): machine.set_backup_type(settings.backup_type)
 	var result: String = machine.load_game(settings.rom_path, actual_save_path, Logic.firmware_language(settings.language))
 	if not result.is_empty():
 		push_error(result)

@@ -5,7 +5,7 @@ const BUTTON_ACTIONS := ["ds_a", "ds_b", "ds_x", "ds_y", "ds_start", "ds_select"
 const BUTTON_BITS := [0, 1, 10, 11, 3, 2, 6, 7, 5, 4, 9, 8]
 const BUTTONS := BUTTON_ACTIONS
 const LAYOUTS := ["Vertical", "Horizontal", "Top Focus", "Bottom Focus", "Single Top", "Single Bottom", "Merged Overlay"]
-const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "renderer_gpu3d":0, "gpu3d_scale":3, "issue_show_auto":false}
+const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "renderer_gpu3d":0, "gpu3d_scale":3, "issue_show_auto":false}
 
 static func button_mask(pressed_actions: Array) -> int:
 	var mask := 0
@@ -63,12 +63,16 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 			result[1] = Rect2(pos, size)
 	return result
 
-# DS firmware language ids as used by the SDL frontend: en=1 fr=2 de=3 it=4 es=5 (not the launcher list order).
+# Cartridge save chip names, as the native `--backup-type`; "auto" leaves the choice to the build/save size.
+const BACKUP_TYPES := ["auto", "eeprom64k", "eeprom8k", "eeprom512b", "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"]
+const BACKUP_LABELS := ["Auto", "EEPROM 64 KB", "EEPROM 8 KB", "EEPROM 512 B", "EEPROM 128 KB", "Flash 256 KB", "Flash 512 KB", "Flash 1 MB", "Flash 8 MB"]
+
 # First-run game language from the OS language (the European release ships en/fr/de/es/it).
 static func language_for_locale(locale: String) -> String:
 	var code := locale.to_lower().split("_")[0].split("-")[0]
 	return code if code in ["en", "fr", "de", "es", "it"] else "en"
 
+# DS firmware language ids as used by the SDL frontend: en=1 fr=2 de=3 it=4 es=5 (not the launcher list order).
 static func firmware_language(code: String) -> int:
 	return {"en": 1, "fr": 2, "de": 3, "it": 4, "es": 5}.get(code.to_lower(), 1)
 
@@ -94,6 +98,7 @@ static func load_settings(path: String) -> Dictionary:
 		return values
 	for key in DEFAULTS: values[key] = cfg.get_value("settings", key, DEFAULTS[key])
 	values["language"] = values["language"] if values["language"] in ["en", "fr", "de", "es", "it"] else "en"
+	values["backup_type"] = values["backup_type"] if values["backup_type"] in BACKUP_TYPES else "auto"
 	values["layout"] = clampi(int(values["layout"]), 0, 6)
 	values["renderer_gpu3d"] = clampi(int(values["renderer_gpu3d"]), 0, 1)
 	values["gpu3d_scale"] = clampi(int(values["gpu3d_scale"]), 2, 6)

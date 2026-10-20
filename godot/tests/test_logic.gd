@@ -15,6 +15,8 @@ func _run() -> void:
 	assert(layouts[4][0].size.x>0 and layouts[4][1].size==Vector2.ZERO)
 	assert(layouts[5][0].size==Vector2.ZERO and layouts[5][1].size.x>0)
 	assert(layouts[6][0].size.x>0 and layouts[6][1].size.x>0)
+	assert(Logic.BACKUP_TYPES.size() == Logic.BACKUP_LABELS.size() and Logic.BACKUP_TYPES[0] == "auto")
+	assert("eeprom64k" in Logic.BACKUP_TYPES and "flash512k" in Logic.BACKUP_TYPES)
 	assert(Logic.language_for_locale("fr_FR") == "fr" and Logic.language_for_locale("de-AT") == "de")
 	assert(Logic.language_for_locale("it") == "it" and Logic.language_for_locale("ES_mx") == "es")
 	assert(Logic.language_for_locale("ja_JP") == "en" and Logic.language_for_locale("") == "en")

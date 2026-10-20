@@ -19,6 +19,7 @@ struct SessionConfig {
     std::int64_t rtc_epoch_seconds = 0;
     std::int32_t rtc_timezone_offset_minutes = 0;
     std::filesystem::path abi_config_path; // empty: use DQ9_ABI_CONFIG, if set
+    std::string backup_type;               // cartridge save chip name (--backup-type); empty or "auto": from the ABI config / save size
 };
 
 class Session {

@@ -59,6 +59,7 @@ extern "C" dsr_session_handle* dsr_session_create(const dsr_session_config* conf
         native.deterministic_rtc = config->deterministic_rtc != 0;
         native.rtc_epoch_seconds = config->rtc_epoch_seconds;
         native.rtc_timezone_offset_minutes = config->rtc_timezone_offset_minutes;
+        if (config->backup_type) native.backup_type = config->backup_type;
         return new dsr_session_handle(native);
     } catch (const std::exception& error) {
         set_error(error_out, error_capacity, error.what());

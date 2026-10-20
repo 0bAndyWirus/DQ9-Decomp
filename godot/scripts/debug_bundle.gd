@@ -53,10 +53,13 @@ static func save_note(machine: Node, directory: String, note: String, frame: int
 	state_file.close()
 	var replay_binary := ProjectSettings.globalize_path("res://../build/game-fast/game/dq9")
 	var absolute_rom := ProjectSettings.globalize_path(rom_path)
+	# The save chip decides the save file layout, so the replay must use the same one.
+	var chip: String = machine.get_backup_type() if machine and machine.has_method("get_backup_type") else ""
+	var chip_argument := "" if chip.is_empty() or chip == "auto" else " --backup-type " + _shell_quote(chip)
 	var replay := FileAccess.open(directory.path_join("replay.sh"), FileAccess.WRITE)
 	if replay == null: return "cannot write replay.sh"
-	replay.store_string("#!/bin/sh\nset -eu\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nOUT=\"$SCRIPT_DIR/replay_out\"\nmkdir -p \"$OUT\"\ncp \"$SCRIPT_DIR/session_start.sav\" \"$OUT/replay.sav\"\nexec %s --rom %s --save 'replay_out/replay.sav' --language %s --rtc-epoch %d --rtc-timezone-offset %d --headless --frames %d --input-script 'session_input.txt' --dump-frames %d --dump-dir 'replay_out' --dump-audio 'replay_out/audio.wav'\n" % [
-		_shell_quote(replay_binary), _shell_quote(absolute_rom), _shell_quote(language), rtc_epoch, rtc_offset, frame + 1, frame])
+	replay.store_string("#!/bin/sh\nset -eu\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nOUT=\"$SCRIPT_DIR/replay_out\"\nmkdir -p \"$OUT\"\ncp \"$SCRIPT_DIR/session_start.sav\" \"$OUT/replay.sav\"\nexec %s --rom %s --save 'replay_out/replay.sav' --language %s%s --rtc-epoch %d --rtc-timezone-offset %d --headless --frames %d --input-script 'session_input.txt' --dump-frames %d --dump-dir 'replay_out' --dump-audio 'replay_out/audio.wav'\n" % [
+		_shell_quote(replay_binary), _shell_quote(absolute_rom), _shell_quote(language), chip_argument, rtc_epoch, rtc_offset, frame + 1, frame])
 	replay.close()
 	var env := FileAccess.open(directory.path_join("env.txt"), FileAccess.WRITE)
 	env.store_string("rom_path: %s\nsave_path: %s\nlanguage: %s\nrtc_epoch: %d\nrtc_timezone_offset_minutes: %d\n" % [absolute_rom, current_save_path, language, rtc_epoch, rtc_offset])
