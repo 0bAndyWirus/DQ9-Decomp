@@ -18,6 +18,8 @@ FORBIDDEN_SUFFIXES = {".nds", ".sav", ".bin", ".exe", ".dll"}
 ROOT_FILES = {
     "BUILD-DQ9.bat": "tools/windows/BUILD-DQ9.bat",
     "PLAY-DQ9.bat": "tools/windows/PLAY-DQ9.bat",
+    "BUILD-GODOT.bat": "tools/windows/BUILD-GODOT.bat",
+    "PLAY-GODOT.bat": "tools/windows/PLAY-GODOT.bat",
     "README-WINDOWS.txt": "packaging/windows/README-WINDOWS.txt",
 }
 

@@ -2,6 +2,8 @@
 
 This Godot 4.5 host uses the `dq9_godot` GDExtension and the shared native runtime; the SDL application remains a separate build. This source project distributes no binaries or generated game code. Select an already locally available compatible image; do not copy image files or local session data into this directory or commit them.
 
+New to this host? Start with the [Godot user guide](../docs/USING_GODOT.md) (Windows one-click build, controls, layouts, troubleshooting). This file is the developer reference.
+
 ## Build and run
 
 The extension build requires a separately supplied generated-code directory. Enable `DQ9_BUILD_GODOT` in the root CMake build and set `GODOT_CPP_DIR` to an external godot-cpp 4.5 checkout. The build writes the extension to `godot/bin/`; `dq9.gdextension` loads it when present. Open this directory in Godot 4.5, or run:
