@@ -15,7 +15,6 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <type_traits>
 #include <vector>
 
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
@@ -189,7 +188,6 @@ struct FramePixel {
     bool stencil = false;
     std::uint8_t facing = 0; // 0 = nothing drawn yet, 1 = front-facing polygon, 2 = back-facing
 };
-static_assert(std::is_trivially_copyable_v<FramePixel>);
 
 struct Target {
     FramePixel* fb;
@@ -1648,13 +1646,9 @@ struct Gpu3D::Impl {
         const auto blue = expand6(color5(static_cast<std::uint16_t>(clear_color), 10));
         const bool bitmap = (disp3d & (1U << 14)) != 0U;
         if (!bitmap) {
-            const FramePixel pixel{red, green, blue, alpha, clear_depth, id, fog};
-            auto* destination = tgt_.fb + y_begin * tgt_.width;
-            const auto* end = tgt_.fb + y_end * tgt_.width;
-            // Copy padding too so the compiler can use full-width stores instead
-            // of separate colour, depth and flag stores for each cleared pixel.
-            for (; destination != end; ++destination)
-                std::memcpy(destination, &pixel, sizeof(pixel));
+            std::fill(tgt_.fb + y_begin * tgt_.width,
+                      tgt_.fb + y_end * tgt_.width,
+                      FramePixel{red, green, blue, alpha, clear_depth, id, fog});
             return;
         }
         const auto* color_slot = texture_source.texture_slot(2);
