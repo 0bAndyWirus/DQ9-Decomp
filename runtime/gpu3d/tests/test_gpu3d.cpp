@@ -40,6 +40,56 @@ void test_avx2_dispatch_requirements() {
     if (!ok) std::exit(1);
 }
 
+void test_clipped_positions_match_reference_arithmetic() {
+    Gpu3D gpu;
+    bool ok = true;
+    for (int plane = 0; plane < 6; ++plane) {
+        const auto axis = static_cast<std::size_t>(plane / 2);
+        const float sign = (plane & 1) != 0 ? 1.0F : -1.0F;
+        std::array<std::array<float, 4>, 3> positions{{
+            {0.125F, 0.25F, 0.375F, 1.3333F},
+            {-0.25F, 0.5F, -0.125F, 3.14159F},
+            {0.5F, -0.5F, 0.25F, 2.71828F},
+        }};
+        positions[0][axis] = sign * 0.75F;
+        positions[1][axis] = -sign * 0.25F;
+        positions[2][axis] = sign * 4.2F;
+        std::array<std::array<float, 4>, 16> expected{};
+        std::size_t expected_count = 0;
+        auto previous = positions.back();
+        bool previous_inside = sign * previous[axis] <= previous[3];
+        for (const auto& current : positions) {
+            const bool current_inside = sign * current[axis] <= current[3];
+            if (current_inside != previous_inside) {
+                const auto& inside = previous_inside ? previous : current;
+                const auto& outside = previous_inside ? current : previous;
+                const float inside_w = sign * inside[3];
+                const float outside_w = sign * outside[3];
+                const float ratio = (inside[axis] - inside_w) /
+                    ((outside_w - inside_w) - (outside[axis] - inside[axis]));
+                auto& vertex = expected[expected_count++];
+                for (std::size_t i = 0; i < vertex.size(); ++i)
+                    vertex[i] = inside[i] + (outside[i] - inside[i]) * ratio;
+                vertex[axis] = sign * vertex[3];
+            }
+            if (current_inside) expected[expected_count++] = current;
+            previous = current;
+            previous_inside = current_inside;
+        }
+        std::array<std::array<float, 4>, 16> actual{};
+        const auto count = dsr::gpu3d_detail::Gpu3DTestAccess::clip_positions(gpu, positions, actual);
+        ok &= check(count == 4 && count == expected_count,
+                    "one-plane triangle clipping retains four vertices");
+        for (std::size_t i = 0; i < std::min(count, expected_count); ++i)
+            ok &= check(actual[i] == expected[i],
+                        "clipped XYZW follows inside-to-outside reference arithmetic");
+        ok &= check(actual[0][axis] == sign * actual[0][3] &&
+                    actual[3][axis] == sign * actual[3][3],
+                    "both crossing directions snap exactly onto the active clip plane");
+    }
+    if (!ok) std::exit(1);
+}
+
 void port(Gpu3D& gpu, std::uint8_t code, std::uint32_t value = 0) {
     const auto addr = 0x04000440U + (static_cast<std::uint32_t>(code) - 0x10U) * 4U;
     gpu.io_write(addr, value, 32);
@@ -1039,14 +1089,54 @@ void test_texture_addressing_and_transparency() {
         ok &= check(opaque.r == 63U && opaque.a == 31U && transparent.a == 0U,
                     "colour zero transparency applies to all indexed formats");
     }
-    constexpr std::array<std::uint8_t, 8> alpha3{0, 4, 9, 13, 18, 22, 27, 31};
-    for (unsigned alpha = 0; alpha < alpha3.size(); ++alpha) {
-        source.textures[0][0] = static_cast<std::uint8_t>(alpha << 5);
-        const auto texel = dsr::gpu3d_detail::decode_texel(
-            source.view(), (1U << 26) | (1U << 29), 0U, 0, 0);
-        ok &= check(texel.r == 63U && texel.a == alpha3[alpha],
-                    "A3I5 uses the full three-bit alpha lookup, ignoring colour-zero flag");
+    constexpr std::array<std::uint8_t, 8> alpha3{0, 4, 8, 13, 17, 22, 26, 31};
+    constexpr std::uint32_t alpha_param = (1U << 26U) | (1U << 20U) |
+                                         (1U << 23U) | (1U << 29U);
+    for (unsigned intensity = 0; intensity < 32; ++intensity) {
+        palette_color(source, intensity * 2U, static_cast<std::uint16_t>(
+            intensity | (intensity << 5U) | (intensity << 10U)));
+        for (unsigned alpha = 0; alpha < alpha3.size(); ++alpha)
+            source.textures[0][alpha * 32U + intensity] =
+                static_cast<std::uint8_t>((alpha << 5U) | intensity);
     }
+    std::array<dsr::gpu3d_detail::Texel, 256> bulk{};
+    dsr::gpu3d_detail::decode_texture(source.view(), alpha_param, 0U, bulk.data());
+    bool scalar_matches = true;
+    bool bulk_matches = true;
+    for (unsigned alpha = 0; alpha < alpha3.size(); ++alpha) {
+        for (unsigned intensity = 0; intensity < 32; ++intensity) {
+            const auto offset = alpha * 32U + intensity;
+            const auto scalar = dsr::gpu3d_detail::decode_texel(
+                source.view(), alpha_param, 0U, offset % 16U, offset / 16U);
+            const auto rgb = intensity == 0U ? 0U : intensity * 2U + 1U;
+            scalar_matches &= scalar.r == rgb && scalar.g == rgb && scalar.b == rgb &&
+                              scalar.a == alpha3[alpha];
+            const auto& cached = bulk[offset];
+            bulk_matches &= cached.r == scalar.r && cached.g == scalar.g &&
+                            cached.b == scalar.b && cached.a == alpha3[alpha];
+        }
+    }
+    ok &= check(scalar_matches, "A3I5 scalar RGB/alpha matches all 32 intensities x 8 truncated alpha levels");
+    ok &= check(bulk_matches, "A3I5 bulk RGB/alpha matches scalar and ignores colour-zero transparency");
+    constexpr std::uint32_t alpha5_param = (6U << 26U) | (1U << 20U) |
+                                          (1U << 23U) | (1U << 29U);
+    for (unsigned byte = 0; byte < bulk.size(); ++byte)
+        source.textures[0][byte] = static_cast<std::uint8_t>(byte);
+    dsr::gpu3d_detail::decode_texture(source.view(), alpha5_param, 0U, bulk.data());
+    scalar_matches = true;
+    bulk_matches = true;
+    for (unsigned byte = 0; byte < bulk.size(); ++byte) {
+        const auto scalar = dsr::gpu3d_detail::decode_texel(
+            source.view(), alpha5_param, 0U, byte % 16U, byte / 16U);
+        const auto intensity = byte & 7U;
+        const auto rgb = intensity == 0U ? 0U : intensity * 2U + 1U;
+        scalar_matches &= scalar.r == rgb && scalar.g == rgb && scalar.b == rgb &&
+                          scalar.a == (byte >> 3U);
+        bulk_matches &= bulk[byte].r == scalar.r && bulk[byte].g == scalar.g &&
+                        bulk[byte].b == scalar.b && bulk[byte].a == scalar.a;
+    }
+    ok &= check(scalar_matches && bulk_matches,
+                "A5I3 scalar and bulk preserve all 32 stored alpha levels x 8 indices");
     source.textures[2][8] = 2U;
     source.textures[1][0x10004] = 1U;
     source.textures[1][0x10005] = 0x80U;
@@ -1283,6 +1373,40 @@ void test_one_dot_depth_boundary() {
                     "one-dot polygon is hidden beyond W boundary");
     ok &= check((visible & 63U) == 63U && ((visible >> 6) & 63U) == 0U,
                 "one-dot polygon is visible at inclusive W boundary");
+    if (!ok) std::exit(1);
+}
+
+void test_clipped_slivers_do_not_become_one_dot_polygons() {
+    // Both original triangles span many pixels. Only their clipped fragments
+    // fit within one pixel, crossing the left or top viewport boundary.
+    constexpr std::array<std::array<std::int16_t, 2>, 3> left{{
+        {-4608, 2048}, {-4080, 1131}, {-4608, 1024}}};
+    constexpr std::array<std::array<std::int16_t, 2>, 3> top{{
+        {-2560, 4779}, {-1872, 4075}, {-1792, 4779}}};
+    constexpr std::uint32_t red = (31U << 24) | 63U;
+    bool ok = true;
+    for (int threads : {0, 2, 3}) {
+        for (unsigned side = 0; side < 2; ++side) {
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.io_write(0x04000350U, (31U << 16) | 0x03e0U, 32);
+            gpu.io_write(0x04000354U, 0x7fffU, 32);
+            send(gpu, 0x20, {0x001fU});
+            send(gpu, 0x29, {0xc0U | (31U << 16)});
+            send(gpu, 0x40, {0});
+            for (const auto& position : side == 0 ? left : top)
+                position16(gpu, position[0], position[1], 0);
+            send(gpu, 0x41);
+            submit_frame(gpu);
+            const unsigned x = side == 0 ? 0 : 69;
+            const unsigned y = side == 0 ? 69 : 0;
+            ok &= check(gpu.line(y)[x] == red,
+                        "clipped subpixel sliver retains its filled boundary pixel");
+            const auto view = gpu.raster_view();
+            ok &= check(std::count(view.output, view.output + view.output_pixel_count, red) == 1,
+                        "clipped sliver produces exactly one filled pixel");
+        }
+    }
     if (!ok) std::exit(1);
 }
 
@@ -2861,9 +2985,9 @@ void band_scene(Gpu3D& gpu, TestTextureSource& source, BandScene scene, int vari
         send(gpu, 0x20, {0x7c00U});
         send(gpu, 0x29, {0xc0U | (31U << 16) | (4U << 24)});
         send(gpu, 0x40, {0U});
-        // Clipping yields a subpixel polygon, but one-dot rendering uses
-        // this original, outside vertex (x=95, y=row+1), not the clipped bounds.
-        position16(gpu, -8192, -8192, -3072);
+        // The original polygon already fits one pixel in this tiny viewport.
+        // Clipping must not move its outside first vertex (x=95, y=row+1).
+        position16(gpu, -6144, -6144, -3072);
         position16(gpu, 0, 0, -3072);
         position16(gpu, 512, 512, -3072);
         send(gpu, 0x41);
@@ -3496,6 +3620,7 @@ void test_opaque_only_capture() {
 
 int main() {
     test_avx2_dispatch_requirements();
+    test_clipped_positions_match_reference_arithmetic();
     test_capture_fragment_random_reference();
     test_single_layer_capture_policy();
     test_opaque_only_capture();
@@ -3548,6 +3673,7 @@ int main() {
     test_fog_density_interpolation();
     test_fog_descending_density_uses_weighted_truncation();
     test_one_dot_depth_boundary();
+    test_clipped_slivers_do_not_become_one_dot_polygons();
     test_shadow_requires_depth_mask_and_different_polygon_id();
     test_shadow_preserves_vertex_color();
     test_translucent_id_rejection_ignores_blend_enable_and_depth_write();

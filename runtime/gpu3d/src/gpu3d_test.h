@@ -4,6 +4,7 @@
 #include "texture.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace dsr::gpu3d_detail {
@@ -17,6 +18,9 @@ struct Gpu3DTestAccess {
     static std::array<std::int32_t, 3> light_half_vector(Gpu3D& gpu, unsigned index);
     static std::array<std::int64_t, 2> transformed_texcoord(Gpu3D& gpu);
     static std::uint8_t rounded_color(float value, bool six_bit);
+    static std::size_t clip_positions(Gpu3D& gpu,
+        const std::array<std::array<float, 4>, 3>& positions,
+        std::array<std::array<float, 4>, 16>& clipped);
     static std::array<Texel, 64> sample_texels(Gpu3D& gpu, const Gpu3DPolygon& polygon,
         const std::array<std::array<float, 2>, 64>& coordinates);
     static std::array<std::uint32_t, 256> draw_span(Gpu3D& gpu, const Gpu3DPolygon& polygon,
