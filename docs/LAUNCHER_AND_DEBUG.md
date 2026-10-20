@@ -8,7 +8,29 @@ Use the SDL2 launcher before starting the game:
 build/game-ui/game/dq9 --launcher
 ```
 
-The launcher writes `frontend.conf` beside the existing frontend settings, preserving the older frontend keys. On the very first run (no `frontend.conf` yet) the language is preselected from the system language when the European release ships it (French, German, Spanish, Italian; otherwise English). The ROM / SAVE page also has a **Save chip** button (cycle with Enter or a click): it selects the emulated cartridge backup memory and is remembered as `backup_type` in `frontend.conf`. Auto uses the build's setting or an existing save's capacity, otherwise the flash default; choose EEPROM 64 KB for the European release. A `--backup-type` given on the command line is shown there as the starting value. The Language page lists English, French, German, Spanish and Italian; click one or use the arrow keys/D-pad. A status line next to Launch shows whether the configured ROM path exists (green) or not (amber), so a wrong path is visible before launching; Launch is never blocked. The Options page also has the experimental Hi-res 3D scale (off, 2x-4x). It also has Master volume (0-100%) and Pause when window unfocused (off by default: the game idles and drops queued audio while the window lacks focus, and resumes when it returns; it never applies to --pause-at-frame replays). Controls shows the current keyboard/controller bindings; select a DS input, choose keyboard or controller with left/right, then press the new key/button. Reset restores defaults. Dropping a .nds file on the launcher window sets the ROM path. ROM and save paths can be edited as text, or Auto Detect uses `$DQ9_ROM` and the local `ROM/` directory; the default save is `<data_dir>/dq9.sav`. Options persist screen layout, scale, fullscreen, integer/linear scaling, audio queue cap, controller selection/deadzone, touch behavior, debug tool, frame-time overlay, and memory-dump preference. `--rom`, `--save`, and `--language` remain available for direct CLI launches.
+The launcher writes `frontend.conf` beside the existing frontend settings,
+preserving older keys. On first run, language follows a supported system locale
+(English, French, German, Spanish or Italian). The ROM / SAVE page's Save chip
+button cycles with Enter or a click and remembers `backup_type`. Controls supports
+keyboard/controller rebinding and reset. Options remembers layout, scale,
+fullscreen, filtering, audio, controller, touch, debug and capture settings.
+The experimental Hi-res 3D scale is off by default. Master volume ranges from
+0–100%; Pause when window unfocused is off by default and never affects
+`--pause-at-frame` replays. Direct CLI `--rom`, `--save`, and `--language` remain available.
+
+The launcher opens on **ROM / SAVE**: click the ROM field and type a path, or
+drag an `.nds` file onto the window. Start (F5) stays in the launcher for a missing
+or unusable ROM header, with an inline error. Missing or invalid `abi.ini` also
+blocks Start and suggests running `BUILD-DQ9.bat`. On first run the Save chip
+selection inherits `abi.ini` (including EEPROM 64 KB); remembered choices win
+thereafter unless `--backup-type` is explicitly supplied, including `auto`.
+Auto itself infers an existing save's capacity, otherwise uses the flash default.
+Choose Language and Options for language and layout; click Start or press F5,
+and click Quit or press Escape to cancel. Settings retain the existing key/value format.
+
+Windows `dq9.exe` uses the GUI subsystem, so the launcher opens without its own
+console. Diagnostics are appended to `runtime.log` beside `frontend.conf`.
+`PLAY-DQ9.bat` waits for the GUI process and returns its exit status.
 
 The direct launch form is unchanged:
 
@@ -95,7 +117,9 @@ The game renderer does not request display vsync; host pacing uses a 59.826 Hz s
 
 The bitmap HUD/editor font submits pixel rectangles in bounded 256-rectangle stack batches, rather than one SDL draw command per lit glyph pixel. This preserves the 1x bitmap appearance without a per-frame glyph allocation.
 
-`empty_audio_queue_events_approx` estimates starvation only while playback is running, SDL's software queue is empty, and the time since the previous submission exceeds its queued PCM plus one device buffer. Initial priming and explicit debug pauses are excluded; queued digital silence is not starvation. SDL supplies no hardware xrun counter, so this remains an estimate, not proof of an audible dropout. Explicit and emergency queue clears pause the device and require a fresh 40 ms prime before playback resumes. Note saves write synchronously while the game/audio is intentionally paused, then use this priming path; their file I/O need not complete within one frame.
+`empty_audio_queue_events_approx` estimates starvation only while playback is running, SDL's software queue is empty, and the time since the previous submission exceeds its queued PCM plus one device buffer. Initial priming and explicit debug pauses are excluded; queued digital silence is not starvation. SDL supplies no hardware xrun counter, so this remains an estimate, not proof of an audible dropout. After estimated starvation the device pauses and rebuilds its 40 ms reserve without clearing or discarding PCM, rather than immediately playing each arriving block followed by another hole. Sustained hosts slower than realtime still cannot supply continuous realtime audio; recovery trades repeated short holes for a bounded re-prime pause, not a speed or fidelity guarantee. Explicit and emergency queue clears also pause the device and require a fresh 40 ms prime before playback resumes. Note saves write synchronously while the game/audio is intentionally paused, then use this priming path; their file I/O need not complete within one frame.
+
+Set `DSR_AUDIO_METRICS=1` for per-second audio queue diagnostics and an exit `[audio-summary]` containing dropped stereo frames, estimated underruns, recovery re-primes, maximum sampled software backlog in stereo frames, and output sample rate. `reprimes` counts recovery pauses separately from destructive queue `clears`; `dropped_frames` includes explicit clears but not recovery. These diagnostics also work with `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` for a display-free, realtime-paced run (omit `--headless`, which intentionally opens no audio device). A dummy backend measures host queue behavior only, not physical-device xruns or perceived sound. The emulated `--dump-audio` stream is upstream of this playback policy and is unchanged.
 
 ## Issue bundles
 

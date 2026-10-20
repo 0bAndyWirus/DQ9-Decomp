@@ -83,6 +83,15 @@ IF SOMETHING GOES WRONG
 - Blank screens in the game: the generated build\gen\abi.ini is missing; run
   BUILD-DQ9.bat again.
 
+For support, double-click COLLECT-DIAGNOSTICS.bat. Python 3.10+ is required;
+it installs nothing and creates diagnostics-<timestamp>.zip in the kit folder.
+It includes tool versions, OS/free disk, backup/pin names, launcher option
+summaries (not ROM/save paths), script hashes, binary existence/sizes only, and
+the last 300 build-log lines. Home/profile and kit paths become <HOME>/<KIT>.
+No ROM, save, generated code, executable, DLL, screenshot or capture is included.
+Review the ZIP's text before sharing: custom paths outside home/kit can remain
+in the build log. Safety refusals return status 2; no game run is required.
+
 
 LEGAL
 -----

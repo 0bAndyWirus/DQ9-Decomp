@@ -54,6 +54,8 @@ struct ScriptedInput {
 struct Options {
     std::filesystem::path rom;
     std::filesystem::path save;
+    std::optional<std::filesystem::path> restore_save;
+    std::size_t save_backups = 5;
     std::filesystem::path abi_config;
     bool headless = false;
     FrameIndex frames = -1; // -1: run until quit
@@ -96,6 +98,8 @@ struct Options {
         "                          game stalls on blank screens\n"
         "  --backup-type TYPE      cartridge backup chip: auto (default), eeprom512b, eeprom8k, eeprom64k,\n"
         "                          eeprom128k, flash256k, flash512k, flash1m, flash8m; overrides the abi config\n"
+        "  --save-backups N        keep the last N session backups next to the save (default 5; minimum 1)\n"
+        "  --restore-save SOURCE   restore newest or a backup path, then exit; selected chip capacity must match\n"
         "  --launcher              show the settings launcher first\n"
         "  --gpu3d-scale N         experimental hi-res 3D overlay, 1-4 (default 1 = off)\n"
         "  --autosave-frames N     flush the save every N frames (default 1800 = 30 s in a window, off with\n"
@@ -216,6 +220,17 @@ Options parse_args_unchecked(int argc, char** argv) {
         else if (a == "--save") o.save = dsr::host::path_from_utf8(value());
         else if (a == "--abi-config") o.abi_config = dsr::host::path_from_utf8(value());
         else if (a == "--backup-type") o.backup_type = std::string(value());
+        else if (a == "--restore-save") {
+            const auto source = value();
+            o.restore_save = source == "newest" ? std::filesystem::path{} : dsr::host::path_from_utf8(source);
+        }
+        else if (a == "--save-backups") {
+            const std::string count(value());
+            if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos) usage(2);
+            const auto parsed = std::stoull(count);
+            if (parsed == 0 || parsed > 10000) usage(2);
+            o.save_backups = static_cast<std::size_t>(parsed);
+        }
         else if (a == "--language") o.language = parse_language(value());
         else if (a == "--headless") o.headless = true;
         else if (a == "--pause-at-frame") {
@@ -259,6 +274,15 @@ Options parse_args_unchecked(int argc, char** argv) {
             std::fprintf(stderr, "dq9: unknown argument '%s'\n", argv[i]);
             usage(2);
         }
+    }
+    if (o.restore_save) {
+        if (o.launcher || o.debug_selftest || o.debug_workflow_selftest) {
+            std::fprintf(stderr, "dq9: --restore-save cannot be combined with launcher or self-test modes\n");
+            usage(2);
+        }
+        o.headless = true;
+        o.frames = 0;
+        o.pause_at_frame = -1;
     }
     // Started without a ROM (for example by double-clicking the program): open the launcher, which
     // remembers the ROM path and shows whether it can be used. Headless runs still need --rom.
@@ -435,8 +459,12 @@ std::string language_name(std::uint8_t language) {
 int main(int argc, char** argv) {
 #if defined(_WIN32)
     SDL_SetMainReady();
-    // SDL_MAIN_HANDLED keeps a normal console entry point. Read the native
-    // command line ourselves so paths are not truncated to the Windows ACP.
+    // GUI-subsystem builds have no console. Keep diagnostics beside settings.
+    const auto log_dir = dsr::default_user_paths().config_dir;
+    std::error_code log_error;
+    std::filesystem::create_directories(log_dir, log_error);
+    if (!log_error) _wfreopen((log_dir / "runtime.log").c_str(), L"a", stderr);
+    // Read the native command line so paths are not truncated to the Windows ACP.
     int wide_argc = 0;
     std::unique_ptr<wchar_t*, decltype(&LocalFree)> wide_arguments(
         CommandLineToArgvW(GetCommandLineW(), &wide_argc), &LocalFree);
@@ -515,6 +543,25 @@ int main(int argc, char** argv) {
             return 2;
         }
         launch_options.rom_path = opt.rom;
+        if (opt.abi_config.empty()) {
+            char* base = SDL_GetBasePath();
+            opt.abi_config = dsr::find_guest_abi_config(dsr::host::path_from_utf8(base ? base : ""));
+            SDL_free(base);
+        }
+        std::error_code abi_error;
+        if (opt.abi_config.empty() || !std::filesystem::is_regular_file(opt.abi_config, abi_error)) {
+            launch_options.startup_error = "ABI.INI MISSING. RUN BUILD-DQ9.BAT WITH YOUR ROM FIRST.";
+        } else {
+            try {
+                constexpr const char* chip_names[]{"auto", "eeprom512b", "eeprom8k", "eeprom64k",
+                    "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"};
+                launch_options.backup_type = chip_names[static_cast<unsigned>(
+                    dsr::load_guest_abi_config(opt.abi_config).backup_type)];
+            } catch (const std::exception&) {
+                launch_options.startup_error = "ABI.INI INVALID. RUN BUILD-DQ9.BAT TO REBUILD.";
+            }
+        }
+        launch_options.backup_type_explicit = opt.backup_type.has_value();
         launch_options.save_path = opt.save;
         launch_options.language = language_name(opt.language);
         if (opt.backup_type) launch_options.backup_type = *opt.backup_type;
@@ -644,6 +691,19 @@ int main(int argc, char** argv) {
     }
     dsr::Session session(mc);
     dsr::Machine& machine = session.machine();
+    if (auto* card = machine.game_card()) {
+        card->set_save_backup_limit(opt.save_backups);
+        if (opt.restore_save) {
+            try {
+                card->restore_save(*opt.restore_save);
+                std::fprintf(stdout, "Save restored (selected chip capacity verified).\n");
+                return 0;
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "Save restore failed: %s\n", error.what());
+                return 1;
+            }
+        }
+    }
     NullFrontend null_frontend;
     dsr::Frontend& capture_frontend = frontend ? *frontend : null_frontend;
     bool debug_visible = opt.frame_time_overlay;
@@ -999,7 +1059,7 @@ int main(int argc, char** argv) {
     };
     FrameIndex frame = 0;
     bool chip_hint_shown = false; // one on-screen notice per run if the backup chip looks wrong
-    bool last_save_ok = true;
+    dsr::GameCard::SaveWriteStatus last_save_status = dsr::GameCard::SaveWriteStatus::Idle;
     enum class WorkflowPhase {
         WaitReplayPause, WaitReplayLiveInput, WaitForPause, WaitPaused, WaitMenuOpen,
         WaitMenuDispatch, WaitAnnotation, WaitText, WaitBundle,
@@ -1499,13 +1559,14 @@ int main(int argc, char** argv) {
             }
         }
         if (autosave_every > 0 && (frame + 1) % autosave_every == 0) {
-            const bool save_ok = session.flush_save();
-            if (frontend && save_ok != last_save_ok) {
-                frontend->show_message(save_ok
-                    ? "SAVE WRITTEN: SAVE PATH WORKING AGAIN"
-                    : "SAVE NOT WRITTEN: CHECK SAVE PATH (WILL RETRY)", save_ok ? 6000 : 15000);
+            session.flush_save();
+            const auto* card = machine.game_card();
+            const auto status = card ? card->save_write_status() : dsr::GameCard::SaveWriteStatus::Idle;
+            if (frontend && status != last_save_status) {
+                if (status != dsr::GameCard::SaveWriteStatus::Idle)
+                    frontend->show_save_status(status == dsr::GameCard::SaveWriteStatus::Saved);
             }
-            last_save_ok = save_ok;
+            last_save_status = status;
         }
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)
@@ -1729,3 +1790,9 @@ int main(int argc, char** argv) {
     }
     return final_save_ok && audio_dump_ok ? 0 : 1;
 }
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    return main(0, nullptr);
+}
+#endif

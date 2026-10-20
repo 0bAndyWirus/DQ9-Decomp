@@ -68,6 +68,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(dsr_frontend_controls_test PRIVATE dsr_frontend ${DSR_SDL2_TARGET})
   dsr_target_compile_options(dsr_frontend_controls_test -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME frontend_controls COMMAND dsr_frontend_controls_test)
+
+  add_executable(dsr_frontend_audio_test tests/frontend_audio_test.cpp)
+  target_link_libraries(dsr_frontend_audio_test PRIVATE dsr_frontend ${DSR_SDL2_TARGET})
+  target_link_options(dsr_frontend_audio_test PRIVATE
+      "-Wl,--wrap=SDL_GetQueuedAudioSize,--wrap=SDL_QueueAudio,--wrap=SDL_PauseAudioDevice,--wrap=SDL_ClearQueuedAudio,--wrap=_ZNSt6chrono3_V212steady_clock3nowEv")
+  dsr_target_compile_options(dsr_frontend_audio_test -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME frontend_audio COMMAND dsr_frontend_audio_test)
 endif()
 
 add_executable(dsr_rom_path_test tests/rom_path_test.cpp src/rom_path.cpp)

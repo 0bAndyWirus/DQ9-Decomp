@@ -33,6 +33,9 @@ endif()
 
 find_package(Threads REQUIRED)
 add_executable(dq9 main.cpp debug_tool.cpp debug_workflow_test.cpp)
+if(WIN32)
+  set_target_properties(dq9 PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 if(NOT WIN32)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
@@ -87,6 +90,7 @@ add_test(NAME dsr_session_ctypes_smoke COMMAND "${DQ9_TEST_PYTHON}"
   --save "${DQ9_TEST_SAVE}"
   --script "${DQ9_TEST_INPUT}"
   --frames 300)
+set_tests_properties(dsr_session_ctypes_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 find_package(Git QUIET)
 if(Git_FOUND)

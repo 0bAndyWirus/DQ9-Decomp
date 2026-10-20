@@ -20,6 +20,7 @@ ROOT_FILES = {
     "PLAY-DQ9.bat": "tools/windows/PLAY-DQ9.bat",
     "BUILD-GODOT.bat": "tools/windows/BUILD-GODOT.bat",
     "PLAY-GODOT.bat": "tools/windows/PLAY-GODOT.bat",
+    "COLLECT-DIAGNOSTICS.bat": "tools/windows/COLLECT-DIAGNOSTICS.bat",
     "README-WINDOWS.txt": "packaging/windows/README-WINDOWS.txt",
 }
 
@@ -74,6 +75,14 @@ def main(argv: list[str] | None = None) -> int:
         head_paths = extract_head(archive, staging)
         for destination, source in ROOT_FILES.items():
             shutil.copyfile(ROOT / source, staging / destination)
+        # The extracted kit has no .git directory; retain only tracked script names,
+        # not file contents or any local build paths, for support integrity hashes.
+        script_paths = {name for name in head_paths
+                        if Path(name).suffix.lower() in {".py", ".bat", ".ps1", ".sh"}}
+        script_paths.update(name for name in ROOT_FILES
+                            if Path(name).suffix.lower() in {".py", ".bat", ".ps1", ".sh"})
+        (staging / "script-paths.json").write_text(
+            json.dumps(sorted(script_paths)), encoding="utf-8")
 
         forbidden = [item.relative_to(staging).as_posix() for item in staging.rglob("*")
                      if item.is_file() and item.suffix.lower() in FORBIDDEN_SUFFIXES]

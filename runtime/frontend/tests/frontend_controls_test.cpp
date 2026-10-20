@@ -204,6 +204,34 @@ int main() {
         tap(SDL_SCANCODE_F8);
     }
     {
+        // Save failure is independent of transient notices (including pause/resume clearing them).
+        SDL_Renderer* renderer = SDL_GetRenderer(SDL_GetWindowFromID(1));
+        std::array<std::uint32_t, 256 * 192> flat{};
+        flat.fill(0xff102030);
+        const SDL_Rect badge{0, 0, 400, 80};
+        std::array<std::uint32_t, 400 * 80> pixels{};
+        const auto color_count = [&](std::uint32_t color) {
+            frontend->present(flat.data(), flat.data());
+            assert(SDL_RenderReadPixels(renderer, &badge, SDL_PIXELFORMAT_ARGB8888,
+                                        pixels.data(), 400 * 4) == 0);
+            std::size_t count = 0;
+            for (const auto pixel : pixels) if (pixel == color) ++count;
+            return count;
+        };
+        assert(color_count(0xffff9292) == 0);
+        frontend->show_save_status(false);
+        assert(color_count(0xffff9292) > 0);
+        frontend->show_message("OTHER NOTICE");
+        frontend->show_message("");
+        assert(color_count(0xffff9292) > 0);
+        frontend->show_save_status(true);
+        assert(color_count(0xffff9292) == 0);
+        assert(color_count(0xffeef4fc) > 0);
+        frontend.reset();
+        frontend = dsr::create_sdl_frontend();
+        assert(frontend->init(config));
+    }
+    {
         // Focus loss only reaches the main loop when the option is on.
         SDL_Window* focus_window = SDL_GetWindowFromID(1);
         const auto focus_event = [&](Uint8 kind) {
