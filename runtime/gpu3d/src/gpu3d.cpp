@@ -1559,21 +1559,30 @@ struct Gpu3D::Impl {
             std::size_t next_count = 0;
             if (count == 0) return 0;
             auto previous = input[count - 1U];
-            auto previous_distance = plane_distance(previous, plane);
-            bool previous_inside = previous_distance >= 0.0F;
+            bool previous_inside = plane_distance(previous, plane) >= 0.0F;
             for (std::size_t i = 0; i < count; ++i) {
                 const auto current = input[i];
-                const auto current_distance = plane_distance(current, plane);
-                const bool current_inside = current_distance >= 0.0F;
-                if (current_inside != previous_inside) {
-                    const auto divisor = previous_distance - current_distance;
-                    if (std::abs(divisor) > 1.0e-20F && next_count < next.size()) {
-                        next[next_count++] = interpolate_clip(previous, current, previous_distance / divisor);
+                const bool current_inside = plane_distance(current, plane) >= 0.0F;
+                if (current_inside != previous_inside && next_count < next.size()) {
+                    // Keep the inside endpoint as the interpolation origin:
+                    // reversing it changes rounding before the 28.4 projection.
+                    const auto& inside = previous_inside ? previous : current;
+                    const auto& outside = previous_inside ? current : previous;
+                    const auto axis = static_cast<std::size_t>(plane / 2);
+                    const bool positive = (plane & 1) != 0;
+                    const float inside_w = positive ? inside.clip[3] : -inside.clip[3];
+                    const float outside_w = positive ? outside.clip[3] : -outside.clip[3];
+                    const float divisor = (outside_w - inside_w) -
+                                          (outside.clip[axis] - inside.clip[axis]);
+                    if (std::abs(divisor) > 1.0e-20F) {
+                        const float ratio = (inside.clip[axis] - inside_w) / divisor;
+                        auto vertex = interpolate_clip(inside, outside, ratio);
+                        vertex.clip[axis] = positive ? vertex.clip[3] : -vertex.clip[3];
+                        next[next_count++] = vertex;
                     }
                 }
                 if (current_inside && next_count < next.size()) next[next_count++] = current;
                 previous = current;
-                previous_distance = current_distance;
                 previous_inside = current_inside;
             }
             input = next;
@@ -2918,6 +2927,21 @@ gpu3d_detail::Gpu3DTestAccess::transformed_texcoord(Gpu3D& gpu) {
 
 std::uint8_t gpu3d_detail::Gpu3DTestAccess::rounded_color(float value, bool six_bit) {
     return six_bit ? Gpu3D::Impl::clamp6(value) : Gpu3D::Impl::clamp5(value);
+}
+
+std::size_t gpu3d_detail::Gpu3DTestAccess::clip_positions(
+    Gpu3D& gpu, const std::array<std::array<float, 4>, 3>& positions,
+    std::array<std::array<float, 4>, 16>& clipped) {
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        gpu.impl_->render_vertices[i].clip = positions[i];
+    Gpu3DPolygon polygon{};
+    polygon.index = {0, 1, 2, 0};
+    polygon.count = 3;
+    polygon.attr = 1U << 12U;
+    std::array<ClipVertex, 16> vertices{};
+    const auto count = gpu.impl_->clip_polygon(polygon, vertices);
+    for (std::size_t i = 0; i < count; ++i) clipped[i] = vertices[i].clip;
+    return count;
 }
 
 std::array<gpu3d_detail::Texel, 64> gpu3d_detail::Gpu3DTestAccess::sample_texels(

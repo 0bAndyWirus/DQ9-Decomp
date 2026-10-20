@@ -134,7 +134,8 @@ void decode_indexed_image(const ImageReader& reader, std::uint32_t texture_addre
             const auto byte = reader.texture_byte(texture_address + i);
             if constexpr (Format == 1U) {
                 destination[i] = palette[byte & 31U];
-                destination[i].a = static_cast<std::uint8_t>(((byte >> 5U) * 31U + 3U) / 7U);
+                // A3I5 expands alpha with truncation, not nearest rounding.
+                destination[i].a = static_cast<std::uint8_t>(((byte >> 5U) * 31U) / 7U);
             } else if constexpr (Format == 6U) {
                 destination[i] = palette[byte & 7U];
                 destination[i].a = static_cast<std::uint8_t>(byte >> 3U);
@@ -210,7 +211,7 @@ Texel decode_texel(const TextureSource& source, std::uint32_t texture_param,
     switch (format) {
     case 1: { // A3I5
         const auto value = read_texture_byte(source, texture_address + pixel);
-        const auto alpha = static_cast<std::uint8_t>(((value >> 5) * 31U + 3U) / 7U);
+        const auto alpha = static_cast<std::uint8_t>(((value >> 5) * 31U) / 7U);
         auto result = palette_texel(source, palette_address, value & 31U, false);
         result.a = alpha;
         return result;
