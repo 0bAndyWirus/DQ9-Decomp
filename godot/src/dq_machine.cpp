@@ -21,6 +21,7 @@
 #include "dsr/session_render_frame.h"
 #include "dq_gpu_scene.h"
 #include "gpu_frame_delay.h"
+#include "audio_ring.h"
 
 #include <algorithm>
 #include <array>
@@ -92,7 +93,7 @@ DqMachine* live_machines = nullptr;
 class DqMachine final : public godot::Node {
     GDCLASS(DqMachine, godot::Node)
 public:
-    DqMachine() : ring_(kRingFrames * 2), next_instance_(live_machines) {
+    DqMachine() : next_instance_(live_machines) {
         if (next_instance_) next_instance_->previous_instance_ = this;
         live_machines = this;
     }
@@ -136,7 +137,7 @@ public:
             error_.clear(); running_ = false; paused_ = false;
             {
                 std::lock_guard audio_lock(audio_mutex_);
-                ring_read_ = ring_write_ = 0; underruns_ = dropped_audio_frames_ = 0;
+                ring_.reset(); underruns_ = fast_forward_discarded_frames_ = 0;
                 audio_frames_pushed_ = 0; resample_phase_ = 0.0; audio_priming_ = true;
             }
             published_slot_ = 0; consuming_slot_ = -1;
@@ -164,6 +165,7 @@ public:
         std::lock_guard lock(mutex_);
         if (!loaded_) return;
         started_ = true;
+        if (paused_) audio_priming_ = true;
         running_ = true; paused_ = false; cv_.notify_all();
         if (audio_player_ && !audio_priming_) audio_player_->set_stream_paused(false);
     }
@@ -184,6 +186,9 @@ public:
     }
     void set_paused(bool value) {
         std::lock_guard lock(mutex_);
+        // Pausing can consume the tail of a mixer block before it takes effect.
+        // Refill the retained generator queue before making resume audible.
+        if (paused_ && !value) audio_priming_ = true;
         paused_ = value; cv_.notify_all();
         if (audio_player_) audio_player_->set_stream_paused(value || audio_priming_);
     }
@@ -206,7 +211,17 @@ public:
     }
     void set_speed(float value) {
         std::lock_guard lock(mutex_);
-        speed_ = std::isfinite(value) ? std::clamp(value, 0.0f, 16.0f) : 1.0f;
+        const float next = std::isfinite(value) ? std::clamp(value, 0.0f, 16.0f) : 1.0f;
+        if (next > 0.0f && (speed_ == 0.0f || (speed_ > 1.0f && next < speed_))) {
+            std::lock_guard audio_lock(audio_mutex_);
+            // Fast-forward can leave 200 ms of old source PCM. Keep only the
+            // newest emulated frame, plus the already bounded generator queue.
+            // Retaining that short bridge avoids stopping/restarting the mixer.
+            const auto keep = static_cast<std::size_t>(std::ceil(audio_source_rate_ / kFrameRate));
+            fast_forward_discarded_frames_ += ring_.trim_to(keep);
+            resample_phase_ = 0.0;
+        }
+        speed_ = next;
         cv_.notify_all();
     }
     // Input is selected on the session owner thread immediately before each
@@ -360,6 +375,26 @@ public:
     godot::AudioStreamPlayer* get_audio_player() const { return audio_player_; }
     godot::Ref<godot::Image> get_top_image() const { return top_image_; }
     godot::Ref<godot::Image> get_bottom_image() const { return bottom_image_; }
+#ifdef DQ9_AUDIO_TESTS
+    void set_test_audio_capture(bool enabled) {
+        std::lock_guard lock(audio_mutex_);
+        test_audio_capture_ = enabled;
+        test_audio_.clear();
+    }
+    godot::PackedByteArray take_test_audio() {
+        std::lock_guard lock(audio_mutex_);
+        godot::PackedByteArray bytes;
+        bytes.resize(test_audio_.size() * 2);
+        auto* out = bytes.ptrw();
+        for (std::size_t i = 0; i < test_audio_.size(); ++i) {
+            const auto sample = static_cast<std::uint16_t>(test_audio_[i]);
+            out[i * 2] = static_cast<std::uint8_t>(sample);
+            out[i * 2 + 1] = static_cast<std::uint8_t>(sample >> 8);
+        }
+        test_audio_.clear();
+        return bytes;
+    }
+#endif
     bool flush_save() {
         std::unique_lock lock(mutex_);
         if (!loaded_ || shutdown_) return false;
@@ -410,9 +445,12 @@ public:
         out["frame"] = static_cast<std::int64_t>(frame_count_);
         {
             std::lock_guard audio_lock(audio_mutex_);
-            const std::size_t queued = ring_write_ - ring_read_;
+            const std::size_t queued = ring_.size();
             out["audio_queue_ms"] = 1000.0 * static_cast<double>(queued) / audio_source_rate_;
-            out["dropped_audio_ms"] = 1000.0 * static_cast<double>(dropped_audio_frames_) / audio_source_rate_;
+            out["dropped_audio_ms"] = 1000.0 * static_cast<double>(ring_.dropped()) / audio_source_rate_;
+            out["audio_ring_overflows"] = static_cast<std::int64_t>(ring_.overflows());
+            out["audio_ring_max_ms"] = 1000.0 * static_cast<double>(ring_.high_water()) / audio_source_rate_;
+            out["fast_forward_discarded_ms"] = 1000.0 * static_cast<double>(fast_forward_discarded_frames_) / audio_source_rate_;
             out["underruns"] = static_cast<std::int64_t>(underruns_);
             out["audio_frames_pushed"] = static_cast<std::int64_t>(audio_frames_pushed_);
         }
@@ -549,6 +587,10 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("get_top_image"), &DqMachine::get_top_image);
         godot::ClassDB::bind_method(godot::D_METHOD("get_bottom_image"), &DqMachine::get_bottom_image);
         godot::ClassDB::bind_method(godot::D_METHOD("get_audio_player"), &DqMachine::get_audio_player);
+#ifdef DQ9_AUDIO_TESTS
+        godot::ClassDB::bind_method(godot::D_METHOD("set_test_audio_capture", "enabled"), &DqMachine::set_test_audio_capture);
+        godot::ClassDB::bind_method(godot::D_METHOD("take_test_audio"), &DqMachine::take_test_audio);
+#endif
         godot::ClassDB::bind_method(godot::D_METHOD("flush_save"), &DqMachine::flush_save);
         godot::ClassDB::bind_method(godot::D_METHOD("get_save_backups"), &DqMachine::get_save_backups);
         godot::ClassDB::bind_method(godot::D_METHOD("get_save_backup_error"), &DqMachine::get_save_backup_error);
@@ -947,6 +989,10 @@ private:
                     std::lock_guard audio_lock(audio_mutex_);
                     audio_source_rate_ = rate;
                     push_audio(audio, count);
+#ifdef DQ9_AUDIO_TESTS
+                    if (test_audio_capture_ && audio && count)
+                        test_audio_.insert(test_audio_.end(), audio, audio + count * 2);
+#endif
                 }
                 int output_slot = -1;
                 {
@@ -983,7 +1029,7 @@ private:
                             replay_finished_pending_ = true;
                             input_ = {};
                             std::lock_guard audio_lock(audio_mutex_);
-                            ring_read_ = ring_write_ = 0;
+                            ring_.clear();
                             resample_phase_ = 0.0; audio_priming_ = true;
                         }
                     }
@@ -1019,19 +1065,7 @@ private:
         }
     }
     void push_audio(const int16_t* samples, std::size_t count) {
-        if (!samples || !count) return;
-        const std::size_t capacity = ring_.size() / 2;
-        const std::size_t queued = ring_write_ - ring_read_;
-        const std::size_t max_keep = static_cast<std::size_t>(audio_source_rate_ * 0.2);
-        if (queued + count > max_keep) {
-            const std::size_t drop = std::min(queued, queued + count - max_keep);
-            ring_read_ += drop; dropped_audio_frames_ += drop;
-        }
-        for (std::size_t i = 0; i < count; ++i) {
-            if (ring_write_ - ring_read_ >= capacity) { ++ring_read_; ++dropped_audio_frames_; }
-            const auto at = (ring_write_ % capacity) * 2;
-            ring_[at] = samples[i * 2]; ring_[at + 1] = samples[i * 2 + 1]; ++ring_write_;
-        }
+        ring_.push(samples, count, static_cast<std::size_t>(audio_source_rate_ * 0.2));
     }
     void pull_audio() {
         if (!audio_player_) return;
@@ -1049,17 +1083,13 @@ private:
         const double initial_phase = resample_phase_;
         {
             std::lock_guard audio_lock(audio_mutex_);
-            queued_total = ring_write_ - ring_read_;
-            read = ring_read_;
+            queued_total = ring_.size();
+            read = ring_.read_position();
             source_rate = audio_source_rate_;
             const double max_input = initial_phase + wanted * source_rate / output_rate * 1.02 + 3.0;
             queued = std::min(queued_total, static_cast<std::size_t>(max_input));
             queued = std::min(queued, audio_snapshot_.size() / 2);
-            for (std::size_t i = 0; i < queued; ++i) {
-                const auto at = ((read + i) % kRingFrames) * 2;
-                audio_snapshot_[i * 2] = ring_[at];
-                audio_snapshot_[i * 2 + 1] = ring_[at + 1];
-            }
+            queued = ring_.copy(audio_snapshot_.data(), queued);
         }
         if (queued < 2) return;
         const double total_seconds = static_cast<double>(queued_total) / source_rate +
@@ -1088,7 +1118,7 @@ private:
             {
                 std::lock_guard audio_lock(audio_mutex_);
                 audio_frames_pushed_ += static_cast<std::uint64_t>(written);
-                ring_read_ = std::max(ring_read_, read + consumed);
+                ring_.consume(read, consumed);
             }
             resample_phase_ = phase - static_cast<double>(consumed);
             if (audio_priming_ && generator_capacity_ - generator->get_frames_available() >= target) {
@@ -1141,12 +1171,15 @@ private:
     double fps_ = 0.0;
     std::string error_;
     godot::PackedVector2Array audio_buffer_;
-    std::vector<std::int16_t> ring_;
+    dq9::AudioRing<kRingFrames> ring_;
     mutable std::mutex audio_mutex_;
     std::array<std::int16_t, kRingFrames * 2> audio_snapshot_{};
     int generator_capacity_ = 0;
-    std::size_t ring_read_ = 0, ring_write_ = 0;
-    std::uint64_t underruns_ = 0, dropped_audio_frames_ = 0;
+    std::uint64_t underruns_ = 0, fast_forward_discarded_frames_ = 0;
+#ifdef DQ9_AUDIO_TESTS
+    bool test_audio_capture_ = false;
+    std::vector<std::int16_t> test_audio_;
+#endif
     std::uint64_t audio_frames_pushed_ = 0;
     double audio_target_seconds_ = kAudioPrimeSeconds;
     double audio_source_rate_ = kAudioRate, resample_phase_ = 0;

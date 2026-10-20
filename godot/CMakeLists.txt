@@ -36,6 +36,13 @@ if(DQ9_GPU_SCENE_TESTS)
   # Owned polygon IDs are only needed by the same-snapshot crack regression.
   target_compile_definitions(dsr_gpu3d PUBLIC DSR_GPU_CAPTURE_IDS=1)
 endif()
+option(DQ9_AUDIO_TESTS "Enable diagnostic unresampled PCM capture in DqMachine" OFF)
+if(DQ9_AUDIO_TESTS)
+  target_compile_definitions(dq9_godot PRIVATE DQ9_AUDIO_TESTS=1)
+endif()
+add_executable(dq9_audio_ring_tests tests/native/audio_ring_test.cpp)
+target_include_directories(dq9_audio_ring_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME dq9_audio_ring_tests COMMAND dq9_audio_ring_tests)
 target_include_directories(dq9_godot PRIVATE
   "${PROJECT_SOURCE_DIR}/../runtime/include"
   "${PROJECT_SOURCE_DIR}/../runtime/gpu3d/src"
