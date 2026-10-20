@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.3.1
+
+- **Godot save restore:** settings and pause panels list timestamped save backups and restore one with confirmation through the native atomic, capacity-checked replacement (never converts chip type), with a persistent Saved / Save failed status. Verified on Linux with the real extension (exact 65,536-byte restore); Windows is not verified.
+
 ## v0.3.0
 
 - **Support bundle:** `COLLECT-DIAGNOSTICS.bat` / `tools/collect_diagnostics.py` write one privacy-filtered ZIP (tool and configuration summaries, bounded log tail, script integrity hashes); no game data, saves or binaries, paths redacted.
