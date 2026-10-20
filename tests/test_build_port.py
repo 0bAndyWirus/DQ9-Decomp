@@ -210,6 +210,27 @@ class BuildPortTests(unittest.TestCase):
             self.assertTrue(rom.is_file())
             self.assertTrue((workspace / "config").is_dir())  # nothing was deleted before the refusal
 
+    def test_windows_build_retries_once_serially_but_linux_does_not(self):
+        failure = build_port.subprocess.CalledProcessError(1, ["cmake"])
+        cmake = ["cmake"]
+        build_dir = Path("b")  # created before os.name is patched: pathlib picks its flavour at construction
+        with mock.patch.object(build_port, "run", side_effect=[failure, None]) as run, \
+                mock.patch.object(build_port.os, "name", "nt"):
+            build_port.build_with_retry(cmake, build_dir, "dq9")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[-2:], ("--parallel", "1"))
+        self.assertEqual(run.call_args_list[0].args[:5], ("cmake", "--build", build_dir, "--target", "dq9"))
+        with mock.patch.object(build_port, "run", side_effect=[failure, failure]) as run, \
+                mock.patch.object(build_port.os, "name", "nt"):
+            with self.assertRaises(build_port.subprocess.CalledProcessError):
+                build_port.build_with_retry(cmake, build_dir)
+        self.assertEqual(run.call_count, 2)  # a persistent error is not retried again
+        with mock.patch.object(build_port, "run", side_effect=[failure]) as run, \
+                mock.patch.object(build_port.os, "name", "posix"):
+            with self.assertRaises(build_port.subprocess.CalledProcessError):
+                build_port.build_with_retry(cmake, build_dir)
+        self.assertEqual(run.call_count, 1)
+
     def test_backup_choices_match_the_derivation_tool(self):
         from tools import derive_abi_config
         self.assertEqual(build_port.BACKUP_TYPE_CHOICES, derive_abi_config.BACKUP_TYPES)

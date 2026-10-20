@@ -10,6 +10,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
   then 30,000 frames of random key holds and bottom-screen touches) finished without a crash, a "no recompiled entry" fatal or a
   stall (about 5,200-6,000 distinct top-screen frames each); sampled frames showed field exploration and the equipment and item
   menus. A live windowed session also responded to a mouse click on the touch-screen menu icon, not only to keys.
+- **Windows CI/build:** a parallel build that fails to link a freshly written `.exe` ("Access is denied" / "file in use", seen intermittently in CI) is retried once serially, in the MSVC workflow and in `tools/build_port.py` on Windows; a real error fails the retry too.
 - **Verification note:** after replaying the scripted input into the first in-game area, a short live windowed session on a
   virtual display responded to keyboard input (the in-game menu opened and closed, the character moved). Key presses must last
   at least a few frames, as on the DS itself, which polls its keys periodically; a synthetic tap shorter than one frame is missed.
