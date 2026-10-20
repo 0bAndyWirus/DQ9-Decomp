@@ -11,7 +11,6 @@
 #include <type_traits>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 namespace dsr {
 namespace {
@@ -89,12 +88,16 @@ struct Pixel {
     Color color{};
     // 3D layer pixels keep the 3D engine's full 6-bit colour for alpha blending.
     std::array<std::uint8_t, 3> rgb6{};
-    std::uint8_t priority = 3;
-    std::uint8_t layer = 5;
-    bool opaque = false;
-    bool semi = false;
-    bool three_d = false;
+    std::uint8_t priority : 2 = 3;
+    bool opaque : 1 = false;
+    bool semi : 1 = false;
+    bool three_d : 1 = false;
+    bool mosaic : 1 = false;
 };
+
+// Native scanline/mosaic buffers contain thousands of these. Keep the small
+// finite metadata fields in one byte so colour and metadata copy together.
+static_assert(sizeof(Pixel) == 8);
 
 // Reuse an immutable fill value. A temporary Pixel{} makes GCC reconstruct
 // overlapping byte fields inside each fill iteration, stalling store forwarding.
@@ -784,7 +787,6 @@ struct Gpu2D::Impl {
                 pixel.color = palette != nullptr ? indexed_color(palette, palette_base + index)
                     : direct_color(bg_palette_color(is_a, bg, palette_base + index, true));
                 pixel.priority = static_cast<std::uint8_t>(cnt & 3U);
-                pixel.layer = static_cast<std::uint8_t>(bg);
                 pixel.opaque = true;
             }
             x += count;
@@ -836,7 +838,6 @@ struct Gpu2D::Impl {
                                static_cast<std::uint8_t>(pixel.rgb6[1] >> 1U),
                                static_cast<std::uint8_t>(pixel.rgb6[2] >> 1U), alpha};
                 pixel.priority = static_cast<std::uint8_t>(cnt & 3U);
-                pixel.layer = static_cast<std::uint8_t>(bg);
                 pixel.opaque = true;
                 pixel.three_d = true;
                 line[static_cast<std::size_t>(x)] = pixel;
@@ -973,7 +974,6 @@ struct Gpu2D::Impl {
             Pixel pixel;
             pixel.color = color;
             pixel.priority = static_cast<std::uint8_t>(cnt & 3U);
-            pixel.layer = static_cast<std::uint8_t>(bg);
             pixel.opaque = true;
             line[static_cast<std::size_t>(x)] = pixel;
         }
@@ -1164,14 +1164,12 @@ struct Gpu2D::Impl {
                     const std::size_t x_index = static_cast<std::size_t>(screen_x);
                     const std::uint8_t priority = static_cast<std::uint8_t>((attr2 >> 10U) & 3U);
                     Pixel& existing = line[x_index];
-                    const int new_key = static_cast<int>(priority) * 128 + object;
-                    const int old_key = existing.opaque
-                        ? static_cast<int>(existing.priority) * 128 + (existing.layer & 0x7FU)
-                        : std::numeric_limits<int>::max();
-                    if (!existing.opaque || new_key < old_key) {
+                    // OAM is traversed in ascending index order, so an equal-priority
+                    // candidate cannot replace the winner already on this scanline.
+                    if (!existing.opaque || priority < existing.priority) {
                         existing.color = color;
                         existing.priority = priority;
-                        existing.layer = static_cast<std::uint8_t>(0x80U | static_cast<unsigned>(object));
+                        existing.mosaic = (attr0 & (1U << 12U)) != 0U;
                         existing.opaque = true;
                         existing.semi = semitransparent;
                     }
@@ -1185,8 +1183,7 @@ struct Gpu2D::Impl {
             if (!pixel.opaque) {
                 continue;
             }
-            const auto attr = read_half(oam, object_oam_base + (pixel.layer & 0x7FU) * 8U);
-            if ((attr & (1U << 12U)) == 0U) {
+            if (!pixel.mosaic) {
                 continue;
             }
             Engine& state = is_a ? engine_a : engine_b;
