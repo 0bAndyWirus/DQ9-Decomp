@@ -64,6 +64,11 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 	return result
 
 # DS firmware language ids as used by the SDL frontend: en=1 fr=2 de=3 it=4 es=5 (not the launcher list order).
+# First-run game language from the OS language (the European release ships en/fr/de/es/it).
+static func language_for_locale(locale: String) -> String:
+	var code := locale.to_lower().split("_")[0].split("-")[0]
+	return code if code in ["en", "fr", "de", "es", "it"] else "en"
+
 static func firmware_language(code: String) -> int:
 	return {"en": 1, "fr": 2, "de": 3, "it": 4, "es": 5}.get(code.to_lower(), 1)
 
@@ -84,7 +89,9 @@ static func save_settings(path: String, values: Dictionary) -> void:
 static func load_settings(path: String) -> Dictionary:
 	var values := DEFAULTS.duplicate(true)
 	var cfg := ConfigFile.new()
-	if cfg.load(path) != OK: return values
+	if cfg.load(path) != OK:
+		values["language"] = language_for_locale(OS.get_locale())
+		return values
 	for key in DEFAULTS: values[key] = cfg.get_value("settings", key, DEFAULTS[key])
 	values["language"] = values["language"] if values["language"] in ["en", "fr", "de", "es", "it"] else "en"
 	values["layout"] = clampi(int(values["layout"]), 0, 6)
