@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -1559,21 +1560,30 @@ struct Gpu3D::Impl {
             std::size_t next_count = 0;
             if (count == 0) return 0;
             auto previous = input[count - 1U];
-            auto previous_distance = plane_distance(previous, plane);
-            bool previous_inside = previous_distance >= 0.0F;
+            bool previous_inside = plane_distance(previous, plane) >= 0.0F;
             for (std::size_t i = 0; i < count; ++i) {
                 const auto current = input[i];
-                const auto current_distance = plane_distance(current, plane);
-                const bool current_inside = current_distance >= 0.0F;
-                if (current_inside != previous_inside) {
-                    const auto divisor = previous_distance - current_distance;
-                    if (std::abs(divisor) > 1.0e-20F && next_count < next.size()) {
-                        next[next_count++] = interpolate_clip(previous, current, previous_distance / divisor);
+                const bool current_inside = plane_distance(current, plane) >= 0.0F;
+                if (current_inside != previous_inside && next_count < next.size()) {
+                    // Keep the inside endpoint as the interpolation origin:
+                    // reversing it changes rounding before the 28.4 projection.
+                    const auto& inside = previous_inside ? previous : current;
+                    const auto& outside = previous_inside ? current : previous;
+                    const auto axis = static_cast<std::size_t>(plane / 2);
+                    const bool positive = (plane & 1) != 0;
+                    const float inside_w = positive ? inside.clip[3] : -inside.clip[3];
+                    const float outside_w = positive ? outside.clip[3] : -outside.clip[3];
+                    const float divisor = (outside_w - inside_w) -
+                                          (outside.clip[axis] - inside.clip[axis]);
+                    if (std::abs(divisor) > 1.0e-20F) {
+                        const float ratio = (inside.clip[axis] - inside_w) / divisor;
+                        auto vertex = interpolate_clip(inside, outside, ratio);
+                        vertex.clip[axis] = positive ? vertex.clip[3] : -vertex.clip[3];
+                        next[next_count++] = vertex;
                     }
                 }
                 if (current_inside && next_count < next.size()) next[next_count++] = current;
                 previous = current;
-                previous_distance = current_distance;
                 previous_inside = current_inside;
             }
             input = next;
@@ -1583,7 +1593,8 @@ struct Gpu3D::Impl {
         return count;
     }
 
-    ScreenVertex to_screen(const ClipVertex& vertex, std::uint32_t viewport) const {
+    template <typename VertexType>
+    ScreenVertex to_screen(const VertexType& vertex, std::uint32_t viewport) const {
         ScreenVertex result{};
         const auto w = vertex.clip[3];
         if (std::abs(w) < 1.0e-20F) return result;
@@ -2608,7 +2619,29 @@ struct Gpu3D::Impl {
             min_y = std::min(min_y, screen[i].y);
             max_y = std::max(max_y, screen[i].y);
         }
-        if (max_x - min_x < 1.0F && max_y - min_y < 1.0F) {
+        bool one_dot = max_x - min_x < 1.0F && max_y - min_y < 1.0F;
+        float dot_y = 0.0F;
+        if (one_dot) {
+            // Clipping can leave a subpixel sliver of a large polygon. Such a
+            // fragment still needs rasterization, not a dot at the first vertex.
+            const auto first = to_screen(render_vertices[polygon.index[0]], polygon.viewport);
+            dot_y = first.y;
+            float original_min_x = first.x, original_max_x = first.x;
+            float original_min_y = first.y, original_max_y = first.y;
+            for (std::size_t i = 1; i < polygon.count; ++i) {
+                const auto vertex = to_screen(render_vertices[polygon.index[i]], polygon.viewport);
+                original_min_x = std::min(original_min_x, vertex.x);
+                original_max_x = std::max(original_max_x, vertex.x);
+                original_min_y = std::min(original_min_y, vertex.y);
+                original_max_y = std::max(original_max_y, vertex.y);
+                if (original_max_x - original_min_x >= 1.0F ||
+                    original_max_y - original_min_y >= 1.0F) {
+                    one_dot = false;
+                    break;
+                }
+            }
+        }
+        if (one_dot) {
             if ((polygon.attr & (1U << 13)) != 0U) {
                 const auto one_dot_limit = get32(0x04000610U) & 0x7fffU;
                 bool visible = false;
@@ -2624,7 +2657,7 @@ struct Gpu3D::Impl {
             const auto& first = render_vertices[polygon.index[0]];
             prepared.dot = {first.clip, first.u, first.v, first.color};
             // The dot path uses the original first vertex, not a clipped one.
-            const int y = static_cast<int>(std::floor(to_screen(prepared.dot, polygon.viewport).y));
+            const int y = static_cast<int>(std::floor(dot_y));
             if (y < 0 || y >= tgt_.height) return;
             prepared.y_begin = y;
             prepared.y_end = y + 1;
@@ -2918,6 +2951,21 @@ gpu3d_detail::Gpu3DTestAccess::transformed_texcoord(Gpu3D& gpu) {
 
 std::uint8_t gpu3d_detail::Gpu3DTestAccess::rounded_color(float value, bool six_bit) {
     return six_bit ? Gpu3D::Impl::clamp6(value) : Gpu3D::Impl::clamp5(value);
+}
+
+std::size_t gpu3d_detail::Gpu3DTestAccess::clip_positions(
+    Gpu3D& gpu, const std::array<std::array<float, 4>, 3>& positions,
+    std::array<std::array<float, 4>, 16>& clipped) {
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        gpu.impl_->render_vertices[i].clip = positions[i];
+    Gpu3DPolygon polygon{};
+    polygon.index = {0, 1, 2, 0};
+    polygon.count = 3;
+    polygon.attr = 1U << 12U;
+    std::array<ClipVertex, 16> vertices{};
+    const auto count = gpu.impl_->clip_polygon(polygon, vertices);
+    for (std::size_t i = 0; i < count; ++i) clipped[i] = vertices[i].clip;
+    return count;
 }
 
 std::array<gpu3d_detail::Texel, 64> gpu3d_detail::Gpu3DTestAccess::sample_texels(

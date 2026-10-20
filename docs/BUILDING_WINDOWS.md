@@ -9,8 +9,8 @@ Targets are Windows 10/11 x64. Images, saves, generated game sources, captures, 
 The Windows kit contains **source and scripts only: no game or binary is included**.
 The first ROM run on Windows is unverified by the author. The `kit-smoke` CI job
 (a `windows-latest` runner) builds and tests the ROM-free runtime using Zig and
-packages the kit; it passed for v0.2.0. That is evidence for the toolchain and
-runtime tests, not for Windows gameplay.
+packages the source-only kit and exercises the batch entry points with ROM-free
+fixtures. That is evidence for the toolchain and runtime tests, not for Windows gameplay.
 
 Requirements: Windows 10/11 x64, Python 3.10+ from
 [python.org](https://www.python.org/downloads/windows/) with **Add python.exe to PATH**
@@ -23,7 +23,7 @@ BUILD-DQ9.bat "C:\path\game.nds"
 PLAY-DQ9.bat
 ```
 
-In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead. `PLAY-DQ9.bat` without arguments opens the launcher, which remembers your ROM path, language and options.
+In PowerShell, use `.\BUILD-DQ9.bat` and `.\PLAY-DQ9.bat` instead. Double-clicking `BUILD-DQ9.bat` also prompts for a ROM path (a dragged, quoted path is accepted). The script records output in `build\build-log.txt` and stops on a failed setup/build. `PLAY-DQ9.bat` without arguments opens the launcher, which remembers your ROM path, language and options.
 The language is optional (default `en`); `fr`, `de`, `es` and `it` are also supported.
 For a fresh European-release save, choose **EEPROM 64 KB** on the launcher's
 **ROM / SAVE → Save chip** control before Launch. The direct ROM/language form
@@ -137,7 +137,7 @@ The matching extension and session DLL are written to `godot/bin/`. `godot/dq9.g
 
 To run locally, use the [Godot 4.5 Windows x64 editor](https://godotengine.org/download/archive/4.5-stable/), set `GODOT` to its executable, and open `godot\project.godot` or run `tools\run_godot.bat --menu`. Export templates are not needed to run the project in the editor.
 
-A local standalone Windows export requires matching export templates and a Windows Desktop x86_64 preset. The tracked preset is Linux-only. Include the matching extension/session DLLs, but never an image or save; the resulting game export must remain private.
+A local standalone Windows export uses the tracked **Windows Desktop** x86_64 preset and separately installed matching export templates. Include the matching extension/session DLLs, but never an image or save; the resulting game export must remain private. See [the export procedure and verification limits](USING_GODOT.md#local-windows-desktop-export-experimental).
 
 ## Native MSVC build
 
@@ -185,4 +185,4 @@ PE/import inspection verifies linkage and architecture, not execution. Optional 
 
 On a Windows workstation, run runtime tests with the external reference source, then validate both hosts locally with suitable inputs: audio, controllers, touch, save persistence, scaling, fibers, and shutdown. Hardware and GPU-backend behavior require separate exercised checks. Keep all generated sources, captures, saves, dumps, and game binaries private.
 
-As of 2026-10-12, native and cross-build configurations are present. This public guide asserts no full-game acceptance, target-hardware result, binary size, game coverage total, or performance guarantee.
+As of 2026-10-20, native and cross-build configurations, automated source-kit entry points and ROM-free Windows CI fixtures are present. This public guide asserts no full-game acceptance, target-hardware result, binary size, game coverage total, or performance guarantee.

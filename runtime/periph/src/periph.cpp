@@ -448,10 +448,6 @@ struct GameCard::Impl {
             ++transfer_pos_;
             if (transfer_pos_ >= transfer_size_) {
                 complete_card_transfer();
-            } else if ((transfer_pos_ & 3u) == 0) {
-                transfer_data_ready_ = false;
-                rom_control_ &= ~kRomDataReady;
-                transfer_ticks_ = 2;
             }
         }
         return value;
@@ -1329,6 +1325,12 @@ bool GameCard::flush_save() {
 }
 
 struct Spi::Impl {
+    // Interior calibration points give the SDK an exact, reversible ADC scale.
+    static constexpr int kTouchAdcPerPixel = 16;
+    static constexpr int kTouchCalibrationLowPixel = 32;
+    static constexpr int kTouchCalibrationHighXPixel = 224;
+    static constexpr int kTouchCalibrationHighYPixel = 128;
+
     explicit Impl(const FirmwareSettings& settings) {
         firmware_.fill(0xff);
         firmware_write_bytes_.reserve(256);
@@ -1383,15 +1385,15 @@ struct Spi::Impl {
         put_le16(area + 0x54, 0);
         area[0x56] = 0;
         area[0x57] = 0;
-        // The same raw endpoints drive set_touch() and the firmware calibration.
-        put_le16(area + 0x58, 0x0100);
-        put_le16(area + 0x5a, 0x0100);
-        area[0x5c] = 1;
-        area[0x5d] = 1;
-        put_le16(area + 0x5e, 0x0f00);
-        put_le16(area + 0x60, 0x0f00);
-        area[0x62] = 0xff;
-        area[0x63] = 0xbf;
+        // Firmware coordinates are one-based; ADC conversion accepts zero-based pixels.
+        put_le16(area + 0x58, kTouchCalibrationLowPixel * kTouchAdcPerPixel);
+        put_le16(area + 0x5a, kTouchCalibrationLowPixel * kTouchAdcPerPixel);
+        area[0x5c] = kTouchCalibrationLowPixel + 1;
+        area[0x5d] = kTouchCalibrationLowPixel + 1;
+        put_le16(area + 0x5e, kTouchCalibrationHighXPixel * kTouchAdcPerPixel);
+        put_le16(area + 0x60, kTouchCalibrationHighYPixel * kTouchAdcPerPixel);
+        area[0x62] = kTouchCalibrationHighXPixel + 1;
+        area[0x63] = kTouchCalibrationHighYPixel + 1;
         const std::uint16_t flags = static_cast<std::uint16_t>(0xec00u |
             (settings.language & 7u));
         put_le16(area + 0x64, flags);
@@ -1748,18 +1750,11 @@ struct Spi::Impl {
         touch_down_ = down;
         const int cx = static_cast<int>(clamp_unsigned(x, 255));
         const int cy = static_cast<int>(clamp_unsigned(y, 191));
-        constexpr int raw_min = 0x100;
-        constexpr int raw_max = 0x0f00;
-        constexpr int screen_x1 = 1;
-        constexpr int screen_x2 = 255;
-        constexpr int screen_y1 = 1;
-        constexpr int screen_y2 = 191;
-        const int raw_x = raw_min + ((cx - (screen_x1 - 1)) * (raw_max - raw_min)) /
-                                         (screen_x2 - screen_x1);
-        const int raw_y = raw_min + ((cy - (screen_y1 - 1)) * (raw_max - raw_min)) /
-                                         (screen_y2 - screen_y1);
-        raw_x_ = static_cast<std::uint16_t>(std::clamp(raw_x, raw_min, raw_max));
-        raw_y_ = static_cast<std::uint16_t>(std::clamp(raw_y, raw_min, raw_max));
+        // Calibration endpoints are interior points, not ADC saturation limits.
+        // An integral scale survives the guest SDK's fixed-point inverse without
+        // losing a pixel to two successive truncations.
+        raw_x_ = static_cast<std::uint16_t>(cx * kTouchAdcPerPixel);
+        raw_y_ = static_cast<std::uint16_t>(cy * kTouchAdcPerPixel);
     }
 
     const std::uint8_t* firmware() const { return firmware_.data(); }
@@ -1788,8 +1783,8 @@ struct Spi::Impl {
     std::vector<std::uint8_t> firmware_write_bytes_;
     std::size_t firmware_id_pos_ = 0;
     bool touch_down_ = false;
-    std::uint16_t raw_x_ = 0x0100;
-    std::uint16_t raw_y_ = 0x0f00;
+    std::uint16_t raw_x_ = 0;
+    std::uint16_t raw_y_ = 0;
     std::uint8_t tsc_channel_ = 0;
     bool tsc_resolution_8_ = false;
     std::uint8_t tsc_power_mode_ = 0;
@@ -1815,22 +1810,22 @@ const std::uint8_t* Spi::firmware() const { return impl_->firmware(); }
 std::uint32_t Spi::firmware_size() const { return impl_->firmware_size(); }
 
 struct Rtc::Impl {
-    enum class Mode : std::uint8_t { Command, Read, Write };
+    enum class Mode : std::uint8_t { Idle, Command, Read, Write };
 
     void reset() {
         gpio_ = 0;
         selected_ = false;
         clock_ = false;
-        mode_ = Mode::Command;
+        mode_ = Mode::Idle;
         bits_ = 0;
         input_byte_ = 0;
-        output_bytes_.clear();
-        output_bytes_.reserve(7);
+        output_bytes_.fill(0);
+        output_size_ = 0;
         output_byte_pos_ = 0;
         output_bit_pos_ = 0;
         parameter_count_ = 0;
-        parameter_bytes_.clear();
-        parameter_bytes_.reserve(7);
+        parameter_byte_pos_ = 0;
+        parameter_bytes_.fill(0);
         command_ = 0;
         status1_ = 0x02; // 24-hour mode.
         status2_ = 0;
@@ -1883,19 +1878,19 @@ struct Rtc::Impl {
         const unsigned hour24 = static_cast<unsigned>(local.tm_hour);
         const unsigned hour = (status1_ & 0x02u) != 0 ? hour24 : hour24 % 12u;
         const auto hour_value = static_cast<std::uint8_t>(bcd(hour) |
-                                                           (hour24 >= 12 ? 0x40u : 0u));
+                                                           (hour >= 12 ? 0x40u : 0u));
         return {bcd(year), bcd(month), bcd(day), static_cast<std::uint8_t>(weekday),
                 hour_value, bcd(static_cast<unsigned>(local.tm_min)),
                 bcd(static_cast<unsigned>(local.tm_sec))};
     }
 
     std::size_t parameter_length(std::uint8_t command) const {
-        switch ((command >> 4) & 7u) {
+        switch (command >> 1) {
         case 0: return 1;
         case 1: return 1;
         case 2: return 7;
-        case 3: return 1;
-        case 4: return ((status2_ & 0x04u) != 0) ? 3 : 1;
+        case 3: return 3;
+        case 4: return ((status2_ & 0x0fu) == 0x04u) ? 3 : 1;
         case 5: return 3;
         case 6: return 1;
         case 7: return 1;
@@ -1903,47 +1898,61 @@ struct Rtc::Impl {
         return 1;
     }
 
-    void setup_command(std::uint8_t command) {
-        command_ = command;
-        const unsigned index = (command >> 4) & 7u;
-        parameter_count_ = parameter_length(command);
-        parameter_bytes_.assign(parameter_count_, 0);
-        output_bytes_.clear();
+    void setup_command(std::uint8_t wire_command) {
+        // Commands accept either bit order; parameters and replies are LSB first.
+        // Normalize the mirrored 0x?6 form to the ordinary command's low nibble.
+        command_ = (wire_command & 0x0fu) == 0x06u
+            ? static_cast<std::uint8_t>(((wire_command & 0x80u) >> 7) |
+                                        ((wire_command & 0x40u) >> 5) |
+                                        ((wire_command & 0x20u) >> 3) |
+                                        ((wire_command & 0x10u) >> 1))
+            : static_cast<std::uint8_t>(wire_command & 0x0fu);
+        const unsigned index = command_ >> 1;
+        parameter_count_ = parameter_length(command_);
+        parameter_byte_pos_ = 0;
+        output_size_ = 0;
         output_byte_pos_ = 0;
         output_bit_pos_ = 0;
         bits_ = 0;
         input_byte_ = 0;
-        if ((command & 0x80u) == 0) {
+        if ((command_ & 1u) == 0) {
             mode_ = Mode::Write;
             return;
         }
         mode_ = Mode::Read;
         switch (index) {
-        case 0: output_bytes_.push_back(static_cast<std::uint8_t>(status1_ & 0x8eu)); break;
-        case 1: output_bytes_.push_back(status2_); break;
-        case 2: {
-            const auto date = now_date_time();
-            output_bytes_.assign(date.begin(), date.end());
+        case 0: output_bytes_[0] = static_cast<std::uint8_t>(status1_ & 0x0fu); output_size_ = 1; break;
+        case 1: output_bytes_[0] = status2_; output_size_ = 1; break;
+        case 2:
+            output_bytes_ = now_date_time();
+            output_size_ = 7;
             break;
-        }
         case 3: {
             const auto date = now_date_time();
-            output_bytes_.assign(date.begin() + 4, date.end());
+            std::copy_n(date.begin() + 4, 3, output_bytes_.begin());
+            output_size_ = 3;
             break;
         }
         case 4:
-            if ((status2_ & 0x04u) != 0)
-                output_bytes_.assign(alarm1_.begin(), alarm1_.end());
-            else output_bytes_.push_back(int1_);
+            if ((status2_ & 0x0fu) == 0x04u) {
+                std::copy(alarm1_.begin(), alarm1_.end(), output_bytes_.begin());
+                output_size_ = 3;
+            } else {
+                output_bytes_[0] = int1_;
+                output_size_ = 1;
+            }
             break;
-        case 5: output_bytes_.assign(alarm2_.begin(), alarm2_.end()); break;
-        case 6: output_bytes_.push_back(clock_adjust_); break;
-        case 7: output_bytes_.push_back(free_register_); break;
+        case 5:
+            std::copy(alarm2_.begin(), alarm2_.end(), output_bytes_.begin());
+            output_size_ = 3;
+            break;
+        case 6: output_bytes_[0] = clock_adjust_; output_size_ = 1; break;
+        case 7: output_bytes_[0] = free_register_; output_size_ = 1; break;
         }
     }
 
     void commit_write() {
-        const unsigned index = (command_ >> 4) & 7u;
+        const unsigned index = command_ >> 1;
         switch (index) {
         case 0: status1_ = static_cast<std::uint8_t>((status1_ & 0xf0u) | (parameter_bytes_[0] & 0x0fu)); break;
         case 1: status2_ = parameter_bytes_[0]; break;
@@ -1951,7 +1960,7 @@ struct Rtc::Impl {
         case 3: // Clock setting writes are accepted but the host clock is authoritative.
             break;
         case 4:
-            if ((status2_ & 0x04u) != 0)
+            if ((status2_ & 0x0fu) == 0x04u)
                 std::copy_n(parameter_bytes_.begin(), 3, alarm1_.begin());
             else int1_ = parameter_bytes_[0];
             break;
@@ -1959,42 +1968,33 @@ struct Rtc::Impl {
         case 6: clock_adjust_ = parameter_bytes_[0]; break;
         case 7: free_register_ = parameter_bytes_[0]; break;
         }
-        mode_ = Mode::Command;
+        mode_ = Mode::Idle;
         bits_ = 0;
         input_byte_ = 0;
     }
 
-    void rising_edge(bool host_output, bool host_bit) {
-        if (!selected_) return;
-        if (host_output) {
+    void falling_edge(bool host_output, bool host_bit) {
+        if (host_output && (mode_ == Mode::Command || mode_ == Mode::Write)) {
             input_byte_ = static_cast<std::uint8_t>(input_byte_ |
                 (static_cast<std::uint8_t>(host_bit) << bits_));
-            ++bits_;
-            if (bits_ == 8) {
+            if (++bits_ == 8) {
                 if (mode_ == Mode::Command) {
                     setup_command(input_byte_);
-                } else if (mode_ == Mode::Write) {
-                    if (parameter_count_ > 0) {
-                        const std::size_t index = parameter_bytes_.size() - parameter_count_;
-                        parameter_bytes_[index] = input_byte_;
-                        --parameter_count_;
-                        if (parameter_count_ == 0) commit_write();
-                    }
+                } else {
+                    parameter_bytes_[parameter_byte_pos_++] = input_byte_;
+                    if (parameter_byte_pos_ == parameter_count_) commit_write();
                 }
                 bits_ = 0;
                 input_byte_ = 0;
             }
-        } else if (mode_ == Mode::Read && !output_bytes_.empty()) {
-            const std::uint8_t value = output_bytes_[output_byte_pos_ % output_bytes_.size()];
-            const std::uint8_t output_bit = static_cast<std::uint8_t>((value >> output_bit_pos_) & 1u);
+        } else if (!host_output && mode_ == Mode::Read) {
+            const auto output_bit = static_cast<std::uint8_t>(
+                (output_bytes_[output_byte_pos_] >> output_bit_pos_) & 1u);
             gpio_ = static_cast<std::uint8_t>((gpio_ & ~1u) | output_bit);
-            ++output_bit_pos_;
-            if (output_bit_pos_ == 8) {
+            if (++output_bit_pos_ == 8) {
                 output_bit_pos_ = 0;
-                ++output_byte_pos_;
+                if (++output_byte_pos_ == output_size_) mode_ = Mode::Idle;
             }
-        } else {
-            gpio_ &= static_cast<std::uint8_t>(~1u);
         }
     }
 
@@ -2003,44 +2003,39 @@ struct Rtc::Impl {
     void write_gpio(std::uint8_t value) {
         const bool previous_select = selected_;
         const bool previous_clock = clock_;
-        gpio_ = value;
-        const bool select = (value & (1u << 6)) != 0 && (value & (1u << 2)) != 0;
-        const bool next_clock = (value & (1u << 5)) != 0 &&
-                                (value & (1u << 1)) != 0;
-        const bool host_output = (value & (1u << 4)) != 0;
-        const bool host_bit = (value & 1u) != 0;
-        if (!select) {
-            if (selected_) {
-                selected_ = false;
-                mode_ = Mode::Command;
-                bits_ = 0;
-                input_byte_ = 0;
-                output_bytes_.clear();
-            }
-        } else if (!previous_select) {
-            selected_ = true;
-            mode_ = Mode::Command;
+        const bool select = (value & 0x40u) != 0 ? (value & 0x04u) != 0 : selected_;
+        const bool next_clock = (value & 0x20u) != 0 ? (value & 0x02u) != 0 : clock_;
+        const bool host_output = (value & 0x10u) != 0;
+        const auto data_bit = static_cast<std::uint8_t>(host_output ? value & 1u : gpio_ & 1u);
+        // Host writes cannot overwrite the device-driven SIO bit in input mode.
+        gpio_ = static_cast<std::uint8_t>((value & 0xf8u) | (select ? 4u : 0u) |
+                                          (next_clock ? 2u : 0u) | data_bit);
+        selected_ = select;
+        if (!select || !previous_select) {
+            mode_ = select && previous_clock && next_clock ? Mode::Command : Mode::Idle;
             bits_ = 0;
             input_byte_ = 0;
-            output_bytes_.clear();
+            output_size_ = 0;
             output_byte_pos_ = 0;
             output_bit_pos_ = 0;
         }
-        if (select && selected_ && !previous_clock && next_clock)
-            rising_edge(host_output, host_bit);
+        if (select && previous_select && previous_clock && !next_clock)
+            falling_edge(host_output, data_bit != 0);
         clock_ = next_clock;
     }
 
     std::uint8_t gpio_ = 0;
     bool selected_ = false;
     bool clock_ = false;
-    Mode mode_ = Mode::Command;
+    Mode mode_ = Mode::Idle;
     unsigned bits_ = 0;
     std::uint8_t input_byte_ = 0;
     std::uint8_t command_ = 0;
     std::size_t parameter_count_ = 0;
-    std::vector<std::uint8_t> parameter_bytes_;
-    std::vector<std::uint8_t> output_bytes_;
+    std::size_t parameter_byte_pos_ = 0;
+    std::array<std::uint8_t, 7> parameter_bytes_{};
+    std::array<std::uint8_t, 7> output_bytes_{};
+    std::size_t output_size_ = 0;
     std::size_t output_byte_pos_ = 0;
     unsigned output_bit_pos_ = 0;
     std::uint8_t status1_ = 0x02;

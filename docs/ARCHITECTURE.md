@@ -52,6 +52,54 @@ title-specific offsets in the runtime. `SessionConfig::abi_config_path` or
 diagnostic. Public field definitions live in `runtime/include/dsr/abi_config.h`;
 no title layouts are shipped.
 
+### CPU and Slot-1 timing approximation
+
+ARM9 generated blocks charge a reference-calibrated average of **161/64 CPU
+cycles per ordinary fetched instruction**. `Cpu::cycle_fraction` carries the
+remainder across blocks, calls, scheduler slices, and guest thread switches;
+reset clears it. It is CPU timing state, not saved architectural/context state.
+A long Thumb BL/BLX counts as two fetched instructions, and failed ARM
+predicates still incur their fetch cost. ARM7 retains its integer
+instruction-plus-memory estimate. This coefficient is an approximation, not an
+ARM946 cache-tag, wait-state, pipeline-hazard, or hardware-accurate timing model.
+Generated code and runtime must use the same CPU contract and timing emitter;
+rebuilding only the runtime does not update previously generated block costs.
+
+Data SWIs and `WaitByLoop` charge one generated base cycle instead of the ARM9
+average. Runtime HLE adds two dispatch cycles plus the reference handler's
+returned cycles, on either CPU. A failed conditional data/delay SWI therefore
+costs only its one base cycle. `CpuSet`, `CpuFastSet`, square root, CRC, debugger
+probe, valid bit unpack, Huffman, ARM9 differential filters, and ARM7 lookup
+tables have four-cycle totals, independent of data size; division costs nine
+cycles, or three for a zero divisor. Nonempty LZ77/RL completion returns zero
+handler cycles (three total), while an initially empty valid stream returns
+one (four total). Invalid bit-unpack parameters, a failed callback open, and
+invalid stream ranges return handled zero-cycle results; these remain distinct
+from unsupported SWIs. No per-byte copy/decompression charge is invented.
+`WaitByLoop` totals three cycles plus its loop count times four on ARM7, or
+two/eight on ARM9 with/without enabled TCM. Other control SWIs retain their
+cooperative halt/wait accounting.
+
+Slot-1 schedules its initial READY after `(8 + gap) * clocks + 4` machine
+ticks and holds READY until the card block is consumed. CPU polling can read
+successive words without another scheduler slice. One readiness callback lets
+cartridge DMA drain until the card block ends or the latched DMA count
+completes. DMA completion IRQ, repeat rearming, and destination reload happen
+once per programmed completion; a repeat channel cannot recursively consume
+another block in that callback. Card exhaustion must not create stale extra
+writes or a premature DMA IRQ. ROMCTRL size codes 1–6 transfer
+`0x100 << code` bytes (512–16384), code 7 transfers four bytes, and code 0 none
+([cartridge I/O contract](https://problemkaputt.de/gbatek-ds-cartridge-i-o-ports.htm)).
+
+The held-READY and bounded-DMA changes form one timing contract: holding READY
+with a one-unit-per-callback DMA would stall after its first word. Deterministic
+ROM-free regressions cover fractional carry/debt, SWI costs, initial READY
+latency, successive card data, completion/IRQ boundaries, DMA repeat/count
+latching, card exhaustion, and slot ownership. Cross-run comparisons require
+identical starting backup bytes as well as inputs, RTC, and CPU policy.
+Neither this timing approximation nor synthetic tests establish general frame
+parity, hardware accuracy, or native game playability.
+
 ### Runtime diagnostics
 
 Set `DSR_WATCH=addr[:length][,addr[:length]...]` to log writes intersecting selected guest-memory byte ranges; numbers accept decimal or `0x` hexadecimal, and an address without a length watches one byte. Watched pages use the core's slow write path, which logs frame, CPU, guest PC, thread context, Fiber identity, address, width, old/new values, guest registers, and CPSR. Generated stores report their exact instruction PC; other runtime-originated writes fall back to the CPU's most recently dispatched guest PC. `runtime/core/THREADS.md` documents the ARM9 stack identity checks and `DSR_TRACE_THREADS` diagnostics.
@@ -67,12 +115,16 @@ Set `DSR_VERIFY_DISPATCH=1` to compare every reused ambiguous resolution with th
 ### GPU raster hot paths
 
 GPU2D uses page-mapped VRAM reads with an overlap fallback, scanline text-map/byte/palette caching, direct OAM reads with hoisted object-matrix state, and priority lists limited to enabled backgrounds. GPU3D prepares shading/texture-wrap state per polygon and skips empty spans. These implementation choices imply no game-wide performance or parity result.
+Synthetic uniform-clear regressions seed every named framebuffer field with stale values, compare against the scalar register-clear result, and check complete native/scaled targets across render-thread counts and capture modes. The test state injector preserves facing metadata as well as colour, depth, IDs and stencil/fog flags; no framebuffer representation padding is compared.
 GPU3D rejects failed-depth fragments before texture sampling and colour shading. Depth-failed ID-zero shadow masks still update stencil; successful fragments retain the same shading and blend order. Regression coverage checks that both filled and wireframe hidden polygons avoid texture lookups while visible polygons still sample.
 Texture-palette address slots 6 and 7 mirror physical slots 1 and 2, matching the DS palette wrap.
 Palette and OAM mirror their 2 KiB storage throughout their 16 MiB ARM9 windows; byte writes are ignored. Overlapping VRAM banks OR on reads and receive writes together. Texture and clear-image access retain live mapping semantics, including overlaps; cached texture data must be invalidated when its source changes. Hardware overlap discussion is recorded in [melonDS's VRAM notes](https://melonds.kuribo64.net/board/thread.php?pid=3975#3975).
 The 3D swap/flush at scanline 192 does not rasterize. Rasterization starts at scanline 214 (the reference's rigorous-timing boundary), after the guest's VBlank texture uploads; texture and clear-image mappings are resolved live then. This renderer still rasterizes a whole frame synchronously, not scanline by scanline, so VRAM writes after scanline 214 affect the next render rather than partially updating the current image.
 GPU3D texture decoding keeps RGB in native 6-bit texture-cache precision. In 4×4-compressed palette modes 1 and 3, interpolation follows DeSmuME's 5→8-bit expansion, blend, then cache-format conversion; blending the original 5-bit components first can round textured pixels differently.
+A3I5 alpha expands from three to five bits with integer truncation: `floor(alpha3 * 31 / 7)` gives `0, 4, 8, 13, 17, 22, 26, 31`. Both the scalar and whole-image decoders use this mapping; nearest rounding makes partially transparent texels too opaque. A5I3 preserves its five stored alpha bits without rescaling. ROM-free regressions cover every A3I5 intensity/alpha combination and every A5I3 byte in both decoder paths.
 Shadow colour polygons preserve their interpolated vertex RGB and bypass texture shading; only ID-zero depth-failed masks set stencil. Repeated translucent polygon IDs reject the entire fragment, independently of alpha-blend enable, without updating depth. Clear-image colour/depth slots read unmapped VRAM as zero independently rather than reverting to the register clear plane. Engine A selects the 3D BG0 layer only through `DISPCNT.BG0_3D`, including display mode 6.
+Homogeneous polygon clipping evaluates intersections from the inside endpoint toward the outside endpoint, then snaps the active coordinate exactly to the signed clip-plane `w`. Reversing interpolation or retaining its rounded active coordinate can change the subsequent 28.4 projection and texture samples despite identical guest geometry. A ROM-free regression crosses all six homogeneous planes in both directions and compares XYZW against reference-style arithmetic. This precision contract is separate from guest loading/animation timing and does not establish whole-screen parity.
+One-dot classification also checks the original polygon's projected bounds, not only its clipped fragment. A large polygon reduced to a subpixel viewport-edge sliver stays on the filled/wire raster path instead of being relocated to its original first vertex by the dot path. Genuine one-dot polygons retain their original first vertex and W-boundary behavior. ROM-free left/top sliver cases check the filled boundary pixel with inline and banded rendering.
 GPU3D `BOX_TEST` wraps each Q4.12 endpoint to 16 bits and clips all six box faces against the six homogeneous view planes; a box-face polygon must retain at least three vertices to intersect. A single-plane rejection test is insufficient for boxes separated at frustum corners.
 GPU3D geometry commands retain complete position/vector matrix pairs and use wrapping matrix-product results, while vertex transforms saturate. Matrix stack addressing wraps its six-bit pointer and still transfers data on overflow/underflow. `VTX_DIFF` adds signed Q0.12 deltas with 16-bit coordinate wrapping. Texture generation preserves the transformed coordinate range and applies distinct TEXCOORD (`>>12`) and normal/vertex (`>>24`) accumulators. Each polygon captures its viewport at assembly, so later VIEWPORT commands do not relocate already-submitted geometry.
 GPU3D preserves direct-port command boundaries in the FIFO: a direct packet arriving between a packed command and its arguments executes without consuming or replacing those arguments. An incomplete packed command resumes afterward. GXSTAT test busy (bit 0) and push/pop stack busy (bit 14) count accepted commands until retirement, including commands stalled behind SWAP_BUFFERS; FIFO clear and reset discard their accounting. Complete direct-port packets held behind full queues are retried when capacity returns, so their staged parameter counts cannot leave busy permanently set. STORE/RESTORE do not assert bit 14, matching `FIFO.cpp::IsMatrixStackCommand` in the reference emulator.

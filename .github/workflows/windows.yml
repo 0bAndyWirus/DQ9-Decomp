@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -67,6 +71,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/workflows/windows.yml
       - name: Install kit build dependencies
         run: python -m pip install PyYAML capstone unicorn cmake ninja ziglang==0.16.0
       - name: Build and test ROM-free runtime with the kit toolchain

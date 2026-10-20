@@ -71,6 +71,17 @@ Direct start without the launcher:  PLAY-DQ9.bat "C:\path\game.nds" en
 Hold a key for about a third of a second: sub-frame taps are missed, as on a
 real DS. Keep backups of your saves and keep all local output out of any ZIP.
 
+The SDL host flushes dirty cartridge saves periodically and on exit. Before the
+first overwrite in a session it keeps a timestamped backup under backups/ next
+to the save (last five retained by default). SAVE FAILED stays visible until a
+successful retry: repair folder permissions/free space before closing.
+For native --save-backups, --autosave-frames and --restore-save options see
+docs/CONFIGURATION.md and docs/GETTING_STARTED.md. Close other sessions using a
+save before restoring; the explicit chip capacity must match the backup.
+Godot's Settings and Pause panels list backups and offer a confirmed Restore
+action. They do not schedule periodic saves. A restore replaces cartridge save
+data, not the current frame: no save states are supported.
+
 
 IF SOMETHING GOES WRONG
 -----------------------
