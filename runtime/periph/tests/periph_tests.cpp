@@ -172,6 +172,16 @@ std::uint8_t spi_byte(dsr::Spi& spi, std::uint8_t value) {
     return static_cast<std::uint8_t>(spi.io_read(kSpiData, 8));
 }
 
+std::uint16_t read_touch_axis(dsr::Spi& spi, std::uint8_t command) {
+    spi.io_write(kSpiCnt, 0x8a00, 16);
+    (void)spi_byte(spi, command);
+    spi.io_write(kSpiCnt, 0x8a00, 16);
+    const std::uint8_t high = spi_byte(spi, 0);
+    spi.io_write(kSpiCnt, 0x8200, 16);
+    const std::uint8_t low = spi_byte(spi, 0);
+    return static_cast<std::uint16_t>((high << 5) | (low >> 3));
+}
+
 void rtc_gpio(dsr::Rtc& rtc, std::uint8_t value) { rtc.io_write(kRtc, value, 8); }
 
 void rtc_write_byte(dsr::Rtc& rtc, std::uint8_t value, std::uint8_t base) {
@@ -183,14 +193,103 @@ void rtc_write_byte(dsr::Rtc& rtc, std::uint8_t value, std::uint8_t base) {
     }
 }
 
-std::uint8_t rtc_read_byte(dsr::Rtc& rtc, std::uint8_t base) {
+void rtc_begin(dsr::Rtc& rtc, std::uint8_t command) {
+    rtc_gpio(rtc, 0x72); // CS low, SCK high; all three pins are outputs.
+    rtc_gpio(rtc, 0x76); // Select while SCK remains high.
+    rtc_write_byte(rtc, command, 0x74);
+}
+
+std::uint8_t rtc_read_guest_byte(dsr::Rtc& rtc) {
     std::uint8_t value = 0;
     for (unsigned bit = 0; bit < 8; ++bit) {
-        rtc_gpio(rtc, static_cast<std::uint8_t>(base & ~0x02u));
-        rtc_gpio(rtc, static_cast<std::uint8_t>(base | 0x02u));
-        value |= static_cast<std::uint8_t>((rtc.io_read(kRtc, 8) & 1u) << bit);
+        rtc_gpio(rtc, 0x64); // The ARM7 SDK samples after driving SCK low.
+        const auto low = rtc.io_read(kRtc, 16) & 1u;
+        value |= static_cast<std::uint8_t>(low << bit);
+        rtc_gpio(rtc, 0x66);
+        assert((rtc.io_read(kRtc, 16) & 1u) == low); // Input SIO survives host writes.
     }
     return value;
+}
+
+void test_rtc_guest_wire_protocol() {
+    dsr::Rtc rtc;
+    rtc.set_deterministic_clock(1791705158, 120);
+    rtc.set_emulated_ticks(52u * 33'513'982u);
+    const auto read_time = [&](std::uint8_t command) {
+        rtc_begin(rtc, command);
+        std::array<std::uint8_t, 3> result{};
+        for (auto& byte : result) byte = rtc_read_guest_byte(rtc);
+        rtc_gpio(rtc, 0x62);
+        return result;
+    };
+    // Both command bit orders address TIME, not the clock-adjust register.
+    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x09, 0x53, 0x30}));
+    assert((read_time(0x67) == std::array<std::uint8_t, 3>{0x09, 0x53, 0x30}));
+    for (const auto command : {0xa6, 0x65}) {
+        rtc_begin(rtc, static_cast<std::uint8_t>(command));
+        std::array<std::uint8_t, 7> date{};
+        for (auto& byte : date) byte = rtc_read_guest_byte(rtc);
+        rtc_gpio(rtc, 0x62);
+        assert((date == std::array<std::uint8_t, 7>{0x26, 0x10, 0x11, 0, 0x09, 0x53, 0x30}));
+    }
+    const auto write = [&](std::uint8_t command, auto bytes) {
+        rtc_begin(rtc, command);
+        for (const auto byte : bytes) rtc_write_byte(rtc, byte, 0x74);
+        rtc_gpio(rtc, 0x62);
+    };
+    const auto read_register = [&](std::uint8_t command) {
+        rtc_begin(rtc, command);
+        const auto value = rtc_read_guest_byte(rtc);
+        rtc_gpio(rtc, 0x62);
+        return value;
+    };
+    write(0x46, std::array<std::uint8_t, 1>{0x04}); // STATUS2.
+    assert(read_register(0xc6) == 0x04);
+    assert(read_register(0x63) == 0x04);
+    const std::array<std::uint8_t, 3> alarm{0x21, 0x34, 0x56};
+    write(0x16, alarm); // ALARM1 is three bytes only when STATUS2[3:0] == 4.
+    rtc_begin(rtc, 0x96);
+    for (const auto byte : alarm) assert(rtc_read_guest_byte(rtc) == byte);
+    rtc_gpio(rtc, 0x62);
+    write(0x56, alarm); // ALARM2.
+    rtc_begin(rtc, 0xd6);
+    for (const auto byte : alarm) assert(rtc_read_guest_byte(rtc) == byte);
+    rtc_gpio(rtc, 0x62);
+    write(0x36, std::array<std::uint8_t, 1>{0x35}); // CLOCK ADJUST.
+    assert(read_register(0xb6) == 0x35);
+    write(0x76, std::array<std::uint8_t, 1>{0xa5}); // FREE.
+    rtc_begin(rtc, 0xf6);
+    assert(rtc_read_guest_byte(rtc) == 0xa5);
+    assert(rtc_read_guest_byte(rtc) == 0xff); // Finished transfers do not wrap.
+    rtc_gpio(rtc, 0x62);
+    rtc_begin(rtc, 0x76);
+    for (unsigned bit = 0; bit < 4; ++bit) {
+        rtc_gpio(rtc, 0x74);
+        rtc_gpio(rtc, 0x76);
+    }
+    rtc_gpio(rtc, 0x62); // Abort a partial FREE write.
+    assert(read_register(0xf6) == 0xa5);
+    rtc_gpio(rtc, 0x72);
+    rtc_gpio(rtc, 0x74); // CS asserted with SCK low must not start a command.
+    rtc_write_byte(rtc, 0x76, 0x74);
+    rtc_write_byte(rtc, 0, 0x74);
+    rtc_gpio(rtc, 0x62);
+    assert(read_register(0xf6) == 0xa5);
+    rtc_gpio(rtc, 0x72);
+    rtc_gpio(rtc, 0x76);
+    rtc_gpio(rtc, 0x10); // SCK/CS directions are input: retain their pin levels.
+    rtc_write_byte(rtc, 0xf6, 0x74);
+    assert(rtc_read_guest_byte(rtc) == 0xa5);
+    rtc_gpio(rtc, 0x62);
+    // Clock-setting writes consume all their bytes but leave the configured clock authoritative.
+    write(0x66, std::array<std::uint8_t, 3>{0x20, 0, 0});
+    write(0x26, std::array<std::uint8_t, 7>{0x24, 1, 1, 1, 0, 0, 0});
+    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x09, 0x53, 0x30}));
+    rtc.set_deterministic_clock(1704114306, 0); // 2024-01-01 13:05:06 UTC.
+    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x53, 0x05, 0x06}));
+    write(0x06, std::array<std::uint8_t, 1>{0});
+    assert(read_register(0x86) == 0);
+    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x01, 0x05, 0x06}));
 }
 
 void test_card_rom_and_chip_id(const std::filesystem::path& rom,
@@ -1066,6 +1165,58 @@ void test_explicit_backup_selection(const std::filesystem::path& rom, const std:
     assert(std::filesystem::file_size(save) == 64u * 1024u);
 }
 
+void test_touch_adc_calibration() {
+    dsr::Spi spi(dsr::FirmwareSettings{});
+    spi.set_touch(true, 159, 168);
+    assert(read_touch_axis(spi, 0xd0) == 0x09f0);
+    assert(read_touch_axis(spi, 0x90) == 0x0a80);
+    const auto* calibration = spi.firmware() + 0x3fe00;
+    assert(read_le16(calibration + 0x58) == 0x0200);
+    assert(read_le16(calibration + 0x5a) == 0x0200);
+    assert(read_le16(calibration + 0x5e) == 0x0e00);
+    assert(read_le16(calibration + 0x60) == 0x0800);
+    assert(calibration[0x5c] == 33 && calibration[0x5d] == 33);
+    assert(calibration[0x62] == 225 && calibration[0x63] == 129);
+    const auto calibrated = [&](std::uint16_t adc, bool y_axis) {
+        const int first_adc = read_le16(calibration + (y_axis ? 0x5a : 0x58));
+        const int last_adc = read_le16(calibration + (y_axis ? 0x60 : 0x5e));
+        const int first_pixel = calibration[y_axis ? 0x5d : 0x5c];
+        const int last_pixel = calibration[y_axis ? 0x63 : 0x62];
+        // Exact integer steps avoid losing a pixel in fixed-point SDK calibration.
+        assert((last_adc - first_adc) % (last_pixel - first_pixel) == 0);
+        return std::clamp((static_cast<int>(adc) - first_adc) *
+                              (last_pixel - first_pixel) / (last_adc - first_adc) +
+                              first_pixel,
+                          0, y_axis ? 191 : 255);
+    };
+    for (int x = 0; x < 256; ++x) {
+        spi.set_touch(true, x, 0);
+        const auto adc = read_touch_axis(spi, 0xd0);
+        assert(adc == x * 16);
+        assert(calibrated(adc, false) == std::min(x + 1, 255));
+        assert(read_touch_axis(spi, 0xd8) == adc); // 8-bit reply, widened back to 12 bits.
+    }
+    for (int y = 0; y < 192; ++y) {
+        spi.set_touch(true, 0, y);
+        const auto adc = read_touch_axis(spi, 0x90);
+        assert(adc == y * 16);
+        assert(calibrated(adc, true) == std::min(y + 1, 191));
+        assert(read_touch_axis(spi, 0x98) == adc);
+    }
+    spi.set_touch(true, 159, 168);
+    assert(calibrated(read_touch_axis(spi, 0xd0), false) == 160);
+    assert(calibrated(read_touch_axis(spi, 0x90), true) == 169);
+    spi.set_touch(true, -1, -1);
+    assert(read_touch_axis(spi, 0xd0) == 0);
+    assert(read_touch_axis(spi, 0x90) == 0);
+    spi.set_touch(true, 256, 192);
+    assert(read_touch_axis(spi, 0xd0) == 0x0ff0);
+    assert(read_touch_axis(spi, 0x90) == 0x0bf0);
+    spi.set_touch(false, 159, 168);
+    assert(read_touch_axis(spi, 0xd0) == 0);
+    assert(read_touch_axis(spi, 0x90) == 0x0fff);
+}
+
 void test_firmware_and_touch() {
     dsr::FirmwareSettings settings;
     settings.nickname = u"Hero";
@@ -1089,28 +1240,10 @@ void test_firmware_and_touch() {
     assert(fw[0x3fe00 + 0x06] == 'H' && fw[0x3fe00 + 0x07] == 0);
 
     spi.set_touch(true, 127, 95);
-    spi.io_write(kSpiCnt, 0x8a00, 16); // enabled, touch controller, hold select
-    spi_byte(spi, 0xd0); // start, X channel, 12-bit differential mode
-    spi.io_write(kSpiCnt, 0x8a00, 16);
-    spi.io_write(kSpiData, 0, 8);
-    const auto high = static_cast<std::uint8_t>(spi.io_read(kSpiData, 8));
-    spi.io_write(kSpiCnt, 0x8200, 16); // release select with final data unit
-    spi.io_write(kSpiData, 0, 8);
-    const auto low = static_cast<std::uint8_t>(spi.io_read(kSpiData, 8));
-    const std::uint16_t raw_x = static_cast<std::uint16_t>((high << 5) | (low >> 3));
-    assert(raw_x == 0x0800);
-    const auto read_touch_axis = [&](std::uint8_t command) {
-        spi.io_write(kSpiCnt, 0x8a00, 16);
-        (void)spi_byte(spi, command);
-        spi.io_write(kSpiCnt, 0x8a00, 16);
-        const std::uint8_t hi = spi_byte(spi, 0);
-        spi.io_write(kSpiCnt, 0x8200, 16);
-        const std::uint8_t lo = spi_byte(spi, 0);
-        return static_cast<std::uint16_t>((hi << 5) | (lo >> 3));
-    };
+    assert(read_touch_axis(spi, 0xd0) == 0x07f0);
     spi.set_touch(false, 127, 95);
-    assert(read_touch_axis(0xd0) == 0);
-    assert(read_touch_axis(0x90) == 0x0fff);
+    assert(read_touch_axis(spi, 0xd0) == 0);
+    assert(read_touch_axis(spi, 0x90) == 0x0fff);
 
     int irqs = 0;
     spi.on_irq = [&] { ++irqs; };
@@ -1122,14 +1255,9 @@ void test_firmware_and_touch() {
 
 void test_rtc_datetime() {
     dsr::Rtc rtc;
-    constexpr std::uint8_t outputs = 0x70;
-    const std::uint8_t selected_output = static_cast<std::uint8_t>(outputs | 0x04u);
-    rtc_gpio(rtc, static_cast<std::uint8_t>(outputs | 0x02u)); // CS low, clock high
-    rtc_gpio(rtc, selected_output); // select high
-    rtc_write_byte(rtc, 0xa6, selected_output); // READ DATE/TIME, LSB first
-    constexpr std::uint8_t selected_input = 0x64;
+    rtc_begin(rtc, 0xa6); // READ DATE/TIME, mirrored command order.
     std::array<std::uint8_t, 7> date{};
-    for (auto& byte : date) byte = rtc_read_byte(rtc, selected_input);
+    for (auto& byte : date) byte = rtc_read_guest_byte(rtc);
     rtc_gpio(rtc, 0x62); // de-select, clock high
     const auto valid_bcd = [](std::uint8_t value) {
         return (value & 0x0fu) <= 9 && ((value >> 4) & 0x0fu) <= 9;
@@ -1148,14 +1276,9 @@ void test_rtc_deterministic_clock() {
     rtc.set_deterministic_clock(1704067190, 120); // 2023-12-31 23:59:50 UTC, UTC+02:00.
     rtc.set_emulated_ticks(15u * 33'513'982u);
     const auto read_date = [&] {
-        constexpr std::uint8_t outputs = 0x70;
-        const std::uint8_t selected_output = static_cast<std::uint8_t>(outputs | 0x04u);
-        rtc_gpio(rtc, static_cast<std::uint8_t>(outputs | 0x02u));
-        rtc_gpio(rtc, selected_output);
-        rtc_write_byte(rtc, 0xa6, selected_output);
-        constexpr std::uint8_t selected_input = 0x64;
+        rtc_begin(rtc, 0xa6);
         std::array<std::uint8_t, 7> date{};
-        for (auto& byte : date) byte = rtc_read_byte(rtc, selected_input);
+        for (auto& byte : date) byte = rtc_read_guest_byte(rtc);
         rtc_gpio(rtc, 0x62);
         return date;
     };
@@ -1181,6 +1304,8 @@ void test_rtc_deterministic_clock() {
 } // namespace
 
 int main() {
+    test_rtc_guest_wire_protocol();
+    test_touch_adc_calibration();
     TempDir temp;
     const auto rom = make_rom(temp.path / "synthetic.nds");
     const auto card_alias_rom = make_rom(temp.path / "card-alias.nds", true);
