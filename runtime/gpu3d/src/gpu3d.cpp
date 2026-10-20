@@ -1797,9 +1797,9 @@ struct Gpu3D::Impl {
     template<int Format = -1>
     gpu3d_detail::Texel sample_texture(const Polygon& polygon, float u, float v,
                                        PolygonShading& shading) const {
-        const int x = wrapped_coordinate(gpu3d_detail::floor_texcoord(u), shading.texture_width,
+        const int x = wrapped_coordinate(static_cast<int>(std::floor(u)), shading.texture_width,
                                          shading.repeat_x, shading.flip_x);
-        const int y = wrapped_coordinate(gpu3d_detail::floor_texcoord(v), shading.texture_height,
+        const int y = wrapped_coordinate(static_cast<int>(std::floor(v)), shading.texture_height,
                                          shading.repeat_y, shading.flip_y);
         const auto pixel = static_cast<std::uint32_t>(y * shading.texture_width + x);
         if (shading.decoded != nullptr) return shading.decoded[pixel];

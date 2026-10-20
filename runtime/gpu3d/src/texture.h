@@ -6,13 +6,6 @@
 
 namespace dsr::gpu3d_detail {
 
-// Texture sampling needs the integer floor, not a rounded float. As with the
-// original floor-then-int conversion, the floored coordinate must fit in int.
-inline int floor_texcoord(float value) {
-    const int integer = static_cast<int>(value);
-    return integer - (value < static_cast<float>(integer));
-}
-
 struct TextureSource {
     using Lookup = const std::uint8_t* (*)(const void* context, int slot);
     using Read = std::uint8_t (*)(const void* context, std::uint32_t address);
