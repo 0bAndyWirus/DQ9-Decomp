@@ -405,10 +405,11 @@ DebugSession::DebugSession(const std::filesystem::path& data_dir, const std::fil
                            const std::filesystem::path& save, std::string language,
                            std::filesystem::path executable, bool dump_memory,
                            std::int64_t rtc_epoch, std::int32_t rtc_timezone_offset_minutes,
-                           std::filesystem::path abi_config)
+                           std::filesystem::path abi_config, std::optional<std::string> backup_type)
     : rom_(std::filesystem::absolute(rom)), save_(std::filesystem::absolute(save)),
       abi_config_(abi_config.empty() ? std::filesystem::path{} : std::filesystem::absolute(abi_config)),
       executable_(std::filesystem::absolute(executable)), language_(std::move(language)),
+      backup_type_(std::move(backup_type)),
       audio_ring_(static_cast<std::size_t>(std::ceil(kSpuRate)) * 5 * 2),
       dump_memory_default_(dump_memory), rtc_epoch_(rtc_epoch),
       rtc_timezone_offset_minutes_(rtc_timezone_offset_minutes) {
@@ -673,6 +674,7 @@ bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& mac
             << "rom_path: " << dsr::host::path_to_utf8(rom_) << '\n'
             << "save_path: " << dsr::host::path_to_utf8(save_) << '\n'
             << "abi_config_path: " << dsr::host::path_to_utf8(abi_config_) << '\n'
+            << "backup_type: " << (backup_type_ ? backup_type_->c_str() : "auto") << '\n'
             << "language: " << options.language << '\n'
             << "rtc_epoch: " << rtc_epoch_ << '\n'
             << "rtc_timezone_offset_minutes: " << rtc_timezone_offset_minutes_ << '\n';
@@ -688,8 +690,9 @@ bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& mac
                << "cd \"$SCRIPT_DIR\"\n"
                << "exec " << shell_quote(dsr::host::path_to_utf8(executable_))
                << " --rom " << shell_quote(dsr::host::path_to_utf8(rom_)) << " --save 'replay_out/replay.sav'"
-               << " --abi-config " << shell_quote(dsr::host::path_to_utf8(abi_config_))
-               << " --language " << shell_quote(options.language)
+               << " --abi-config " << shell_quote(dsr::host::path_to_utf8(abi_config_));
+        if (backup_type_) replay << " --backup-type " << shell_quote(*backup_type_);
+        replay << " --language " << shell_quote(options.language)
                << " --rtc-epoch " << rtc_epoch_
                << " --rtc-timezone-offset " << rtc_timezone_offset_minutes_
                << " --headless --frames " << std::max<std::uint64_t>(1, frames_recorded_)
@@ -709,8 +712,9 @@ bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& mac
                << "Copy-Item -LiteralPath 'session_start.sav' -Destination 'replay_out/replay.sav' -Force\n"
                << "& " << powershell_quote(dsr::host::path_to_utf8(executable_))
                << " --rom " << powershell_quote(dsr::host::path_to_utf8(rom_))
-               << " --abi-config " << powershell_quote(dsr::host::path_to_utf8(abi_config_))
-               << " --save 'replay_out/replay.sav' --language " << powershell_quote(options.language)
+               << " --abi-config " << powershell_quote(dsr::host::path_to_utf8(abi_config_));
+        if (backup_type_) replay << " --backup-type " << powershell_quote(*backup_type_);
+        replay << " --save 'replay_out/replay.sav' --language " << powershell_quote(options.language)
                << " --rtc-epoch " << rtc_epoch_
                << " --rtc-timezone-offset " << rtc_timezone_offset_minutes_
                << " --headless --frames " << std::max<std::uint64_t>(1, frames_recorded_)

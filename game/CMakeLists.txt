@@ -71,7 +71,8 @@ add_test(NAME debug_replay_parity COMMAND "${DQ9_TEST_PYTHON}"
   "${PROJECT_SOURCE_DIR}/tests/debug_replay_parity.py"
   --dq9 "$<TARGET_FILE:dq9>"
   --rom "${DQ9_TEST_ROM}"
-  --save "${DQ9_TEST_SAVE}"
+  --abi-config "${DQ9_GENERATED_DIR}/abi.ini"
+  --backup-type eeprom64k
   --input "${DQ9_TEST_INPUT}"
   --work-dir "${PROJECT_BINARY_DIR}/debug-replay-parity")
 set_tests_properties(debug_replay_parity PROPERTIES
