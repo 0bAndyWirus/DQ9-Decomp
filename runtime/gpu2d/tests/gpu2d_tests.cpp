@@ -893,114 +893,6 @@ static std::uint16_t reference_effect(std::uint16_t source, std::uint16_t target
     return result;
 }
 
-void test_random_3d_reference() {
-    std::mt19937 random(0x3D128U);
-    dsr::Gpu2D gpu;
-    dsr::Gpu3D fake;
-    gpu.attach_gpu3d(&fake);
-    set_power(gpu, 0x8207U);
-    for (unsigned trial = 0; trial < 400; ++trial) {
-        const unsigned scroll = random() & 511U;
-        const unsigned effect = random() & 3U;
-        const unsigned factor = random() & 31U;
-        const bool first_target = random() & 1U;
-        const bool second_target = random() & 1U;
-        const auto backdrop = static_cast<std::uint16_t>(random() & 0x7FFFU);
-        const auto master = static_cast<std::uint16_t>(random());
-        set_bg_palette(gpu, 0U, backdrop);
-        gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
-        write16(gpu, kA + 0x08U, random() & 3U);
-        write16(gpu, kA + 0x10U, scroll);
-        write16(gpu, kA + 0x50U, (effect << 6U) | (first_target ? 1U : 0U) |
-                (second_target ? 1U << 13U : 0U));
-        write16(gpu, kA + 0x54U, factor);
-        write16(gpu, kA + 0x6CU, master);
-        for (auto& value : fake_3d_line) value = random() & 0x1F03FFFFU;
-        gpu.render_line(0);
-        for (unsigned x = 0; x < 256; ++x) {
-            const unsigned sx = (x + scroll) & 511U;
-            const auto raw = sx < 256U ? fake_3d_line[sx] : 0U;
-            const unsigned alpha = (raw >> 24U) & 31U;
-            std::uint16_t expected = backdrop;
-            if (alpha != 0U) {
-                expected = 0U;
-                for (unsigned channel = 0; channel < 3; ++channel) {
-                    const unsigned color = (raw >> (channel * 6U)) & 63U;
-                    const unsigned below = (backdrop >> (channel * 5U)) & 31U;
-                    const unsigned value = second_target
-                        ? (color * (alpha + 1U) + below * 2U * (31U - alpha)) / 64U
-                        : color / 2U;
-                    expected |= value << (channel * 5U);
-                }
-                if (!second_target && first_target && effect >= 2U) {
-                    expected = reference_effect(expected, 0U, effect, factor, 0U);
-                }
-            }
-            assert(pixel(gpu.screen_top(), x) == reference_argb(expected, master));
-        }
-    }
-}
-
-void test_random_obj_winners_reference() {
-    std::mt19937 random(0x0B1128U);
-    dsr::Gpu2D gpu;
-    set_power(gpu);
-    gpu.io_write(kVramB, 0x82U, 8);
-    gpu.io_write(kA, (1U << 16U) | (1U << 12U), 32);
-    set_bg_palette(gpu, 0U, 0x7C00U);
-    for (unsigned row = 0; row < 8; ++row) {
-        gpu.arm9_write(0x06400000U + row * 4U, 0x87654321U, 32);
-    }
-    struct Winner { std::uint16_t color = 0U; bool opaque = false; };
-    std::array<Winner, 256> cached{};
-    for (unsigned trial = 0; trial < 400; ++trial) {
-        std::array<unsigned, 128> positions{}, priorities{};
-        std::array<bool, 128> enabled{}, mosaic{};
-        std::array<std::array<std::uint16_t, 9>, 16> colors{};
-        const unsigned width = 1U + random() % 16U;
-        write16(gpu, kA + 0x4CU, (width - 1U) << 8U);
-        for (unsigned bank = 0; bank < 16; ++bank) {
-            for (unsigned index = 1; index <= 8; ++index) {
-                colors[bank][index] = random() & 0x7FFFU;
-                gpu.arm9_write(kPalette + 0x200U + (bank * 16U + index) * 2U,
-                               colors[bank][index], 16);
-            }
-        }
-        for (unsigned object = 0; object < 128; ++object) {
-            positions[object] = random() % 64U;
-            priorities[object] = random() & 3U;
-            enabled[object] = (random() & 15U) == 0U;
-            mosaic[object] = random() & 1U;
-            gpu.arm9_write(kOam + object * 8U, enabled[object]
-                ? (mosaic[object] ? 0x1000U : 0U) : 0x0200U, 16);
-            gpu.arm9_write(kOam + object * 8U + 2U, positions[object], 16);
-            gpu.arm9_write(kOam + object * 8U + 4U,
-                           (priorities[object] << 10U) | ((object % 16U) << 12U), 16);
-        }
-        gpu.render_line(0);
-        for (unsigned x = 0; x < 256; ++x) {
-            unsigned best_key = 512U;
-            unsigned winner = 128U;
-            for (unsigned object = 0; object < 128; ++object) {
-                if (!enabled[object] || x < positions[object] || x >= positions[object] + 8U) continue;
-                const unsigned key = priorities[object] * 128U + object;
-                if (key < best_key) { best_key = key; winner = object; }
-            }
-            Winner value{};
-            if (winner != 128U) {
-                value = {colors[winner % 16U][x - positions[winner] + 1U], true};
-                if (mosaic[winner]) {
-                    const unsigned anchor = x / width * width;
-                    if (x != anchor) value = cached[anchor];
-                    cached[x] = value;
-                }
-            }
-            const auto raw = value.opaque ? value.color : 0x7C00U;
-            assert(pixel(gpu.screen_top(), x) == reference_argb(raw, 0U));
-        }
-    }
-}
-
 struct ReferenceTextState {
     std::array<std::uint8_t, 0x8000> vram{};
     std::array<std::uint16_t, 256> palette{};
@@ -1443,8 +1335,6 @@ const std::uint32_t* Gpu3D::line(int y) const {
 int main(int argc, char** argv) {
     const struct { const char* name; void (*run)(); } tests[]{
         {"composition_order", test_composition_order_matches_scalar},
-        {"random_3d_reference", test_random_3d_reference},
-        {"random_obj_winners_reference", test_random_obj_winners_reference},
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},

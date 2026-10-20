@@ -67,7 +67,6 @@ Set `DSR_VERIFY_DISPATCH=1` to compare every reused ambiguous resolution with th
 ### GPU raster hot paths
 
 GPU2D uses page-mapped VRAM reads with an overlap fallback, scanline text-map/byte/palette caching, direct OAM reads with hoisted object-matrix state, and priority lists limited to enabled backgrounds. GPU3D prepares shading/texture-wrap state per polygon and skips empty spans. These implementation choices imply no game-wide performance or parity result.
-GPU2D scanline and mosaic pixels keep their finite priority/opacity/blend flags in one byte beside the native colours (eight bytes per pixel). OBJ traversal is ascending OAM index, so equal-priority candidates retain the existing winner; the winner carries its mosaic-enable bit directly rather than storing an index solely to reread OAM.
 GPU3D uniform clears copy a complete trivially-copyable framebuffer pixel, including its representation padding, to permit full-width stores. The named fields retain the register clear colour/depth/ID/fog and default translucent-ID/stencil/facing values; clear-image sampling and per-band boundaries are unchanged.
 GPU3D rejects failed-depth fragments before texture sampling and colour shading. Depth-failed ID-zero shadow masks still update stencil; successful fragments retain the same shading and blend order. Regression coverage checks that both filled and wireframe hidden polygons avoid texture lookups while visible polygons still sample.
 Texture-palette address slots 6 and 7 mirror physical slots 1 and 2, matching the DS palette wrap.
