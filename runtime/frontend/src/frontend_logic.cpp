@@ -56,6 +56,7 @@ void parse_line(const std::string& line, ConfigData& cfg) {
         else if (key == "mouse_touch_enabled") cfg.frontend.mouse_touch_enabled = std::stoi(value) != 0;
         else if (key == "controller_guid") cfg.frontend.controller_guid = ui_detail::config_unescape(value);
         else if (key == "language") cfg.language = ui_detail::config_unescape(value);
+        else if (key == "backup_type") { if (const auto name = ui_detail::config_unescape(value); is_backup_type_name(name)) cfg.backup_type = name; }
         else if (key == "rom_path") cfg.rom_path = ui_detail::config_unescape(value);
         else if (key == "save_path") cfg.save_path = ui_detail::config_unescape(value);
         else if (key == "debug_tool") {
@@ -239,6 +240,7 @@ std::string serialize_config(const ConfigData& c) {
         << "mouse_touch_enabled=" << (c.frontend.mouse_touch_enabled ? 1 : 0) << '\n'
         << "controller_guid=" << ui_detail::config_escape(c.frontend.controller_guid) << '\n'
         << "language=" << ui_detail::config_escape(c.language) << '\n'
+        << "backup_type=" << ui_detail::config_escape(c.backup_type) << '\n'
         << "rom_path=" << ui_detail::config_escape(c.rom_path) << '\n'
         << "save_path=" << ui_detail::config_escape(c.save_path) << '\n'
         << "debug_tool=" << (c.debug_tool ? 1 : 0) << '\n'
@@ -307,6 +309,29 @@ std::string game_language_for_locales(const std::vector<std::string>& preferred)
 
 int fit_window_extent(int wanted, int max_extent) {
     return max_extent > 0 && wanted > max_extent ? max_extent : wanted;
+}
+
+bool is_backup_type_name(std::string_view name) {
+    return std::find(kBackupTypeNames.begin(), kBackupTypeNames.end(), name) != kBackupTypeNames.end();
+}
+
+std::string backup_type_label(std::string_view name) {
+    if (name == "eeprom512b") return "EEPROM 512 B";
+    if (name == "eeprom8k") return "EEPROM 8 KB";
+    if (name == "eeprom64k") return "EEPROM 64 KB";
+    if (name == "eeprom128k") return "EEPROM 128 KB";
+    if (name == "flash256k") return "FLASH 256 KB";
+    if (name == "flash512k") return "FLASH 512 KB";
+    if (name == "flash1m") return "FLASH 1 MB";
+    if (name == "flash8m") return "FLASH 8 MB";
+    return "AUTO";
+}
+
+std::string cycle_backup_type(std::string_view current, int delta) {
+    const auto found = std::find(kBackupTypeNames.begin(), kBackupTypeNames.end(), current);
+    const int count = static_cast<int>(kBackupTypeNames.size());
+    const int index = found == kBackupTypeNames.end() ? 0 : static_cast<int>(found - kBackupTypeNames.begin());
+    return std::string(kBackupTypeNames[static_cast<std::size_t>(((index + delta) % count + count) % count)]);
 }
 
 int volume_gain_q8(int percent, bool muted) {

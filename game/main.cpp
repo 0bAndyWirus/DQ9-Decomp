@@ -515,6 +515,7 @@ int main(int argc, char** argv) {
         launch_options.rom_path = opt.rom;
         launch_options.save_path = opt.save;
         launch_options.language = language_name(opt.language);
+        if (opt.backup_type) launch_options.backup_type = *opt.backup_type;
         launch_options.debug_tool = opt.debug_tool;
         launch_options.frame_time_overlay = opt.frame_time_overlay;
         launch_options.capture_memory_dumps = opt.capture_memory_dumps;
@@ -522,6 +523,7 @@ int main(int argc, char** argv) {
         opt.rom = launch_options.rom_path;
         opt.save = launch_options.save_path;
         opt.language = parse_language(launch_options.language);
+        opt.backup_type = launch_options.backup_type == "auto" ? std::nullopt : std::optional<std::string>(launch_options.backup_type);
         opt.debug_tool = launch_options.debug_tool;
         opt.frame_time_overlay = launch_options.frame_time_overlay;
         opt.capture_memory_dumps = launch_options.capture_memory_dumps;

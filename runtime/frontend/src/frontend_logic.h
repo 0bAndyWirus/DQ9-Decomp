@@ -54,6 +54,14 @@ std::string game_language_for_locales(const std::vector<std::string>& preferred)
 // A remembered window size can come from a larger display or a hand-edited file: never open a window
 // bigger than the usable desktop area (max_* <= 0 means unknown and leaves the size alone).
 int fit_window_extent(int wanted, int max_extent);
+
+// Cartridge save chip choices offered by the launcher; same names as `--backup-type` / [cartridge] backup_type.
+// "auto" leaves the choice to the build's abi.ini or the size of an existing save file.
+inline constexpr std::array<std::string_view, 9> kBackupTypeNames{
+    "auto", "eeprom64k", "eeprom8k", "eeprom512b", "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"};
+bool is_backup_type_name(std::string_view name);
+std::string backup_type_label(std::string_view name);                    // "EEPROM 64 KB", "AUTO", ...
+std::string cycle_backup_type(std::string_view current, int delta);      // unknown names count as "auto"
 std::string audio_debug_status(int solo, const std::array<bool, 16>& muted);
 
 struct Rect { int x; int y; int w; int h; };
@@ -87,6 +95,7 @@ struct ConfigData {
     int key_mute = 0;
     int key_pause = 0;
     std::string language = "en";
+    std::string backup_type = "auto";
     std::string rom_path;
     std::string save_path;
     bool debug_tool = false;

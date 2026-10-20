@@ -170,6 +170,18 @@ int main() {
     assert(parse_config("volume=250\n").frontend.volume == 100 && parse_config("volume=-5\n").frontend.volume == 0);
     assert(fit_window_extent(3840, 1920) == 1920 && fit_window_extent(800, 1920) == 800);
     assert(fit_window_extent(3840, 0) == 3840 && fit_window_extent(3840, -1) == 3840);   // unknown display
+    assert(is_backup_type_name("eeprom64k") && !is_backup_type_name("EEPROM64K") && !is_backup_type_name(""));
+    assert(cycle_backup_type("auto", 1) == "eeprom64k" && cycle_backup_type("auto", -1) == "flash8m");
+    assert(cycle_backup_type("flash8m", 1) == "auto" && cycle_backup_type("nonsense", 1) == "eeprom64k");
+    assert(backup_type_label("eeprom64k") == "EEPROM 64 KB" && backup_type_label("auto") == "AUTO");
+    for (const auto name : kBackupTypeNames) assert(is_backup_type_name(backup_type_label(name) == "AUTO" ? "auto" : name));
+    {
+        ConfigData c = default_config();
+        c.backup_type = "eeprom64k";
+        const ConfigData back = parse_config(serialize_config(c), default_config());
+        assert(back.backup_type == "eeprom64k");
+        assert(parse_config("backup_type=bogus\n", default_config()).backup_type == "auto");   // unknown names are ignored
+    }
     assert(game_language_for_locales({}) == "en");
     assert(game_language_for_locales({"fr_FR.UTF-8"}) == "fr");
     assert(game_language_for_locales({"DE-at"}) == "de");
