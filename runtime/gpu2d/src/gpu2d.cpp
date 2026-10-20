@@ -1358,10 +1358,10 @@ struct Gpu2D::Impl {
         // Layer ids in the compositing order below: 0-3 backgrounds, 4 objects, 5 backdrop.
         constexpr std::uint8_t kObjLayer = 4U;
         constexpr std::uint8_t kBackdropLayer = 5U;
-        // Without second targets there is no blending, including forced OBJ/3D
-        // blending. Only the first opaque layer can affect the result; apply
-        // brightness to that winner rather than painting occluded layers.
-        const bool select_only = target2 == 0U;
+        // No second targets means even semi-transparent OBJ and 3D cannot
+        // force blending. Select the first opaque layer, rather than painting
+        // all the occluded layers beneath it.
+        const bool copy_only = target2 == 0U && (effect == 0U || target1 == 0U);
         std::array<std::uint8_t, 4> front_order{};
         unsigned front_count = 0U;
         for (unsigned priority = 0; priority < 4; ++priority) {
@@ -1369,7 +1369,7 @@ struct Gpu2D::Impl {
                 front_order[front_count++] = bg_order[priority][i - 1U];
             }
         }
-        if (select_only) {
+        if (copy_only) {
             std::array<const Pixel*, 4> front_pixels{};
             std::array<std::uint8_t, 4> front_bits{};
             for (unsigned i = 0; i < front_count; ++i) {
@@ -1385,24 +1385,16 @@ struct Gpu2D::Impl {
                     const Pixel& object = object_pixels[xi];
                     const bool has_object = with_objects && object.opaque && (mask & (1U << 4U)) != 0U;
                     const Pixel* chosen_source = has_object ? &object : nullptr;
-                    std::uint8_t chosen_bit = has_object ? 1U << kObjLayer : 0U;
                     for (unsigned i = 0; i < front_count; ++i) {
                         const Pixel& pixel = front_pixels[i][xi];
                         if (pixel.opaque && (!windowed || (mask & front_bits[i]) != 0U)) {
                             chosen_source = has_object && object.priority <= pixel.priority ? &object : &pixel;
-                            chosen_bit = chosen_source == &object ? 1U << kObjLayer : front_bits[i];
                             break;
                         }
                     }
-                    Color color = chosen_source != nullptr ? chosen_source->color : backdrop;
-                    const bool brightness = chosen_source != nullptr && (mask & (1U << 5U)) != 0U &&
-                        (target1 & chosen_bit) != 0U && effect >= 2U && evy != 0U;
-                    if (brightness) {
-                        color = effect == 2U ? brighten(color, evy) : darken(color, evy);
-                    }
-                    output[xi] = color;
-                    mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && !brightness &&
-                        chosen_source != nullptr && chosen_source->three_d && chosen_source->color.alpha == 31U);
+                    output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
+                    mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
+                        chosen_source->three_d && chosen_source->color.alpha == 31U);
                 }
             };
             const bool windowed = (dispcnt & 0xE000U) != 0U;
@@ -1414,10 +1406,10 @@ struct Gpu2D::Impl {
                 if (objects_enabled) compose_line(No{}, Yes{}); else compose_line(No{}, No{});
             }
         }
-        // The non-blending case above has already produced the whole line.
-        const int blended_end = select_only ? 0 : static_cast<int>(kScreenWidth);
+        // The copy-only case above has already produced the whole line.
+        const int blended_end = copy_only ? 0 : static_cast<int>(kScreenWidth);
         std::array<gpu2d_detail::CompositionOrder, 5> composition_orders{};
-        if (!select_only) {
+        if (!copy_only) {
             std::array<std::uint8_t, 4> priorities{};
             for (unsigned bg = 0; bg < 4; ++bg) {
                 priorities[bg] = static_cast<std::uint8_t>(engine_half(engine, 0x08U + bg * 2U) & 3U);

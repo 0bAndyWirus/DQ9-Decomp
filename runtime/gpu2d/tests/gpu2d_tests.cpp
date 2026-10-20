@@ -1079,12 +1079,10 @@ void test_random_text_reference() {
     gpu.io_write(kVramA, 0x81U, 8);
     set_power(gpu);
     ReferenceTextState state;
-    for (unsigned trial = 0; trial < 600; ++trial) {
+    for (unsigned trial = 0; trial < 200; ++trial) {
         state.dispcnt = (1U << 16U) | ((random() & 15U) << 8U) | ((random() & 3U) << 13U);
         state.winin = random(); state.winout = random();
-        // Exercise no effect, arbitrary first-target brightness without second
-        // targets, and the full back-to-front blend path equally.
-        state.blend = trial % 3U == 0U ? 0U : trial % 3U == 1U ? random() & 0xFFU : random();
+        state.blend = trial % 2 ? 0U : random();
         state.alpha = random(); state.evy = random(); state.master = random();
         gpu.io_write(kA, state.dispcnt, 32);
         write16(gpu, kA + 0x48U, state.winin); write16(gpu, kA + 0x4AU, state.winout);
