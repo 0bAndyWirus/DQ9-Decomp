@@ -63,6 +63,20 @@ targets and runs CTest with dummy SDL video/audio drivers. The independent SWI
 formula checks need no external BIOS-reference source. `--build-dir DIR` selects
 another build tree.
 
+For support, run `COLLECT-DIAGNOSTICS.bat` in the kit folder (in a checkout:
+`tools\windows\COLLECT-DIAGNOSTICS.bat`). It creates one
+`diagnostics-<timestamp>.zip` beside the kit scripts, without building or running
+the game. Python 3.10+ is required; no dependencies are installed. The ZIP contains
+tool/package versions, OS/free disk, backup-chip and pin names, a launcher settings
+summary (no ROM/save paths), binary existence/sizes only, script integrity hashes,
+and at most the last 300 build-log lines. Home/profile and kit paths are replaced
+with `<HOME>` and `<KIT>`. No ROM, save, generated code, executable, DLL, screenshot
+or capture is attached. Review the text before sending it to support: build logs
+can still contain custom paths outside the home/kit directories. The collector
+returns 2 if an input/archive member violates its safety policy. On Linux, use
+`python tools/collect_diagnostics.py --kit-dir /path/to/kit`.
+
+
 Maintainers create the public source kit with
 `python tools/package_windows_kit.py --tag TAG`. It archives `HEAD`, copies the
 root launchers and instructions from the checkout, and audits the staged tree.

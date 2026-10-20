@@ -272,6 +272,48 @@ jobs:
           Assert-Match $r.Text 'status 7' 'godot failure message'
           Write-Host 'BUILD-DQ9 and PLAY-GODOT entry points behave as specified.'
           exit 0
+      - name: Check diagnostics entry point and privacy (ROM-free)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $kit = Join-Path $env:RUNNER_TEMP 'DQ9 diagnostics ! élodie'
+          New-Item -ItemType Directory -Force (Join-Path $kit 'tools'), (Join-Path $kit 'build') | Out-Null
+          Copy-Item tools/windows/COLLECT-DIAGNOSTICS.bat $kit
+          Copy-Item tools/collect_diagnostics.py, tools/audit_package.py (Join-Path $kit 'tools')
+          Set-Content -Encoding utf8 (Join-Path $kit 'build/build-log.txt') "fixture $kit $env:USERPROFILE"
+          '[ "tools/collect_diagnostics.py", "COLLECT-DIAGNOSTICS.bat" ]' | Set-Content -Encoding ascii (Join-Path $kit 'script-paths.json')
+          & (Join-Path $kit 'COLLECT-DIAGNOSTICS.bat')
+          $status = $LASTEXITCODE
+          if ($status -ne 0) { throw "Diagnostics returned $status instead of 0" }
+          $zips = @(Get-ChildItem $kit -Filter 'diagnostics-*.zip')
+          if ($zips.Count -ne 1) { throw 'Expected exactly one diagnostics ZIP' }
+          $env:DQ9_DIAGNOSTICS_FIXTURE = $kit
+          @'
+          import json, os, pathlib, zipfile
+          root = pathlib.Path(os.environ["DQ9_DIAGNOSTICS_FIXTURE"])
+          expected = {"system.json", "tools.json", "configuration.json", "binaries.json", "script-sha256.json", "build-log-tail.txt"}
+          with zipfile.ZipFile(next(root.glob("diagnostics-*.zip"))) as archive:
+              assert set(archive.namelist()) == expected
+              for name in archive.namelist():
+                  text = archive.read(name).decode("utf-8")
+                  assert str(root).casefold() not in text.casefold()
+                  assert os.environ["USERPROFILE"].casefold() not in text.casefold()
+                  if name.endswith(".json"):
+                      json.loads(text)
+              tail = archive.read("build-log-tail.txt").decode("utf-8")
+              assert "<KIT>" in tail and "<HOME>" in tail
+              assert len(json.loads(archive.read("script-sha256.json"))) == 2
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A forged manifest must fail closed, preserve the original ZIP and
+          # forward exit 2 through the real batch wrapper.
+          '[ "../outside.py" ]' | Set-Content -Encoding ascii (Join-Path $kit 'script-paths.json')
+          & (Join-Path $kit 'COLLECT-DIAGNOSTICS.bat')
+          $status = $LASTEXITCODE
+          if ($status -ne 2) { throw "Diagnostics refusal returned $status instead of 2" }
+          if (@(Get-ChildItem $kit -Filter 'diagnostics-*.zip').Count -ne 1) { throw 'Refusal created a ZIP' }
+          python -m unittest discover -s tests -p test_collect_diagnostics.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit 0
       - name: Audit source-only Windows kit
         run: python tools/package_windows_kit.py --tag ci
 
