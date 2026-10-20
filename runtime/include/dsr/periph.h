@@ -56,7 +56,9 @@ public:
     // Raised when a ROM transfer completes and ROMCTRL/AUXSPICNT request an
     // IRQ (core raises IF bit 19 on the owning CPU).
     std::function<void()> on_transfer_done_irq;
-    // Raised when a data word is ready (DS card DMA trigger, DMA mode 5).
+    // Raised once when a block becomes ready (DS card DMA trigger, mode 5).
+    // READY stays asserted until the block is consumed. DMA drains available
+    // units in this callback, bounded by one programmed DMA completion.
     std::function<void()> on_data_ready;
 
     // Direct ROM access for the boot loader (header, ARM9/ARM7 binaries,

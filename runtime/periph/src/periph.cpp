@@ -448,10 +448,6 @@ struct GameCard::Impl {
             ++transfer_pos_;
             if (transfer_pos_ >= transfer_size_) {
                 complete_card_transfer();
-            } else if ((transfer_pos_ & 3u) == 0) {
-                transfer_data_ready_ = false;
-                rom_control_ &= ~kRomDataReady;
-                transfer_ticks_ = 2;
             }
         }
         return value;

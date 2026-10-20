@@ -21,6 +21,12 @@ from .decoder import (
 
 
 _U32 = 0xFFFFFFFF
+# Data/delay SWIs charge one generated cycle; runtime HLE supplies the rest.
+# Control-flow SWIs retain their cooperative halt/wait accounting.
+_ARM9_HLE_TIMED_SWIS = frozenset({
+    0x03, 0x09, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18,
+})
 
 
 def _u32(value: int) -> str:
@@ -1828,12 +1834,29 @@ class FunctionEmitter:
             insn.condition == 14,
         )
 
-    def _cost(self, block: Block) -> int:
+    def _cost(self, block: Block) -> tuple[int, int]:
+        """Return the CPU-cycle numerator and its denominator's binary shift.
+
+        ARM9 uses a calibrated average of 161/64 cycles per ordinary fetched
+        instruction, counting both halves of a long Thumb call. Data/delay
+        SWIs charge one base cycle; runtime HLE adds dispatch/handler cycles.
+        This is not a cache/wait-state model. ARM7 keeps its integer estimate.
+        """
+        if self.cpu == "arm9":
+            cost = 0
+            for insn in block.instructions:
+                if self._branch_name(insn) in {"swi", "svc"}:
+                    number = (insn.raw & 0xFF) if insn.thumb else ((insn.raw >> 16) & 0xFF)
+                    if number in _ARM9_HLE_TIMED_SWIS:
+                        cost += 64
+                        continue
+                cost += (2 if insn.thumb and insn.size == 4 else 1) * 161
+            return cost or 161, 6
         cost = len(block.instructions)
         for insn in block.instructions:
             if insn.mnemonic.split(".")[0] in {"ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrd", "str", "strb", "strh", "strd", "swp", "swpb"} or insn.mnemonic.startswith(("ldm", "stm", "push", "pop")):
                 cost += 1
-        return max(1, cost)
+        return max(1, cost), 0
 
     def _check_overlaps(self) -> None:
         """Diagnose decoded instructions that start inside another one."""
@@ -1913,7 +1936,13 @@ class FunctionEmitter:
                 code.append("    dispatch_first_block = false;")
             elif block.address in self.loop_headers or block.address == self.entry.address:
                 code.append(f"    if (c->budget <= 0) dsr::dsr_checkpoint(c, {_u32(block.address)});")
-            code.append(f"    c->budget -= {self._cost(block)};")
+            cost, shift = self._cost(block)
+            if shift:
+                code.append(f"    c->cycle_fraction += {cost}u;")
+                code.append(f"    c->budget -= c->cycle_fraction >> {shift};")
+                code.append(f"    c->cycle_fraction &= {(1 << shift) - 1}u;")
+            else:
+                code.append(f"    c->budget -= {cost};")
             last_always_exits = False
             for insn in block.instructions:
                 code.append("    {")
