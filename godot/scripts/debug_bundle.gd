@@ -29,7 +29,8 @@ static func save_note(machine: Node, directory: String, note: String, frame: int
 	if start_file == null: return "cannot write session_start.sav"
 	start_file.store_buffer(start_save)
 	start_file.close()
-	machine.flush_save()
+	if not machine.flush_save():
+		return "save not written: check the save path and retry before closing"
 	var current_save_path := ProjectSettings.globalize_path(save_path)
 	var current_save := FileAccess.open(current_save_path, FileAccess.READ)
 	if current_save == null: return "cannot read save at note: " + current_save_path

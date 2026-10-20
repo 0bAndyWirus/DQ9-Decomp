@@ -31,6 +31,8 @@ func _run() -> void:
 		push_error("input script is empty")
 		quit(2)
 		return
+	if not ClassDB.class_exists("DqMachine"):
+		GDExtensionManager.load_extension("res://dq9.gdextension")
 	var machine = ClassDB.instantiate("DqMachine")
 	if machine == null:
 		push_error("DqMachine GDExtension class is unavailable")

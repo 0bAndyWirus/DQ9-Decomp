@@ -997,6 +997,7 @@ int main(int argc, char** argv) {
     };
     FrameIndex frame = 0;
     bool chip_hint_shown = false; // one on-screen notice per run if the backup chip looks wrong
+    bool last_save_ok = true;
     enum class WorkflowPhase {
         WaitReplayPause, WaitReplayLiveInput, WaitForPause, WaitPaused, WaitMenuOpen,
         WaitMenuDispatch, WaitAnnotation, WaitText, WaitBundle,
@@ -1495,7 +1496,15 @@ int main(int argc, char** argv) {
                 frontend->show_message("SAVE CHIP WRONG? TRY EEPROM 64 KB (LAUNCHER)", 12000);
             }
         }
-        if (autosave_every > 0 && (frame + 1) % autosave_every == 0) session.flush_save();
+        if (autosave_every > 0 && (frame + 1) % autosave_every == 0) {
+            const bool save_ok = session.flush_save();
+            if (frontend && save_ok != last_save_ok) {
+                frontend->show_message(save_ok
+                    ? "SAVE WRITTEN: SAVE PATH WORKING AGAIN"
+                    : "SAVE NOT WRITTEN: CHECK SAVE PATH (WILL RETRY)", save_ok ? 6000 : 15000);
+            }
+            last_save_ok = save_ok;
+        }
         if (opt.debug_workflow_selftest && workflow_expect_live_input) {
             if ((machine.keyinput() & dsr::kBtnA) != 0)
                 workflow_fail("scripted input replaced the live DS A press after the replay target");

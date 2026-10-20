@@ -490,11 +490,7 @@ std::array<float, 120> DebugSession::frame_times() const {
 bool DebugSession::capture(const DebugCaptureOptions& options, dsr::Machine& machine,
                            dsr::Frontend& frontend, const dsr::FrontendConfig& config) {
     if (session_input_) session_input_.flush();
-    try {
-        if (auto* card = machine.game_card()) card->flush_save();
-    } catch (...) {
-        return false;
-    }
+    if (auto* card = machine.game_card(); card && !card->flush_save()) return false;
     const std::string timestamp = timestamp_now();
     std::string name = timestamp + "-" + std::to_string(++bundle_sequence_) + "-" + slug(options.comment);
     std::filesystem::path bundle = bundle_root_ / name;

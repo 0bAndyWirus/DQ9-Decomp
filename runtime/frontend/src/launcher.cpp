@@ -506,8 +506,8 @@ private:
         canvas_.button({470, 405, 468, 54}, "SAVE CHIP: " + frontend_detail::backup_type_label(config_.backup_type), focus_ == 3);
         canvas_.text(86, 490, "ROM PATH MAY ALSO COME FROM THE DQ9_ROM ENVIRONMENT VARIABLE.", kMuted, 1);
         canvas_.text(86, 518, "THE DEFAULT SAVE IS <USER DATA DIRECTORY>/dq9.sav.", kMuted, 1);
-        canvas_.text(86, 546, "SAVE CHIP AUTO USES THE BUILD'S SETTING OR THE SAVE FILE SIZE, ELSE INFERS IT FROM THE", kMuted, 1);
-        canvas_.text(86, 574, "PROGRAM. IF THE TITLE SAYS THE QUICK SAVE LOG IS CORRUPTED, CHOOSE EEPROM 64 KB.", kMuted, 1);
+        canvas_.text(86, 546, "SAVE CHIP AUTO USES THE BUILD'S SETTING OR THE SAVE FILE SIZE. IF THE TITLE SAYS", kMuted, 1);
+        canvas_.text(86, 574, "THE QUICK SAVE LOG IS CORRUPTED, CHOOSE EEPROM 64 KB.", kMuted, 1);
         if (text_field_ >= 0) canvas_.text(86, 622, "EDIT TEXT; ENTER TO ACCEPT; ESC TO CANCEL.", UiColor{134, 216, 255, 255}, 1);
     }
     // One-line readiness check next to the Launch button, so a missing ROM is visible before

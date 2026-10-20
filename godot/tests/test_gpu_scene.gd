@@ -345,6 +345,8 @@ func _run() -> void:
 		if parts.size() == 4:
 			input_by_frame[int(parts[0])] = [int(parts[1]), int(parts[2]), int(parts[3])]
 	input_file.close()
+	if not ClassDB.class_exists("DqMachine"):
+		GDExtensionManager.load_extension("res://dq9.gdextension")
 	machine = ClassDB.instantiate("DqMachine")
 	check(machine != null and ClassDB.class_exists("DqGpuScene"), "both extension classes are registered")
 	if machine == null:
@@ -422,7 +424,7 @@ func _run() -> void:
 	# Leave the frame_ready emission before freeing its emitter.
 	await process_frame
 	machine.stop()
-	machine.flush_save()
+	check(machine.flush_save(), "save flush succeeds before scene teardown")
 	machine.free()
 	await process_frame
 	OS.delay_msec(500)

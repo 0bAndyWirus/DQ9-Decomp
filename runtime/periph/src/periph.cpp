@@ -156,15 +156,9 @@ struct GameCard::Impl {
         try {
             open_rom(rom_path);
             backup_type_ = resolve_backup_type(requested_type);
-            infer_chip_from_program_ = requested_type == BackupType::Auto;
             backup_.assign(backup_bytes(backup_type_), 0xff);
             backup_write_bytes_.reserve(256);
             load_save();
-            // Inference replaces the backup memory with a blank one, so it is only allowed while nothing the
-            // user may care about has been loaded into it.
-            if (infer_chip_from_program_ &&
-                std::any_of(backup_.begin(), backup_.end(), [](std::uint8_t byte) { return byte != 0xff; }))
-                infer_chip_from_program_ = false;
             reset();
         } catch (...) {
             close_rom();
@@ -621,34 +615,15 @@ struct GameCard::Impl {
 
     void backup_close() {
         if (!backup_selected_) return;
-        // A flash READ always returns at least one byte. A READ that ends right after its (3-byte) address is
-        // an EEPROM-style access with a 2-byte address whose last byte was clocked as data: the program
-        // expects a different chip than the emulated one.
+        // An address-only read can suggest EEPROM addressing, but a cancelled flash read is identical.
+        // Report the possibility without changing the chip, save buffer or write-enable latch.
         if (!chip_mismatch_hinted_ && backup_is_flash(backup_type_) &&
             (backup_command_ == 0x03 || backup_command_ == 0x0b) &&
             (backup_stage_ == BackupStage::Read || backup_stage_ == BackupStage::Dummy) && backup_data_bytes_ == 0) {
-            if (infer_chip_from_program_ && !save_dirty_) {
-                // Nothing was written yet and no type was asked for: the access pattern says EEPROM, so behave as
-                // a 64 KB EEPROM from the start. The answers given so far (status reads, a blank first byte) are
-                // the same for both chips, so this equals having chosen eeprom64k up front. 2-byte-address
-                // EEPROMs differ only in capacity; the largest keeps every address the program may use.
-                infer_chip_from_program_ = false;
-                backup_type_ = BackupType::Eeprom64K;
-                backup_.assign(backup_bytes(backup_type_), 0xff);
-                backup_status_ = 0;
-                backup_wel_ = false;
-                backup_selected_ = false;
-                backup_stage_ = BackupStage::Command;
-                backup_write_bytes_.clear();
-                std::fprintf(stderr,
-                             "[dsr] backup type is auto and the program reads the backup like an EEPROM (2-byte "
-                             "addresses): using eeprom64k. Pass --backup-type to choose another chip.\n");
-                return;
-            }
             chip_mismatch_hinted_ = true;
             std::fprintf(stderr,
-                         "[dsr] hint: the program reads the cartridge backup like an EEPROM (2-byte addresses) but the "
-                         "emulated chip is a flash type. If the game reports a corrupt save, try --backup-type eeprom64k "
+                         "[dsr] hint: an address-only backup read may indicate an EEPROM/flash mismatch, or a "
+                         "cancelled flash read. If the game reports a corrupt save, try --backup-type eeprom64k "
                          "(or eeprom8k), or choose Save chip in the launcher.\n");
         }
         finalize_backup_write();
@@ -783,11 +758,6 @@ struct GameCard::Impl {
             backup_write_bytes_.clear();
             backup_id_pos_ = 0;
             backup_data_bytes_ = 0;
-            // Any write-type command ends the chip inference for good, even if it changes nothing or the save
-            // was flushed since: the buffer may now hold data the guest expects to read back.
-            if (value == 0x02 || value == 0x0a || value == 0xdb || value == 0xd8 || value == 0xc7 || value == 0x60 ||
-                value == 0x01)
-                infer_chip_from_program_ = false;
             switch (value) {
             case 0x06: backup_wel_ = true; backup_stage_ = BackupStage::Ignore; break;
             case 0x04: backup_wel_ = false; backup_stage_ = BackupStage::Ignore; break;
@@ -883,7 +853,6 @@ struct GameCard::Impl {
     bool save_dirty_ = false;
     bool save_failure_reported_ = false;
     bool chip_mismatch_hinted_ = false;
-    bool infer_chip_from_program_ = false;
     std::size_t backup_data_bytes_ = 0;
     bool previous_save_backed_up_ = false;
     std::uint16_t aux_control_ = 0;

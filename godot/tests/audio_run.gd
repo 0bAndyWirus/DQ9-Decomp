@@ -36,6 +36,8 @@ func _run() -> void:
 		if parts.size() == 4:
 			input_by_frame[int(parts[0])] = [int(parts[1]), int(parts[2]), int(parts[3])]
 	input_file.close()
+	if not ClassDB.class_exists("DqMachine"):
+		GDExtensionManager.load_extension("res://dq9.gdextension")
 	machine = ClassDB.instantiate("DqMachine")
 	if machine == null:
 		push_error("DqMachine GDExtension class is unavailable")
@@ -98,7 +100,8 @@ func _process(delta: float) -> bool:
 	if bucket_elapsed >= DURATION_SECONDS:
 		machine.stop()
 		machine.set_paused(true)
-		machine.flush_save()
+		var save_ok: bool = machine.flush_save()
+		if not save_ok: push_error("save flush failed during audio probe cleanup")
 		print("FINAL ", machine.get_stats())
 		if player != null:
 			player.stop()
@@ -120,7 +123,7 @@ func _process(delta: float) -> bool:
 		await process_frame
 		await process_frame
 		await process_frame
-		call_deferred("quit", 0)
+		call_deferred("quit", 0 if save_ok else 1)
 	return false
 func _average(values: Array[float]) -> float:
 	if values.is_empty():

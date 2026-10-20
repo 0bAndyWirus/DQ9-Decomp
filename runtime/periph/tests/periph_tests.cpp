@@ -252,27 +252,28 @@ void test_previous_save_backup(const std::filesystem::path& rom, const std::file
 }
 
 void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesystem::path& save_dir) {
-    {   // Flash reads carry at least one data byte; a 3-byte-address read that ends at once is EEPROM style.
+    {   // An address-only read can suggest a mismatch, but is also a cancelled flash read.
         dsr::GameCard flash(rom, save_dir / "hint-flash.sav", dsr::BackupType::Flash512K);
         (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00, 0x00});
         assert(!flash.chip_mismatch_suspected());
         (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00});
         assert(flash.chip_mismatch_suspected());
     }
-    {   // Auto: the same access switches to a 64 KB EEPROM before anything was written; no notice is needed.
-        const auto save = save_dir / "hint-auto.sav";
-        std::filesystem::remove(save);
+    for (const std::uint8_t command : {0x03, 0x0b}) {
+        // A cancelled read must not change the chip or consume a previously latched WREN.
+        const auto save = save_dir / ("hint-cancelled-" + std::to_string(command) + ".sav");
         dsr::GameCard automatic(rom, save);
-        (void)aux_transfer(automatic, {0x03, 0x00, 0x00, 0x00});
-        assert(!automatic.chip_mismatch_suspected());
         (void)aux_transfer(automatic, {0x06});
-        (void)aux_transfer(automatic, {0x02, 0x01, 0x22, 0x5a});               // a 2-byte-address EEPROM write ...
-        const auto read = aux_transfer(automatic, {0x03, 0x01, 0x22, 0x00});   // ... reads back
+        std::vector<std::uint8_t> cancelled{command, 0x00, 0x00, 0x00};
+        if (command == 0x0b) cancelled.push_back(0x00); // fast-read dummy clock, no data
+        (void)aux_transfer(automatic, cancelled);
+        (void)aux_transfer(automatic, {0x02, 0x00, 0x12, 0x34, 0x5a});
+        const auto read = aux_transfer(automatic, {0x03, 0x00, 0x12, 0x34, 0x00});
         assert(read.back() == 0x5a);
-        automatic.flush_save();
-        assert(std::filesystem::file_size(save) == 64u * 1024u);
+        assert(automatic.flush_save());
+        assert(std::filesystem::file_size(save) == 512u * 1024u);
     }
-    {   // Existing save data is never discarded by the inference: only a notice is possible.
+    {   // Existing save data is unaffected by the informational hint.
         const auto save = save_dir / "hint-existing.sav";
         std::vector<std::uint8_t> existing(512u * 1024u, 0xff);
         existing[1234] = 0x42;
@@ -290,7 +291,7 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         std::ifstream in(save, std::ios::binary);
         std::vector<std::uint8_t> after((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         assert(after == existing);
-        // A blank (all 0xff) save of the same size holds nothing to lose: the inference may switch.
+        // An existing blank save still establishes the chip's size.
         std::fill(existing.begin(), existing.end(), 0xff);
         {
             std::ofstream out(save, std::ios::binary | std::ios::trunc);
@@ -298,15 +299,15 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         }
         dsr::GameCard blank(rom, save);
         (void)aux_transfer(blank, {0x03, 0x00, 0x00, 0x00});
-        assert(!blank.chip_mismatch_suspected());
+        assert(blank.chip_mismatch_suspected());
     }
-    {   // After a write the chip is no longer swapped: a mismatch is only reported.
+    {   // A flushed write remains intact after an address-only read.
         const auto save = save_dir / "hint-late.sav";
         std::filesystem::remove(save);
         dsr::GameCard late(rom, save);
         (void)aux_transfer(late, {0x06});
         (void)aux_transfer(late, {0x02, 0x00, 0x00, 0x00, 0x01});   // flash page program: 3-byte address
-        assert(late.flush_save());                                  // flushed: "not dirty" must not re-enable inference
+        assert(late.flush_save());
         (void)aux_transfer(late, {0x03, 0x00, 0x00, 0x00});
         assert(late.chip_mismatch_suspected());
         assert(late.flush_save());
@@ -323,7 +324,7 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
 
 void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
                                          const std::filesystem::path& save_dir) {
-    // The save's parent "folder" is a regular file, so the file can never be created.
+    // Start with a regular file as the parent: failure is independent of process permissions.
     const auto blocker = save_dir / "blocker";
     { std::ofstream(blocker, std::ios::binary) << "x"; }
     const auto save = blocker / "x.sav";
@@ -333,6 +334,27 @@ void test_unwritable_save_does_not_throw(const std::filesystem::path& rom,
     (void)aux_transfer(card, {0x02, 0x01, 0x22});
     assert(!card.flush_save());                      // reports failure instead of throwing
     assert(!card.flush_save());                      // still dirty, still failing, still no throw
+    std::filesystem::remove(blocker);
+    assert(card.flush_save());                      // retry creates the directory and writes retained data
+    const auto saved_byte = [&] {
+        std::ifstream in(save, std::ios::binary);
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(bytes.size() == 512);
+        return bytes[1];
+    };
+    assert(saved_byte() == 0x22);
+    assert(card.flush_save());                      // a clean flush still succeeds after recovery
+
+    // A later commit failure must also retain new writes and allow another recovery.
+    std::filesystem::remove(save);
+    std::filesystem::create_directory(save);         // cannot replace a directory with the save file
+    (void)aux_transfer(card, {0x06});
+    (void)aux_transfer(card, {0x02, 0x01, 0x33});
+    assert(!card.flush_save());
+    assert(!card.flush_save());
+    std::filesystem::remove(save);
+    assert(card.flush_save());
+    assert(saved_byte() == 0x33);
 }
 
 void test_larger_eeproms(const std::filesystem::path& rom,
