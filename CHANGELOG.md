@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **First-run language:** the launcher (and the Godot host) preselects the game language that matches the system language (fr/de/es/it; anything else stays English) when no settings file exists yet; an existing choice is never changed.
 - **Robustness check (public build, `--backup-type eeprom64k`):** three random-input runs of 58,500 frames each (the scripted replay,
   then 30,000 frames of random key holds and bottom-screen touches) finished without a crash, a "no recompiled entry" fatal or a
   stall (about 5,200-6,000 distinct top-screen frames each); sampled frames showed field exploration and the equipment and item

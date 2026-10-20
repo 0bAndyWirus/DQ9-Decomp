@@ -163,6 +163,13 @@ int main() {
     assert(with_volume.key_volume_down == 80 && with_volume.key_volume_up == 81 && with_volume.key_mute == 82);
     assert(with_volume.frontend.volume == 40 && default_config().frontend.volume == 100);
     assert(parse_config("volume=250\n").frontend.volume == 100 && parse_config("volume=-5\n").frontend.volume == 0);
+    assert(game_language_for_locales({}) == "en");
+    assert(game_language_for_locales({"fr_FR.UTF-8"}) == "fr");
+    assert(game_language_for_locales({"DE-at"}) == "de");
+    assert(game_language_for_locales({"ja_JP", "it_IT"}) == "it");   // first supported entry wins
+    assert(game_language_for_locales({"pt_BR", "ko"}) == "en");      // nothing shipped: English
+    assert(game_language_for_locales({"es"}) == "es" && game_language_for_locales({"en_GB"}) == "en");
+    assert(game_language_for_locales({"", "frx"}) == "en");          // only whole language codes match
     assert(default_config().key_pause == 19 && parse_config("key_pause=44\n").key_pause == 44);
     {
         auto remapped = default_config();

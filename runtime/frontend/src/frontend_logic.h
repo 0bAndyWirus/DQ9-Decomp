@@ -45,6 +45,9 @@ std::uint32_t allowed_debug_actions(std::uint32_t actions, bool overlay_visible,
 int volume_gain_q8(int percent, bool muted);
 // Scales interleaved samples in place; unity gain leaves them untouched.
 void apply_volume_gain(std::int16_t* samples, std::size_t count, int gain_q8);
+// First-run language choice: the first preferred locale ("fr_FR", "de-AT", "es", ...) whose language the
+// European release ships (en, fr, de, es, it), else "en".
+std::string game_language_for_locales(const std::vector<std::string>& preferred);
 std::string audio_debug_status(int solo, const std::array<bool, 16>& muted);
 
 struct Rect { int x; int y; int w; int h; };

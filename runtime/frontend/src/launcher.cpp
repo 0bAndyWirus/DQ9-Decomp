@@ -590,11 +590,13 @@ bool run_sdl_launcher(LauncherOptions& options) {
     std::error_code ec;
     std::filesystem::create_directories(paths.config_dir, ec);
     frontend_detail::ConfigData config = frontend_detail::default_config();
+    bool first_run = false;
     const auto config_file = paths.config_dir / "frontend.conf";
     if (std::ifstream in{config_file}; in) {
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         config = frontend_detail::parse_config(text, config);
     } else {
+        first_run = true;
         if (running_on_steam_deck()) {
             config.frontend.fullscreen = true;
             config.frontend.layout = ScreenLayout::TopFocus;
@@ -612,6 +614,18 @@ bool run_sdl_launcher(LauncherOptions& options) {
     SDL_SetMainReady();
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) return false;
+    if (first_run) {
+        // Nothing chosen yet: preselect the game language that matches the system language.
+        std::vector<std::string> locales;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        if (SDL_Locale* preferred = SDL_GetPreferredLocales()) {
+            for (const SDL_Locale* l = preferred; l->language != nullptr; ++l)
+                locales.push_back(l->language);
+            SDL_free(preferred);
+        }
+#endif
+        config.language = frontend_detail::game_language_for_locales(locales);
+    }
     frontend_detail::load_controller_mappings(paths.config_dir);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_Window* window = SDL_CreateWindow("DQ9-Decomp Launcher", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,

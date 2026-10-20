@@ -2,6 +2,7 @@
 #include "ui_logic.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
@@ -290,6 +291,18 @@ std::uint16_t configured_gamepad_mask(const std::array<int, 12>& mapping, int bu
         if (mapping[i] == button) mask |= static_cast<std::uint16_t>(1u << i);
     return mask;
 }
+std::string game_language_for_locales(const std::vector<std::string>& preferred) {
+    for (const std::string& locale : preferred) {
+        std::string language;
+        for (const char c : locale) {
+            if (c == '_' || c == '-' || c == '.' || c == '@') break;
+            language += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (language == "en" || language == "fr" || language == "de" || language == "es" || language == "it") return language;
+    }
+    return "en";
+}
+
 int volume_gain_q8(int percent, bool muted) {
     return muted ? 0 : std::clamp(percent, 0, 100) * 256 / 100;
 }
