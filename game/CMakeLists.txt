@@ -90,6 +90,7 @@ add_test(NAME dsr_session_ctypes_smoke COMMAND "${DQ9_TEST_PYTHON}"
   --save "${DQ9_TEST_SAVE}"
   --script "${DQ9_TEST_INPUT}"
   --frames 300)
+set_tests_properties(dsr_session_ctypes_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 find_package(Git QUIET)
 if(Git_FOUND)

@@ -40,6 +40,11 @@ def main() -> int:
     parser.add_argument("--script", type=Path, required=True)
     parser.add_argument("--frames", type=int, default=300)
     args = parser.parse_args()
+    missing = [name for name in ("rom", "save", "script") if not getattr(args, name).is_file()]
+    if missing:
+        # CTest SKIP_RETURN_CODE: the local game fixtures are optional and never shipped.
+        print("SKIP: no local fixture file for --" + ", --".join(missing))
+        return 77
     lib = ctypes.CDLL(str(args.library.resolve()))
     lib.dsr_session_create.argtypes = [ctypes.POINTER(Config), ctypes.c_char_p, ctypes.c_size_t]
     lib.dsr_session_create.restype = ctypes.c_void_p

@@ -4,6 +4,16 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.3.0
+
+- **Support bundle:** `COLLECT-DIAGNOSTICS.bat` / `tools/collect_diagnostics.py` write one privacy-filtered ZIP (tool and configuration summaries, bounded log tail, script integrity hashes); no game data, saves or binaries, paths redacted.
+- **SDL first-run launcher:** validated typed or dropped ROM paths, inline ABI errors, remembered build-derived save-chip settings, Start/Quit controls and a console-free Windows GUI-subsystem executable with persistent diagnostic logging. The Windows status fixture still proves status propagation. Native Windows game execution is not verified.
+- **Save safety:** rotating timestamped session backups (default 5, `--save-backups N`), capacity-checked atomic `--restore-save newest|PATH` (never converts chip type), and independent SDL SAVED / persistent SAVE FAILED indicators. Godot shares the default backups; its restore UI is not implemented (native restore documented).
+- **SDL audio recovery:** a starved queue rebuilds its playback reserve without discarding PCM, with cumulative drop/underrun/backlog diagnostics. The emulated sample stream is byte-identical. A host that cannot run in real time still cannot produce continuous audio.
+- **Godot:** Windows Desktop x86_64 export preset (unverified on Windows), a ROM-free cold-cache extension check, and `PLAY-GODOT` no longer runs a headless editor import first: that import aborts on Godot 4.5 cold start, and the host loads its extension explicitly instead (verified on Linux; Windows launcher covered by ROM-free CI fixtures only).
+- **Performance:** GPU2D blended compositing prepares layer order per scanline; output is byte-identical (33 hash/WAV comparisons) and gameplay is about 4% faster on one shared machine (boot gain within noise).
+- **Fixes:** `tools/session_ctypes_smoke.py` now declares the appended `backup_type` field of `dsr_session_config` (a missing field made the library read past the allocation), and the optional CTest skips instead of failing when no local fixtures are supplied.
+
 ## v0.2.9
 
 - **Cleaner Windows kit:** `BUILD-DQ9.bat` asks for the ROM (drag the file into the window) when none is given, finds Python 3.10+ itself (Microsoft Store stub ignored) with a clear message when missing, sets the EU save chip (`eeprom64k`, override with `DQ9_BACKUP_TYPE`) so a fresh save no longer stalls, and shows `[n/5]` steps with one summary line each and a compile progress bar (`[####----] 42%  482/1134`) instead of raw tool output. `tools/build_port.py --quiet` writes full output to `build/build-log.txt` and prints the last lines only when a command fails.
