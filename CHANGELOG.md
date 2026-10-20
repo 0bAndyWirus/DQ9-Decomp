@@ -6,6 +6,8 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **The generated `abi.ini` is found automatically:** `dq9` and the Godot host use `build/gen/abi.ini` of the tree they live in when neither `--abi-config` nor `DQ9_ABI_CONFIG` is set. Previously the Godot host (which cannot take a flag) showed blank screens unless the environment variable was set; a 3,000-frame run without the file differed from frame 50 on and never left a blank screen.
+- **Save chip choice in the launchers:** the SDL launcher's ROM / SAVE page and the Godot settings panel have a *Save chip* option (stored as `backup_type`), so the "quick save log is corrupted" trap can be fixed without editing files or rebuilding. Godot gets `DqMachine.set_backup_type()`, `dsr_session_config.backup_type` and `--backup-type`; debug replay bundles pass the chip to `replay.sh`.
 - **Portable mode:** put an empty `portable.txt` next to the program and settings, saves and screenshots are kept in `portable/config` and `portable/data` beside it instead of the user profile (useful for a USB stick or an unzipped Windows kit). Verified on Linux; not run on Windows.
 
 ## v0.2.5

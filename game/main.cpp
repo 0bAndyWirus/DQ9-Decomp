@@ -601,6 +601,17 @@ int main(int argc, char** argv) {
     const std::int64_t rtc_epoch = opt.rtc_epoch.value_or(static_cast<std::int64_t>(launch_wall_time));
     const int rtc_timezone_offset = opt.rtc_timezone_offset_minutes.value_or(
         needs_launch_clock ? local_timezone_offset_minutes(launch_wall_time) : 0);
+    if (opt.abi_config.empty()) {
+        // No --abi-config and no DQ9_ABI_CONFIG: without the file the game shows blank screens, so use the one
+        // the build left in the tree this program lives in.
+        char* base = SDL_GetBasePath();
+        const auto found = dsr::find_guest_abi_config(dsr::host::path_from_utf8(base ? base : ""));
+        SDL_free(base);
+        if (!found.empty()) {
+            opt.abi_config = found;
+            std::fprintf(stderr, "[dsr] using ABI configuration %s\n", found.string().c_str());
+        }
+    }
     std::unique_ptr<dq9::DebugSession> debug_session;
     if (opt.debug_tool) {
         std::error_code ec;

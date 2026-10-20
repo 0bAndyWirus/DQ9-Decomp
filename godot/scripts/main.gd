@@ -353,6 +353,13 @@ func _start_game() -> void:
 	if machine.has_method("set_rtc_epoch"):
 		var timezone := Time.get_time_zone_from_system()
 		machine.set_rtc_epoch(int(Time.get_unix_time_from_system()), int(timezone.get("bias", 0)))
+	if OS.get_environment("DQ9_ABI_CONFIG").is_empty():
+		# Without the generated configuration the game stalls on blank screens; pick up the one the build left behind.
+		var abi := Logic.find_abi_config(ProjectSettings.globalize_path("res://"))
+		if abi.is_empty(): abi = Logic.find_abi_config(OS.get_executable_path().get_base_dir())
+		if not abi.is_empty():
+			OS.set_environment("DQ9_ABI_CONFIG", abi)
+			print("Using ABI configuration ", abi)
 	var actual_save_path := ProjectSettings.globalize_path(settings.save_path)
 	if machine.has_method("set_backup_type"): machine.set_backup_type(settings.backup_type)
 	var result: String = machine.load_game(settings.rom_path, actual_save_path, Logic.firmware_language(settings.language))

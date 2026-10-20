@@ -67,6 +67,20 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 const BACKUP_TYPES := ["auto", "eeprom64k", "eeprom8k", "eeprom512b", "eeprom128k", "flash256k", "flash512k", "flash1m", "flash8m"]
 const BACKUP_LABELS := ["Auto", "EEPROM 64 KB", "EEPROM 8 KB", "EEPROM 512 B", "EEPROM 128 KB", "Flash 256 KB", "Flash 512 KB", "Flash 1 MB", "Flash 8 MB"]
 
+# The locally generated runtime configuration: `abi.ini` next to `start`, else `build/gen/abi.ini` in `start` or up to
+# five parent folders (the Godot project lives in <repo>/godot). Returns "" when nothing is found.
+static func find_abi_config(start: String) -> String:
+	var dir := start.simplify_path()
+	if dir.is_empty(): return ""
+	for depth in 6:
+		if depth == 0 and FileAccess.file_exists(dir.path_join("abi.ini")): return dir.path_join("abi.ini")
+		var generated := dir.path_join("build/gen/abi.ini")
+		if FileAccess.file_exists(generated): return generated
+		var parent := dir.get_base_dir()
+		if parent == dir or parent.is_empty(): break
+		dir = parent
+	return ""
+
 # First-run game language from the OS language (the European release ships en/fr/de/es/it).
 static func language_for_locale(locale: String) -> String:
 	var code := locale.to_lower().split("_")[0].split("-")[0]

@@ -137,6 +137,18 @@ void run_abi_config_tests() {
     invalid.replace(invalid.find("math_state_enabled = 1"), std::string("math_state_enabled = 1").size(),
                     "math_state_enabled = 2");
     fixture.reject("[arm9]\n" + invalid);
+    {
+        const auto root = fixture.directory / "discover";
+        const auto deep = root / "build" / "game" / "game";
+        std::filesystem::create_directories(deep);
+        assert(find_guest_abi_config(deep).empty());                               // nothing generated yet
+        std::filesystem::create_directories(root / "build" / "gen");
+        { std::ofstream(root / "build" / "gen" / "abi.ini") << "[arm9]\n"; }
+        assert(find_guest_abi_config(deep) == root / "build" / "gen" / "abi.ini"); // found from three folders below
+        { std::ofstream(deep / "abi.ini") << "[arm9]\n"; }
+        assert(find_guest_abi_config(deep) == deep / "abi.ini");                   // a file next to the program wins
+        assert(find_guest_abi_config(std::filesystem::path{}).empty());
+    }
     const auto missing_file = load_guest_abi_config(fixture.directory / "missing.ini");
     assert(!missing_file.arm9 && !missing_file.arm7 && missing_file.backup_type == BackupType::Auto);
 #if defined(_WIN32)

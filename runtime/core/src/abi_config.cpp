@@ -207,6 +207,20 @@ GuestAbiConfig load_guest_abi_config(const std::filesystem::path& path) {
     return config;
 }
 
+std::filesystem::path find_guest_abi_config(const std::filesystem::path& start) {
+    std::error_code error;
+    std::filesystem::path directory = start;
+    for (int depth = 0; depth < 6 && !directory.empty(); ++depth) {
+        if (depth == 0 && std::filesystem::is_regular_file(directory / "abi.ini", error)) return directory / "abi.ini";
+        const auto generated = directory / "build" / "gen" / "abi.ini";
+        if (std::filesystem::is_regular_file(generated, error)) return generated;
+        const auto parent = directory.parent_path();
+        if (parent == directory) break;
+        directory = parent;
+    }
+    return {};
+}
+
 std::filesystem::path guest_abi_config_path_from_environment() {
 #if defined(_WIN32)
     if (const wchar_t* path = _wgetenv(L"DQ9_ABI_CONFIG")) return path;

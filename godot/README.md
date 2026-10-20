@@ -15,7 +15,10 @@ godot --path godot -- --rom "$DQ9_ROM" --save user://dq9.sav --language en --aut
 Select a local image using `--rom`, `DQ9_ROM` when no saved path exists, or Browse. `--rom` overrides the saved selection. The launcher remembers paths, language, layout, filter/scaling, volume and input bindings in `user://settings.cfg`. The save defaults to `user://dq9.sav`.
 
 `DQ9_ABI_CONFIG` selects caller-supplied local runtime metadata for guest-thread
-overrides and optional cartridge backup settings. No title-specific ABI layout
+overrides and optional cartridge backup settings. When it is unset the host looks for
+`build/gen/abi.ini` above the project folder (the file `tools/build_port.py` writes) and uses it;
+without any such file the game stalls on blank screens. The settings panel has a **Save chip** option
+(also `--backup-type NAME` after `--`) for the cartridge backup memory type. No title-specific ABI layout
 or values are included. See [Building DQ9-Decomp](../docs/BUILDING.md).
 
 The launcher supports the seven host layouts (vertical, horizontal, top/bottom focus, single top/bottom, merged overlay); F11 toggles fullscreen and F10 opens the pause/debug panel; hold Tab to fast-forward (the pause panel's speed returns on release) and press F12 to save a PNG of both screens to `user://screenshots/`. The settings panel shows whether the ROM path exists and the current key/pad binding on each button. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.

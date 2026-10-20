@@ -11,6 +11,7 @@ The extension bundles no title-specific layout or values.
 
 ## Lifecycle and thread ownership
 
+- `set_backup_type(name: String)` / `get_backup_type() -> String` choose the emulated cartridge save chip (`auto`, `eeprom64k`, ... as the native `--backup-type`); call before `load_game`, an unknown name makes `load_game` return an error. Empty or `auto` keeps the ABI config / save-size choice.
 - `load_game(rom_path: String, save_path: String, language: int) -> String` creates a session and returns an empty string on success or an error message. It does not start emulation. Language is 0..5.
 - A dedicated owner thread creates and exclusively owns the session, handles frame commands and destroys it. `start()` resumes frame execution. `stop()` pauses frame execution but keeps the owner thread/session alive so it can safely be resumed or stepped; destruction and a subsequent `load_game` stop and join it.
 - `set_paused(bool)` and `is_paused() -> bool` control run state. `step_once()` while paused requests exactly one worker-owned frame.
