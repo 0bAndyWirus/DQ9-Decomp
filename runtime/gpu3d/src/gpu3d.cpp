@@ -1797,13 +1797,10 @@ struct Gpu3D::Impl {
     template<int Format = -1>
     gpu3d_detail::Texel sample_texture(const Polygon& polygon, float u, float v,
                                        PolygonShading& shading) const {
-        // Generic sampling is compiled for the baseline ISA, where float floor
-        // needs a long roundtrip. Specialized AVX2 spans keep their hardware
-        // floor instruction rather than paying for integer correction there.
-        const int iu = Format == -1 ? gpu3d_detail::floor_texcoord(u) : static_cast<int>(std::floor(u));
-        const int iv = Format == -1 ? gpu3d_detail::floor_texcoord(v) : static_cast<int>(std::floor(v));
-        const int x = wrapped_coordinate(iu, shading.texture_width, shading.repeat_x, shading.flip_x);
-        const int y = wrapped_coordinate(iv, shading.texture_height, shading.repeat_y, shading.flip_y);
+        const int x = wrapped_coordinate(static_cast<int>(std::floor(u)), shading.texture_width,
+                                         shading.repeat_x, shading.flip_x);
+        const int y = wrapped_coordinate(static_cast<int>(std::floor(v)), shading.texture_height,
+                                         shading.repeat_y, shading.flip_y);
         const auto pixel = static_cast<std::uint32_t>(y * shading.texture_width + x);
         if (shading.decoded != nullptr) return shading.decoded[pixel];
         // The base and format are fixed for this polygon. A linear texel
