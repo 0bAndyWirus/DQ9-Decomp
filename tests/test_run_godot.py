@@ -242,6 +242,15 @@ class WindowsLauncherSourceTests(unittest.TestCase):
                 self.assertIn(f'"%~dp0{name}.ps1" %*', batch)
                 self.assertIn("exit /b %errorlevel%", batch)
 
+    def test_godot_cold_start_launches_directly_without_editor_import(self):
+        source = (ROOT / "tools/run_godot.ps1").read_text()
+        self.assertIn("& $godot @commandArgs", source)
+        self.assertIn("Could not start Godot executable", source)
+        self.assertNotIn("--headless", source)
+        self.assertNotIn("--editor", source)
+        self.assertNotIn("--import", source)
+        self.assertNotIn("extension_list.cfg", source)
+
 
 class GodotSmokeScriptTests(unittest.TestCase):
     def setUp(self):

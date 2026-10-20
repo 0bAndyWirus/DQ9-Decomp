@@ -20,7 +20,7 @@ Output goes to the terminal as short steps; the full log is `build\build-log.txt
 
 ## 2. Start it
 
-Double-click **`PLAY-GODOT.bat`**. The first start imports the project once (a few seconds, needs a writable kit folder), then the launcher opens.
+Double-click **`PLAY-GODOT.bat`**. It opens the launcher directly, including on a clean project: the app loads its extension explicitly, without a first-start editor import or `.godot` cache. A normal cold launch with the real extension and rendered game frames has been checked on Linux with Godot 4.5; **the Windows game launch remains unverified**. ROM-free Windows CI checks the launcher process and argument forwarding, not the game.
 
 - **Launcher:** press **Browse** and choose your `.nds`, pick the language, then **Start**. The ROM path, language, layout, volume and key bindings are remembered in Godot's `user://settings.cfg`.
 - **Direct start:** `PLAY-GODOT.bat "C:\path\game.nds" fr` starts the game at once. The language argument is optional and defaults to `en`.
@@ -72,7 +72,7 @@ In settings, set the 3D renderer to **GPU hi-res (experimental)** and pick a sca
 | Start shows an extension error | The DLL was built with a different Godot version or is missing; rebuild with `BUILD-GODOT.bat` and use Godot 4.5. |
 | Blank screens | `build\gen\abi.ini` is missing; rerun `BUILD-DQ9.bat`. |
 | Stalls at "quick save log is corrupted" | Set **Save chip** to **EEPROM 64 KB** and use a fresh save (see above). |
-| Import fails | The kit folder must be writable; do not run from inside the ZIP or a protected folder. |
+| "Could not start Godot executable" | Rerun `BUILD-GODOT.bat`, or set `GODOT` to a working Godot 4.5 Windows x64 executable. Launch directly; an editor import is not a prerequisite. |
 
 The build log is `build\build-log.txt`. Do not post it publicly without reading it: it contains local paths.
 
