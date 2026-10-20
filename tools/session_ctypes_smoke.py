@@ -19,7 +19,8 @@ class Config(ctypes.Structure):
     _fields_ = [("rom_path", ctypes.c_char_p), ("save_path", ctypes.c_char_p),
                 ("language", ctypes.c_uint8), ("deterministic_rtc", ctypes.c_uint8),
                 ("rtc_epoch_seconds", ctypes.c_int64),
-                ("rtc_timezone_offset_minutes", ctypes.c_int32)]
+                ("rtc_timezone_offset_minutes", ctypes.c_int32),
+                ("backup_type", ctypes.c_char_p)]  # appended in session_c.h; NULL keeps the ABI/save-size choice
 
 def fnv_screen(pixels: ctypes.POINTER(ctypes.c_uint32)) -> int:
     value = 0xCBF29CE484222325
