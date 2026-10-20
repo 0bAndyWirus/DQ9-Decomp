@@ -1,5 +1,6 @@
 #include "dsr/gpu2d.h"
 #include "dsr/gpu3d.h"
+#include "../src/composition_order.h"
 
 #include <algorithm>
 #include <array>
@@ -1282,6 +1283,45 @@ void test_scratch_clear_between_engines_and_lines() {
     }
 }
 
+void test_composition_order_matches_scalar() {
+    std::mt19937 random(0x2046U);
+    for (unsigned enabled = 0; enabled < 16; ++enabled) {
+        for (unsigned packed = 0; packed < 256; ++packed) {
+            std::array<std::uint8_t, 4> priorities{};
+            for (unsigned bg = 0; bg < 4; ++bg) priorities[bg] = (packed >> (bg * 2)) & 3U;
+            for (unsigned obj_priority = 0; obj_priority <= 4; ++obj_priority) {
+                const auto actual = dsr::gpu2d_detail::composition_order(enabled, priorities, obj_priority);
+                std::array<std::uint8_t, 5> expected{};
+                unsigned count = 0;
+                for (int priority = 3; priority >= 0; --priority) {
+                    for (int bg = 3; bg >= 0; --bg) {
+                        if ((enabled & (1U << bg)) && priorities[bg] == priority) expected[count++] = bg;
+                    }
+                    if (obj_priority == static_cast<unsigned>(priority)) expected[count++] = 4;
+                }
+                assert(actual.count == count);
+                assert(std::equal(expected.begin(), expected.begin() + count, actual.layers.begin()));
+                // Compare an order-sensitive synthetic blend with random window/opacity
+                // masks; an omitted, duplicated, or reordered layer changes the result.
+                const unsigned visible = random() & 31U;
+                std::array<unsigned, 5> colors{};
+                for (auto& color : colors) color = random() & 31U;
+                unsigned scalar = random() & 31U;
+                unsigned flattened = scalar;
+                for (unsigned i = 0; i < count; ++i) {
+                    const auto layer = expected[i];
+                    if (visible & (1U << layer)) scalar = (scalar + 3U * colors[layer]) / 4U;
+                }
+                for (unsigned i = 0; i < actual.count; ++i) {
+                    const auto layer = actual.layers[i];
+                    if (visible & (1U << layer)) flattened = (flattened + 3U * colors[layer]) / 4U;
+                }
+                assert(flattened == scalar);
+            }
+        }
+    }
+}
+
 } // namespace
 
 namespace dsr {
@@ -1294,6 +1334,7 @@ const std::uint32_t* Gpu3D::line(int y) const {
 
 int main(int argc, char** argv) {
     const struct { const char* name; void (*run)(); } tests[]{
+        {"composition_order", test_composition_order_matches_scalar},
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},
