@@ -259,6 +259,26 @@ void test_chip_mismatch_hint(const std::filesystem::path& rom, const std::filesy
         (void)aux_transfer(flash, {0x03, 0x00, 0x00, 0x00});
         assert(flash.chip_mismatch_suspected());
     }
+    {   // Auto: the same access switches to a 64 KB EEPROM before anything was written; no notice is needed.
+        const auto save = save_dir / "hint-auto.sav";
+        std::filesystem::remove(save);
+        dsr::GameCard automatic(rom, save);
+        (void)aux_transfer(automatic, {0x03, 0x00, 0x00, 0x00});
+        assert(!automatic.chip_mismatch_suspected());
+        (void)aux_transfer(automatic, {0x06});
+        (void)aux_transfer(automatic, {0x02, 0x01, 0x22, 0x5a});               // a 2-byte-address EEPROM write ...
+        const auto read = aux_transfer(automatic, {0x03, 0x01, 0x22, 0x00});   // ... reads back
+        assert(read.back() == 0x5a);
+        automatic.flush_save();
+        assert(std::filesystem::file_size(save) == 64u * 1024u);
+    }
+    {   // After a write the chip is no longer swapped: a mismatch is only reported.
+        dsr::GameCard late(rom, save_dir / "hint-late.sav");
+        (void)aux_transfer(late, {0x06});
+        (void)aux_transfer(late, {0x02, 0x00, 0x00, 0x00, 0x01});   // flash page program: 3-byte address
+        (void)aux_transfer(late, {0x03, 0x00, 0x00, 0x00});
+        assert(late.chip_mismatch_suspected());
+    }
     {
         dsr::GameCard eeprom(rom, save_dir / "hint-eeprom.sav", dsr::BackupType::Eeprom64K);
         (void)aux_transfer(eeprom, {0x03, 0x00, 0x00, 0x00});

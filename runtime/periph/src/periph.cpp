@@ -156,6 +156,7 @@ struct GameCard::Impl {
         try {
             open_rom(rom_path);
             backup_type_ = resolve_backup_type(requested_type);
+            infer_chip_from_program_ = requested_type == BackupType::Auto;
             backup_.assign(backup_bytes(backup_type_), 0xff);
             backup_write_bytes_.reserve(256);
             load_save();
@@ -621,6 +622,24 @@ struct GameCard::Impl {
         if (!chip_mismatch_hinted_ && backup_is_flash(backup_type_) &&
             (backup_command_ == 0x03 || backup_command_ == 0x0b) &&
             (backup_stage_ == BackupStage::Read || backup_stage_ == BackupStage::Dummy) && backup_data_bytes_ == 0) {
+            if (infer_chip_from_program_ && !save_dirty_) {
+                // Nothing was written yet and no type was asked for: the access pattern says EEPROM, so behave as
+                // a 64 KB EEPROM from the start. The answers given so far (status reads, a blank first byte) are
+                // the same for both chips, so this equals having chosen eeprom64k up front. 2-byte-address
+                // EEPROMs differ only in capacity; the largest keeps every address the program may use.
+                infer_chip_from_program_ = false;
+                backup_type_ = BackupType::Eeprom64K;
+                backup_.assign(backup_bytes(backup_type_), 0xff);
+                backup_status_ = 0;
+                backup_wel_ = false;
+                backup_selected_ = false;
+                backup_stage_ = BackupStage::Command;
+                backup_write_bytes_.clear();
+                std::fprintf(stderr,
+                             "[dsr] backup type is auto and the program reads the backup like an EEPROM (2-byte "
+                             "addresses): using eeprom64k. Pass --backup-type to choose another chip.\n");
+                return;
+            }
             chip_mismatch_hinted_ = true;
             std::fprintf(stderr,
                          "[dsr] hint: the program reads the cartridge backup like an EEPROM (2-byte addresses) but the "
@@ -854,6 +873,7 @@ struct GameCard::Impl {
     bool save_dirty_ = false;
     bool save_failure_reported_ = false;
     bool chip_mismatch_hinted_ = false;
+    bool infer_chip_from_program_ = false;
     std::size_t backup_data_bytes_ = 0;
     bool previous_save_backed_up_ = false;
     std::uint16_t aux_control_ = 0;

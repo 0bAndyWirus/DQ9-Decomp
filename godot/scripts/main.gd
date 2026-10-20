@@ -198,7 +198,7 @@ func _make_settings() -> PanelContainer:
 	var chip:=OptionButton.new(); chip.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	for text in Logic.BACKUP_LABELS: chip.add_item(text)
 	chip.select(maxi(0,Logic.BACKUP_TYPES.find(settings.backup_type)))
-	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
+	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size, else infers it from the program. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
 	chip_row.add_child(chip)
 	_ui.chip=chip
 	_section(col,"Display")
