@@ -763,27 +763,35 @@ public:
     void queue_audio(const std::int16_t* frames, std::size_t count, double source_rate) override {
         if (!audio_ || !frames || count == 0) return;
         std::size_t backlog = audio_backlog();
+        const auto metric_now = std::chrono::steady_clock::now();
+        const bool starved = frontend_detail::audio_queue_starved(
+            audio_device_started_, metric_has_audio_queue_time_, backlog,
+            std::chrono::duration<double>(metric_now - metric_last_audio_queue_time_).count(),
+            metric_available_audio_seconds_);
         if (audio_metrics_enabled_ || config_.debug_tool_enabled) {
-            const auto metric_now = std::chrono::steady_clock::now();
-            const bool starved = frontend_detail::audio_queue_starved(
-                audio_device_started_, metric_has_audio_queue_time_, backlog,
-                std::chrono::duration<double>(metric_now - metric_last_audio_queue_time_).count(),
-                metric_available_audio_seconds_);
             if (config_.debug_tool_enabled && starved) ++empty_audio_queue_events_;
             if (audio_metrics_enabled_) {
                 if (audio_device_started_ && backlog == 0) ++metric_queue_empty_samples_;
                 if (starved) ++metric_underruns_;
                 if (source_rate > 0.0) metric_produced_audio_ms_ += count * 1000.0 / source_rate;
             }
-            metric_last_audio_queue_time_ = metric_now;
-            metric_has_audio_queue_time_ = true;
         }
+        // A drained device otherwise plays each new frame immediately, followed by another
+        // hole on a slow host. Recover the same reserve used at startup without dropping PCM.
+        if (starved) {
+            SDL_PauseAudioDevice(audio_, 1);
+            audio_device_started_ = false;
+            ++metric_reprimes_;
+        }
+        metric_last_audio_queue_time_ = metric_now;
+        metric_has_audio_queue_time_ = true;
         const std::size_t emergency_ms =
             static_cast<std::size_t>(std::max(config_.audio_buffer_ms, kTargetAudioQueueMs * 2));
         const std::size_t limit = static_cast<std::size_t>(output_rate_) * emergency_ms / 1000;
         if (frontend_detail::audio_queue_needs_emergency_clear(backlog, limit)) {
             if (audio_metrics_enabled_ && output_rate_ > 0) {
                 metric_dropped_audio_ms_ += 1000.0 * backlog / output_rate_;
+                metric_dropped_frames_ += backlog;
                 ++metric_clears_;
             }
             SDL_PauseAudioDevice(audio_, 1);
@@ -813,7 +821,7 @@ public:
             SDL_PauseAudioDevice(audio_, 0);
             audio_device_started_ = true;
         }
-        if ((audio_metrics_enabled_ || config_.debug_tool_enabled) && output_rate_ > 0) {
+        if (output_rate_ > 0) {
             metric_available_audio_seconds_ =
                 static_cast<double>(audio_backlog() + audio_spec_.samples) / output_rate_;
         }
@@ -825,6 +833,7 @@ public:
         if (audio_) {
             if (audio_metrics_enabled_ && output_rate_ > 0) {
                 metric_dropped_audio_ms_ += 1000.0 * audio_backlog() / output_rate_;
+                metric_dropped_frames_ += audio_backlog();
                 ++metric_clears_;
                 metric_available_audio_seconds_ =
                     static_cast<double>(audio_spec_.samples) / output_rate_;
@@ -1023,17 +1032,29 @@ private:
                      "[audio-metrics] elapsed_s=%.2f fps=%.2f frames=%zu "
                      "frame_ms_min=%.3f frame_ms_mean=%.3f frame_ms_p50=%.3f frame_ms_p95=%.3f frame_ms_max=%.3f "
                      "queue_bytes_min=%zu queue_bytes_avg=%.1f queue_bytes_max=%zu "
-                     "queue_empty_samples=%u underruns=%u clears=%u "
+                     "queue_empty_samples=%u underruns=%u clears=%u reprimes=%u "
                      "queue_ms=%.2f device_ms=%.2f latency_ms=%.2f lag_ms=%.2f "
                      "produced_audio_ms=%.1f played_audio_ms=%.1f dropped_audio_ms=%.1f "
                      "correction_ppm=%.0f driver=%s\n",
                      seconds, metric_frames_ / seconds, metric_frames_, frame_min_ms, frame_mean_ms,
                      p50_us / 1000.0, p95_us / 1000.0, frame_max_ms,
                      metric_queue_min_bytes_, queue_avg_bytes, metric_queue_max_bytes_,
-                     metric_queue_empty_samples_, metric_underruns_, metric_clears_,
+                     metric_queue_empty_samples_, metric_underruns_, metric_clears_, metric_reprimes_,
                      queue_ms, device_ms, latency_ms, lag_ms, metric_produced_audio_ms_, played_audio_ms,
                      metric_dropped_audio_ms_, metric_audio_correction_ * 1'000'000.0,
                      driver ? driver : "unknown");
+        metric_total_underruns_ += metric_underruns_;
+        metric_total_reprimes_ += metric_reprimes_;
+        metric_max_backlog_bytes_ = std::max(metric_max_backlog_bytes_, metric_queue_max_bytes_);
+        if (force) {
+            std::fprintf(stderr,
+                         "[audio-summary] dropped_frames=%llu underruns_approx=%llu reprimes=%llu "
+                         "max_backlog_frames=%zu rate=%d\n",
+                         static_cast<unsigned long long>(metric_dropped_frames_),
+                         static_cast<unsigned long long>(metric_total_underruns_),
+                         static_cast<unsigned long long>(metric_total_reprimes_),
+                         metric_max_backlog_bytes_ / (2 * sizeof(std::int16_t)), output_rate_);
+        }
         metric_window_start_ = now;
         metric_frames_ = 0;
         metric_frame_time_count_ = 0;
@@ -1047,6 +1068,7 @@ private:
         metric_queue_empty_samples_ = 0;
         metric_underruns_ = 0;
         metric_clears_ = 0;
+        metric_reprimes_ = 0;
     }
     void sample_frame_metrics(std::chrono::steady_clock::time_point now) {
         const double frame_us = std::chrono::duration<double, std::micro>(now - metric_last_frame_).count();
@@ -1505,7 +1527,9 @@ private:
     std::size_t metric_queue_min_bytes_ = 0, metric_queue_max_bytes_ = 0;
     std::size_t metric_queue_samples_ = 0;
     std::uint64_t metric_queue_bytes_sum_ = 0;
-    unsigned metric_queue_empty_samples_ = 0, metric_underruns_ = 0, metric_clears_ = 0;
+    unsigned metric_queue_empty_samples_ = 0, metric_underruns_ = 0, metric_clears_ = 0, metric_reprimes_ = 0;
+    std::uint64_t metric_dropped_frames_ = 0, metric_total_underruns_ = 0, metric_total_reprimes_ = 0;
+    std::size_t metric_max_backlog_bytes_ = 0;
     std::array<double, 2048> metric_frame_times_us_{};
     std::chrono::steady_clock::time_point metric_window_start_{};
     std::chrono::steady_clock::time_point metric_last_frame_{};
