@@ -4,7 +4,7 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
-## Unreleased
+## v0.2.5
 
 - **Clear errors for bad outputs and scripts:** an unwritable `--dump-dir` or `--dump-audio` target, and an `--input-script` with a malformed line (which used to silently drop everything after it), now print a message and exit non-zero instead of aborting or being ignored.
 - **Remembered window size is fitted to the desktop:** a size saved on a larger monitor (or typed by hand, e.g. 100000x100000) is cut to the usable display area instead of opening an oversized window.
