@@ -2802,17 +2802,76 @@ static std::array<std::uint32_t, 4> reference_clear_pixel(std::uint32_t color, s
 }
 
 void test_uniform_clear_matches_reference() {
+    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
     Gpu3D gpu;
     std::mt19937 random(0x21c3);
     bool ok = true;
     for (int i = 0; i < 256; ++i) {
+        Access::SpanState stale{};
+        for (std::size_t lane = 0; lane < stale.size(); ++lane) {
+            stale[lane] = {static_cast<std::uint32_t>(random()) & 0x1f03ffffU,
+                static_cast<std::uint32_t>(random()) & 0xffffffU,
+                static_cast<std::uint32_t>(random() % 64U) |
+                    (static_cast<std::uint32_t>(random() % 255U) << 8U),
+                static_cast<std::uint32_t>(lane & 7U) |
+                    (static_cast<std::uint32_t>(lane % 3U) << 3U)};
+        }
+        // A zero-width span seeds all named fields without drawing a fragment.
+        Access::draw_span_state(gpu, {}, 0, 0, {}, {}, stale, false, false, false, false);
         const auto color = random(), depth = random();
         gpu.io_write(0x04000350U, color, 32);
         gpu.io_write(0x04000354U, depth, 32);
-        ok &= dsr::gpu3d_detail::Gpu3DTestAccess::clear_pixel(gpu, random() % (256U * 192U)) ==
-              reference_clear_pixel(color, depth);
+        const auto expected = reference_clear_pixel(color, depth);
+        ok &= Access::clear_pixel(gpu, random() % (256U * 192U)) == expected;
+        for (unsigned lane = 0; lane < stale.size(); ++lane)
+            ok &= Access::framebuffer_pixel(gpu, lane) == expected;
+        for (unsigned index : {256U, 6143U, 6144U, 49151U})
+            ok &= Access::framebuffer_pixel(gpu, index) == expected;
     }
     if (!check(ok, "uniform fill preserves every framebuffer field from original clear")) std::exit(1);
+}
+
+void test_uniform_clear_targets_match_reference() {
+    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
+    std::mt19937 random(0x63ac91);
+    bool ok = true;
+    for (int threads : {0, 2, 6}) {
+        for (bool capture : {false, true}) {
+            for (int scale : {1, 2, 4}) {
+                Gpu3D gpu;
+                gpu.set_render_threads(threads);
+                gpu.set_capture_opaque_only(capture);
+                gpu.set_output_scale(scale);
+                for (int frame = 0; frame < 2; ++frame) {
+                    const auto color = random(), depth = random();
+                    const auto expected = reference_clear_pixel(color, depth);
+                    gpu.io_write(0x04000350U, color, 32);
+                    gpu.io_write(0x04000354U, depth, 32);
+                    gpu.render_start();
+                    const auto raster = gpu.raster_view();
+                    for (unsigned index = 0; index < 256U * 192U; ++index) {
+                        ok &= Access::framebuffer_pixel(gpu, index) == expected;
+                        ok &= raster.output[index] == expected[0];
+                        if (capture) {
+                            ok &= raster.opaque_only_mask[index] == 1U;
+                            ok &= raster.capture_causes[index] == 0U;
+                        }
+                    }
+                    if (scale > 1) {
+                        for (int y = 0; y < 192 * scale; ++y) {
+                            const auto* row = gpu.scaled_line(y);
+                            if (!check(row != nullptr, "uniform hi-res clear publishes every row"))
+                                std::exit(1);
+                            ok &= std::all_of(row, row + 256 * scale,
+                                [&](std::uint32_t pixel) { return pixel == expected[0]; });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!check(ok, "uniform clear matches scalar fields/output across bands, capture and scales"))
+        std::exit(1);
 }
 
 enum class BandScene { Gradient, Textures, EdgesFog, Shadow, Translucent, Facing, WireDotsClip, RearPlane, RowBounds };
@@ -3633,6 +3692,7 @@ int main() {
     test_specialized_spans_match_reference();
     test_batch_spans_match_original_fragments();
     test_uniform_clear_matches_reference();
+    test_uniform_clear_targets_match_reference();
     test_shade_pixel_matches_reference();
     test_geometry_reference_command_semantics();
     test_inclusive_viewport_coverage();
