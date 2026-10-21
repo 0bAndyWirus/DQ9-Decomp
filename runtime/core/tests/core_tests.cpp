@@ -4,6 +4,7 @@
 #include "dsr/spu.h"
 #include "dsr/rt.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cfenv>
@@ -380,6 +381,529 @@ void test_timer_irq_event_boundaries() {
                           "a /1 cascade source does not force per-clock CPU slices before its downstream IRQ");
             }
         }
+    }
+}
+
+// Deliberately scalar: one bus tick and one counter increment at a time,
+// without the runtime's overflow division or deadline arithmetic.
+struct ScalarTimerReference {
+    struct Timer {
+        std::uint16_t reload = 0;
+        std::uint16_t count = 0;
+        std::uint16_t control = 0;
+        std::uint64_t phase = 0;
+    };
+    std::array<Timer, 8> timers{};
+    std::array<std::uint32_t, 2> flags{};
+    std::uint64_t ticks = 0;
+
+    void increment(unsigned ci, unsigned ti) {
+        Timer& timer = timers[ci * 4 + ti];
+        if ((timer.control & 0x80u) == 0) return;
+        if (timer.count != 0xffffu) {
+            ++timer.count;
+            return;
+        }
+        timer.count = timer.reload;
+        if ((timer.control & 0x40u) != 0) flags[ci] |= 1u << (3 + ti);
+        if (ti != 3 && (timers[ci * 4 + ti + 1].control & 0x84u) == 0x84u)
+            increment(ci, ti + 1);
+    }
+
+    void advance(std::uint64_t elapsed) {
+        constexpr unsigned dividers[4] = {1, 64, 256, 1024};
+        for (std::uint64_t tick = 0; tick < elapsed; ++tick) {
+            for (unsigned ci = 0; ci < 2; ++ci) {
+                for (unsigned ti = 0; ti < 4; ++ti) {
+                    Timer& timer = timers[ci * 4 + ti];
+                    if ((timer.control & 0x84u) != 0x80u) continue;
+                    ++timer.phase;
+                    const unsigned divider = dividers[timer.control & 3u];
+                    while (timer.phase >= divider) {
+                        timer.phase -= divider;
+                        increment(ci, ti);
+                    }
+                }
+            }
+        }
+        ticks += elapsed;
+    }
+
+    std::uint64_t irq_boundary(std::uint64_t limit) const {
+        ScalarTimerReference probe = *this;
+        for (std::uint64_t elapsed = 1; elapsed < limit; ++elapsed) {
+            probe.flags = {};
+            probe.advance(1);
+            if (probe.flags[0] != 0 || probe.flags[1] != 0) return elapsed;
+        }
+        return limit;
+    }
+
+    void write(unsigned ci, unsigned ti, unsigned sub, std::uint32_t value, int width) {
+        if (width == 16) sub &= ~1u;
+        if (width == 32) sub = 0;
+        Timer& timer = timers[ci * 4 + ti];
+        const auto replace_half = [sub, value, width](std::uint16_t old) {
+            if (width != 8) return static_cast<std::uint16_t>(value);
+            const unsigned shift = (sub & 1u) * 8u;
+            const unsigned mask = 0xffu << shift;
+            return static_cast<std::uint16_t>((old & ~mask) | ((value & 0xffu) << shift));
+        };
+        std::uint16_t next_control;
+        if (width == 32) {
+            timer.reload = static_cast<std::uint16_t>(value);
+            next_control = static_cast<std::uint16_t>((value >> 16) & 0xc7u);
+        } else if (sub < 2) {
+            timer.reload = replace_half(timer.reload);
+            if ((timer.control & 0x80u) == 0) timer.count = timer.reload;
+            return;
+        } else {
+            next_control = replace_half(timer.control) & 0xc7u;
+        }
+        if ((timer.control & 0x80u) == 0 && (next_control & 0x80u) != 0) {
+            timer.count = timer.reload;
+            timer.phase = 0;
+        }
+        timer.control = next_control;
+    }
+
+    std::uint32_t word(unsigned ci, unsigned ti) const {
+        const Timer& timer = timers[ci * 4 + ti];
+        return timer.count | (static_cast<std::uint32_t>(timer.control) << 16);
+    }
+};
+
+struct TimerEquivalence {
+    static MachineConfig config() {
+        MachineConfig result;
+        result.direct_boot = false;
+        return result;
+    }
+
+    explicit TimerEquivalence(std::uint32_t seed, bool split = false)
+        : actual(config()), seed(seed), split(split) {}
+
+    Machine actual;
+    ScalarTimerReference reference{};
+    std::uint32_t seed;
+    bool split;
+    unsigned operation = 0;
+    bool healthy = true;
+
+    Machine::Impl& impl() {
+        return detail::MachineAccess::impl(&actual.cpu(CpuId::Arm9));
+    }
+
+    bool expect(bool condition, const char* message) {
+        if (condition) return true;
+        if (healthy) {
+            std::fprintf(stderr, "[timer-test] seed=%08x split=%u operation=%u tick=%llu\n",
+                         seed, static_cast<unsigned>(split), operation,
+                         static_cast<unsigned long long>(reference.ticks));
+            check(false, message);
+        }
+        healthy = false;
+        return false;
+    }
+
+    bool compare_flags() {
+        for (unsigned ci = 0; ci < 2; ++ci) {
+            const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+            // Check IF before any timer read can materialize lazy state.
+            if (!expect(actual.read32(id, 0x04000214) == reference.flags[ci],
+                        "timer IF matches the scalar before observing counts")) return false;
+        }
+        return true;
+    }
+
+    void advance(std::uint64_t ticks) {
+        ++operation;
+        // This observes the lazy epoch without a timer-register read.
+        const auto limit = std::min<std::uint64_t>(ticks, 128);
+        if (limit != 0)
+            expect(impl().timer_irq_boundary(limit) == reference.irq_boundary(limit),
+                   "lazy timer IRQ boundaries match the seeded scalar before synchronization");
+        reference.advance(ticks);
+        actual.run_ticks(ticks);
+        expect(actual.ticks() == reference.ticks, "timer service does not change elapsed time");
+        compare_flags();
+    }
+
+    void write(unsigned ci, unsigned ti, unsigned sub, std::uint32_t value, int width = 16) {
+        ++operation;
+        reference.write(ci, ti, sub, value, width);
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        const std::uint32_t addr = 0x04000100u + ti * 4 + sub;
+        if (width == 8) actual.write8(id, addr, static_cast<std::uint8_t>(value));
+        else if (width == 16) actual.write16(id, addr, static_cast<std::uint16_t>(value));
+        else actual.write32(id, addr, value);
+        compare_flags();
+    }
+
+    void clear_flags(unsigned ci, unsigned sub, std::uint32_t value, int width) {
+        ++operation;
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        const std::uint32_t addr = 0x04000214u + sub;
+        if (width == 8) actual.write8(id, addr, static_cast<std::uint8_t>(value));
+        else if (width == 16) actual.write16(id, addr, static_cast<std::uint16_t>(value));
+        else actual.write32(id, addr, value);
+        if (width == 8) value = (value & 0xffu) << (sub * 8);
+        else if (width == 16) value = (value & 0xffffu) << ((sub & 2u) * 8);
+        reference.flags[ci] &= ~value;
+        compare_flags();
+    }
+
+    void read(unsigned ci, unsigned ti, unsigned sub, int width) {
+        ++operation;
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        const std::uint32_t addr = 0x04000100u + ti * 4 + sub;
+        std::uint32_t value;
+        if (width == 8) value = actual.read8(id, addr);
+        else if (width == 16) value = actual.read16(id, addr);
+        else value = actual.read32(id, addr);
+        std::uint32_t expected = reference.word(ci, ti);
+        if (width == 8) expected = (expected >> (sub * 8)) & 0xffu;
+        else if (width == 16) expected = (expected >> ((sub & 2u) * 8)) & 0xffffu;
+        expect(value == expected, "byte, halfword and word timer reads match the scalar");
+    }
+
+    void compare() {
+        if (!healthy || !compare_flags()) return;
+        for (unsigned ci = 0; ci < 2; ++ci) {
+            for (unsigned ti = 0; ti < 4; ++ti) {
+                read(ci, ti, 0, 32);
+                read(ci, ti, 0, 16);
+                read(ci, ti, 2, 16);
+                for (unsigned sub = 0; sub < 4; ++sub) read(ci, ti, sub, 8);
+                // The public reads above synchronize every timer. Private
+                // phase/reload comparisons never inspect stale lazy state.
+                const auto& got = impl().timers[ci * 4 + ti];
+                const auto& want = reference.timers[ci * 4 + ti];
+                if (!expect(got.reload == want.reload && got.count == want.count &&
+                            got.control == want.control && got.phase == want.phase,
+                            "timer reload/count/control and retained prescaler phase match the scalar"))
+                    return;
+            }
+        }
+        expect(impl().timers_synced_tick == reference.ticks,
+               "observing timer registers synchronizes all eight timers");
+        expect(impl().timers_due_tick > reference.ticks,
+               "the next timer deadline is strictly after the synchronized tick");
+        compare_flags();
+    }
+
+    void reset() {
+        ++operation;
+        impl().reset();
+        reference = {};
+        expect(impl().timers_synced_tick == 0 && impl().timers_due_tick == detail::kNoTimerDue,
+               "reset discards both the lazy timer epoch and pending deadline");
+        compare();
+    }
+};
+
+void test_timer_deadline_edges() {
+    TimerEquivalence e(0x71de1a9u);
+    e.advance(4097);
+    e.expect(e.impl().timers_synced_tick == 0 &&
+             e.impl().timers_due_tick == detail::kNoTimerDue,
+             "stopped timers do not require per-step synchronization");
+    e.compare();
+    e.write(0, 0, 0, 0x00830000u, 32); // enabled, divider 1024, reload zero
+    const auto synced = e.impl().timers_synced_tick;
+    const auto deadline = e.impl().timers_due_tick;
+    e.advance(4097);
+    e.expect(e.impl().timers_synced_tick == synced,
+             "a running timer remains lazy before its first overflow");
+    e.read(0, 0, 2, 8); // A control-only read must synchronize counts/phase too.
+    e.expect(e.impl().timers_synced_tick == e.actual.ticks() &&
+             e.impl().timers_due_tick == deadline,
+             "read synchronization preserves the absolute first-overflow deadline");
+    e.compare();
+
+    constexpr unsigned dividers[4] = {1, 64, 256, 1024};
+    for (unsigned ci = 0; ci < 2 && e.healthy; ++ci) {
+        for (unsigned prescaler = 0; prescaler < 4; ++prescaler) {
+            e.reset();
+            e.write(ci, 0, 0, ((0xc0u | prescaler) << 16) | 0xffffu, 32);
+            e.write(ci, 1, 0, 0x00c4fffeu, 32);
+            e.advance(dividers[prescaler] - 1);
+            e.read(ci, 0, 3, 8);
+            e.compare();
+            e.advance(1);
+            e.compare();
+            e.clear_flags(ci, 0, 0xffu, 8);
+            e.advance(3 * dividers[prescaler] + 17);
+            e.compare();
+        }
+
+        e.reset();
+        e.write(ci, 0, 0, 0x00001234u, 32);
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        e.expect(e.actual.read16(id, 0x04000100) == 0,
+                 "a stopped 32-bit write changes reload but does not copy it into count");
+        e.write(ci, 0, 1, 0xffu, 8);
+        e.write(ci, 0, 3, 0xffu, 8); // Ignored control high byte.
+        e.write(ci, 0, 2, 0xc1u, 8);
+        e.advance(63);
+        e.write(ci, 0, 2, 0x41u);
+        e.advance(4001);
+        e.write(ci, 0, 0, 0xffffu);
+        e.compare(); // A stopped reload write copies count, but retains phase.
+        e.write(ci, 0, 2, 0xc1u);
+        e.advance(63);
+        e.compare(); // A rising enable edge cleared the old phase.
+        e.advance(1);
+        e.write(ci, 0, 0, 0x00c1fffeu, 32);
+        e.advance(64);
+        e.compare(); // Already-enabled word writes do not restart the count.
+        e.write(ci, 0, 0, 0x00009876u, 32);
+        e.advance(4097);
+        e.compare(); // Disabling by word write retains the current count/phase.
+
+        e.reset();
+        e.write(ci, 0, 0, 0x00c3ffffu, 32);
+        e.write(ci, 1, 0, 0x00c40000u, 32);
+        e.advance(1023);
+        e.write(ci, 0, 2, 0xc0u);
+        e.expect(e.impl().timers_due_tick == e.actual.ticks() + 1,
+                 "a divider reduction with excess phase is due on the next positive tick");
+        e.compare();
+        e.advance(0);
+        e.compare(); // Reads and writes at the same tick must not consume excess phase.
+        e.advance(1);
+        e.expect(e.actual.read16(id, 0x04000104) == 1024,
+                 "all retained-phase overflows cascade, including reload period one");
+        e.compare();
+
+        e.reset();
+        e.write(ci, 0, 0, 0x00c0fffau, 32);
+        e.advance(3);
+        e.write(ci, 0, 0, 0xfffeu);
+        e.expect(e.actual.read16(id, 0x04000100) == 0xfffdu,
+                 "an enabled reload write does not replace the live count");
+        e.advance(2);
+        e.compare();
+        e.advance(1);
+        e.expect(e.actual.read16(id, 0x04000100) == 0xfffeu,
+                 "the next overflow uses the newly written reload value");
+        e.compare();
+
+        e.reset();
+        e.write(ci, 0, 0, 0x00c00000u, 32);
+        e.advance(65535);
+        e.compare();
+        e.advance(1); // Full 65536-count reload period.
+        e.compare();
+
+        e.reset();
+        for (unsigned ti = 0; ti < 4; ++ti)
+            e.write(ci, ti, 0, 0x00c4ffffu, 32);
+        e.advance(4097);
+        e.expect(e.impl().timers_due_tick == detail::kNoTimerDue &&
+                 e.reference.flags[ci] == 0,
+                 "timer 0 bit 2 freezes the whole enabled cascade chain");
+        e.compare();
+        e.write(ci, 0, 2, 0xc0u);
+        e.advance(513);
+        e.compare(); // Multiple overflows propagate through all four timers.
+        e.clear_flags(ci, 0, 0xffffffffu, 32);
+        e.write(ci, 1, 2, 0x44u);
+        e.advance(129);
+        e.expect(e.reference.flags[ci] == (1u << 3),
+                 "a disabled middle timer stops cascading into later enabled timers");
+        e.compare();
+        e.write(ci, 1, 2, 0xc4u);
+        e.advance(1);
+        e.compare();
+
+        e.reset();
+        e.write(ci, 1, 0, 0x00c3ffffu, 32);
+        e.advance(511);
+        e.write(ci, 1, 2, 0xc4u);
+        e.write(ci, 0, 0, 0x00c0ffffu, 32);
+        e.advance(17);
+        e.compare(); // Cascading does not consume the timer's old clocked phase.
+        e.write(ci, 1, 2, 0xc0u);
+        e.clear_flags(ci, 0, 0xffu, 16);
+        e.compare();
+        e.advance(1);
+        e.compare(); // Returning to clocked mode consumes retained phase once.
+    }
+    e.reset();
+    e.advance(4097);
+    e.compare(); // No stale pre-reset deadline or IRQ survives.
+}
+
+void test_timer_scalar_equivalence() {
+    constexpr std::array<std::uint32_t, 4> seeds = {
+        0x9d15a7cu, 0x7a1e0001u, 0xdeadbeefu, 0x31415926u,
+    };
+    constexpr std::array<std::uint16_t, 9> reloads = {
+        0, 1, 0x1234, 0x8000, 0xff00, 0xfffc, 0xfffd, 0xfffe, 0xffff,
+    };
+    constexpr std::array<std::uint32_t, 16> intervals = {
+        0, 1, 2, 63, 64, 65, 127, 128, 129, 255, 256, 257, 1023, 1024, 1025, 4097,
+    };
+    for (const auto seed : seeds) {
+        for (const bool split : {false, true}) {
+            TimerEquivalence e(seed, split);
+            std::mt19937 random(seed);
+            std::mt19937 partitions(seed ^ 0x9e3779b9u);
+            const auto next = [&] { return static_cast<std::uint32_t>(random()); };
+            const auto advance = [&](std::uint64_t ticks) {
+                if (!split) {
+                    e.advance(ticks);
+                    return;
+                }
+                e.advance(0);
+                while (ticks != 0 && e.healthy) {
+                    const auto step = std::min<std::uint64_t>(ticks, 1u + partitions() % 211u);
+                    e.advance(step);
+                    ticks -= step;
+                }
+            };
+            for (unsigned ci = 0; ci < 2; ++ci) {
+                for (unsigned ti = 0; ti < 4; ++ti) {
+                    const auto control = 0xc0u | (ti & 1u ? 4u : ci + ti);
+                    e.write(ci, ti, 0, (control << 16) | reloads[(ci * 4 + ti) % reloads.size()], 32);
+                }
+            }
+            for (unsigned iteration = 0; iteration < 768 && e.healthy; ++iteration) {
+                advance(intervals[next() % intervals.size()]);
+                const unsigned ci = next() & 1u;
+                const unsigned ti = next() & 3u;
+                const auto reload = (next() & 3u) == 0
+                    ? static_cast<std::uint16_t>(next()) : reloads[next() % reloads.size()];
+                const auto control = next();
+                const auto old_control = e.reference.timers[ci * 4 + ti].control;
+                switch (next() % 16u) {
+                case 0: e.write(ci, ti, 0, reload & 0xffu, 8); break;
+                case 1: e.write(ci, ti, 1, reload >> 8, 8); break;
+                case 2: e.write(ci, ti, 0, reload); break;
+                case 3: e.write(ci, ti, 2, control, 8); break;
+                case 4: e.write(ci, ti, 3, control, 8); break;
+                case 5: e.write(ci, ti, 2, control); break;
+                case 6: e.write(ci, ti, 0, (control << 16) | reload, 32); break;
+                case 7: e.write(ci, ti, 2, old_control ^ 0x80u); break;
+                case 8: e.write(ci, ti, 2, old_control ^ 4u); break;
+                case 9: e.write(ci, ti, 2, (old_control & ~3u) | (next() & 3u)); break;
+                case 10: {
+                    const unsigned width = next() % 3u;
+                    const unsigned sub = next() & 3u;
+                    e.clear_flags(ci, sub, next(), width == 0 ? 8 : width == 1 ? 16 : 32);
+                    break;
+                }
+                case 11:
+                    e.read(ci, ti, next() & 3u, 8);
+                    break;
+                case 12:
+                    // Public bus alignment plus combined reload/control writes.
+                    e.write(ci, ti, next() & 3u, (control << 16) | reload, 32);
+                    break;
+                case 13: advance(next() % 8193u); break;
+                case 14:
+                    for (unsigned burst = 0; burst < 3; ++burst)
+                        advance(1u + next() % 1025u);
+                    break;
+                default:
+                    if ((next() & 15u) == 0) e.reset();
+                    else e.write(ci, ti, 3, old_control | 0x80u, 16);
+                    break;
+                }
+                // Leave multiple scheduler intervals unobserved between
+                // checks; every write and individual read still must sync.
+                if (iteration % 11u == 0) e.compare();
+            }
+            e.compare();
+        }
+    }
+}
+
+struct TimerBoundarySample {
+    std::uint64_t tick = 0;
+    std::array<std::uint32_t, 2> flags{};
+    std::array<std::uint32_t, 8> timers{};
+};
+std::array<TimerBoundarySample, 256> timer_boundary_samples{};
+unsigned timer_boundary_sample_count = 0;
+
+void timer_boundary_guest(Cpu* cpu) {
+    for (;;) {
+        if (timer_boundary_sample_count < timer_boundary_samples.size()) {
+            auto& sample = timer_boundary_samples[timer_boundary_sample_count++];
+            sample.tick = cpu->m->ticks();
+            for (unsigned ci = 0; ci < 2; ++ci) {
+                const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+                sample.flags[ci] = cpu->m->read32(id, 0x04000214);
+                for (unsigned ti = 0; ti < 4; ++ti)
+                    sample.timers[ci * 4 + ti] = cpu->m->read32(id, 0x04000100u + ti * 4);
+                cpu->m->write32(id, 0x04000214, 0x78u);
+            }
+        }
+        cpu->budget = 0;
+        dsr_checkpoint(cpu, 0x02005000);
+    }
+}
+
+void test_timer_scheduler_boundaries() {
+    GuestFn slot = timer_boundary_guest;
+    FnEntry entries[] = {
+        {0x02005000, 4, kModuleArm9Main, 0, 0, &slot, "timer_boundary_guest"},
+    };
+    MachineConfig config = TimerEquivalence::config();
+    config.arm9_table = {entries, 1};
+    Machine machine(config);
+    ScalarTimerReference reference;
+    for (unsigned ci = 0; ci < 2; ++ci) {
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        for (unsigned ti = 0; ti < 4; ++ti) {
+            const auto reload = ti == 0 ? (ci == 0 ? 0xff7fu : 0xffbdu)
+                : ti == 1 ? 0xfffeu : 0xffffu;
+            const auto control = ti == 0 ? 0xc0u : ti == 2 ? 0xc1u : 0xc4u;
+            const auto value = (control << 16) | reload;
+            reference.write(ci, ti, 0, value, 32);
+            machine.write32(id, 0x04000100u + ti * 4, value);
+        }
+    }
+    timer_boundary_sample_count = 0;
+    machine.start_cpu(CpuId::Arm9, 0x02005000);
+    constexpr std::uint64_t duration = 2 * detail::kLineTicks + 75;
+    machine.run_ticks(duration);
+
+    unsigned expected_samples = 0;
+    while (reference.ticks < duration) {
+        if (expected_samples < timer_boundary_sample_count) {
+            const auto& sample = timer_boundary_samples[expected_samples];
+            check(sample.tick == reference.ticks,
+                  "lazy timer service preserves exact IRQ, HBlank and line boundaries");
+            check(sample.flags == reference.flags,
+                  "timer IRQs and cascades become visible at the exact upstream event boundary");
+            for (unsigned ci = 0; ci < 2; ++ci) {
+                for (unsigned ti = 0; ti < 4; ++ti)
+                    check(sample.timers[ci * 4 + ti] == reference.word(ci, ti),
+                          "scheduler-boundary timer observations match the scalar");
+            }
+        }
+        ++expected_samples;
+        reference.flags = {}; // The guest acknowledges after each observation.
+        const auto line_tick = reference.ticks % detail::kLineTicks;
+        const auto boundary = line_tick < detail::kHBlankTick
+            ? detail::kHBlankTick - line_tick : detail::kLineTicks - line_tick;
+        const auto limit = std::min<std::uint64_t>({duration - reference.ticks, boundary, 128});
+        const auto step = reference.irq_boundary(limit);
+        reference.advance(step);
+    }
+    check(timer_boundary_sample_count == expected_samples,
+          "timer service preserves the exact number of CPU slices");
+    check(machine.ticks() == duration, "timer deadlines do not change the requested interval");
+    for (unsigned ci = 0; ci < 2; ++ci) {
+        const CpuId id = ci == 0 ? CpuId::Arm9 : CpuId::Arm7;
+        check(machine.read32(id, 0x04000214) == reference.flags[ci],
+              "the final unobserved timer step raises the same IF bits");
+        for (unsigned ti = 0; ti < 4; ++ti)
+            check(machine.read32(id, 0x04000100u + ti * 4) == reference.word(ci, ti),
+                  "the final timer counts and controls match after boundary sampling");
     }
 }
 
@@ -1415,6 +1939,9 @@ int run_core_tests() {
     test_irq_and_nested_return();
     test_timer_irq_event_boundaries();
     test_timers_dma_and_ipc();
+    test_timer_deadline_edges();
+    test_timer_scalar_equivalence();
+    test_timer_scheduler_boundaries();
     test_core_register_contracts();
     test_rtc_core_io_contract();
     test_gx_fifo_dma_starts_on_empty_fifo();

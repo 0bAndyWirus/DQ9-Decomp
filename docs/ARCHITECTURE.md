@@ -45,6 +45,26 @@ compiled game builds remain private and must not be published.
 - Shared-code region `MOV pc, lr` returns targeting the same region resume through its dispatcher; external returns leave the region after recording the guest return target.
 - Guest execution contexts map onto host fibers; context-switch primitives are runtime services, while scheduling decisions remain in generated code.
 
+Hardware timers accumulate elapsed ticks lazily until their earliest overflow
+deadline, rather than updating eight counters on every scheduler slice. Timer
+reads and writes synchronize counters first; writes recompute the deadline.
+Overflow/IRQ/cascade order and the scheduler's existing service boundaries are
+unchanged. A prescaler reduction that retains an overdue phase takes effect on
+the next positive step, not a same-tick read. Seeded scalar-reference tests
+compare both CPUs' counters, controls, synchronized phases and interrupt flags.
+Exact IRQ slice limits project elapsed clocks into the synchronized counter
+epoch, retaining downstream cascade-IRQ deadlines without forcing a counter
+scan on ordinary slices. Forced IRQ checkpoints keep the scheduler's positive
+budget reserve/carry unchanged.
+
+The SPU keeps each busy channel's elapsed phase as a global tick origin and
+caches the earliest channel deadline. Calls before that deadline avoid the
+16-channel phase scan; timer writes and starts lower the cached deadline when
+needed. Capture and output-DAC step boundaries and channel event order are
+unchanged. Silent samples skip only the subsequent zero-valued pan/mix math.
+ROM-free tests compare the original scalar scheduler's ordered memory accesses,
+capture bytes, registers and PCM under randomized writes and interval splits.
+
 `MachineConfig::guest_abi` supplies optional CPU context layouts without embedding
 title-specific offsets in the runtime. `SessionConfig::abi_config_path` or
 `DQ9_ABI_CONFIG` selects the caller's local INI metadata; the SDL host exposes
@@ -119,6 +139,10 @@ Set `DSR_VERIFY_DISPATCH=1` to compare every reused ambiguous resolution with th
 ### GPU raster hot paths
 
 GPU2D uses page-mapped VRAM reads with an overlap fallback, scanline text-map/byte/palette caching, direct OAM reads with hoisted object-matrix state, and priority lists limited to enabled backgrounds. GPU3D prepares shading/texture-wrap state per polygon and skips empty spans. These implementation choices imply no game-wide performance or parity result.
+Regular BG/OBJ palette RAM also maintains decoded colours eagerly on each
+accepted write and reset; ignored byte stores remain ignored. Extended palettes
+stay on the live VRAM path, including overlapping mappings. Scalar-reference
+tests cover reset, mirrored/boundary writes and both engines' BG/OBJ output.
 Synthetic uniform-clear regressions seed every named framebuffer field with stale values, compare against the scalar register-clear result, and check complete native/scaled targets across render-thread counts and capture modes. The test state injector preserves facing metadata as well as colour, depth, IDs and stencil/fog flags; no framebuffer representation padding is compared.
 GPU3D rejects failed-depth fragments before texture sampling and colour shading. Depth-failed ID-zero shadow masks still update stencil; successful fragments retain the same shading and blend order. Regression coverage checks that both filled and wireframe hidden polygons avoid texture lookups while visible polygons still sample.
 Texture-palette address slots 6 and 7 mirror physical slots 1 and 2, matching the DS palette wrap.
