@@ -69,11 +69,13 @@ For support, run `COLLECT-DIAGNOSTICS.bat` in the kit folder (in a checkout:
 the game. Python 3.10+ is required; no dependencies are installed. The ZIP contains
 tool/package versions, OS/free disk, backup-chip and pin names, a launcher settings
 summary (no ROM/save paths), binary existence/sizes only, script integrity hashes,
-and at most the last 300 build-log lines. Home/profile and kit paths are replaced
-with `<HOME>` and `<KIT>`. No ROM, save, generated code, executable, DLL, screenshot
-or capture is attached. Review the text before sending it to support: build logs
-can still contain custom paths outside the home/kit directories. The collector
-returns 2 if an input/archive member violates its safety policy. On Linux, use
+and at most the last 300 build-log lines. Absolute POSIX and Windows paths in the
+log (including external mounts, drives and network shares) are replaced with
+`<path>`. Unquoted paths also hide the rest of their line because directory names
+may contain spaces. Other summaries replace home/profile and kit paths with
+`<HOME>` and `<KIT>`. No ROM, save, generated code, executable, DLL, screenshot or
+capture is attached. Review the redacted text before sending it to support. The
+collector returns 2 if an input/archive member violates its safety policy. On Linux, use
 `python tools/collect_diagnostics.py --kit-dir /path/to/kit`.
 
 

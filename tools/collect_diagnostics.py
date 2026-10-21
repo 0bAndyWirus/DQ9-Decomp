@@ -27,6 +27,11 @@ MEMBERS = frozenset({"system.json", "tools.json", "configuration.json", "binarie
                      "script-sha256.json", "build-log-tail.txt"})
 SCRIPT_SUFFIXES = {".py", ".bat", ".ps1", ".sh"}
 ROOT = Path(__file__).resolve().parents[1]
+LOG_ABSOLUTE_PATH = re.compile(
+    r"""(?P<quote>["'])(?:[A-Za-z]:[\\/]|[\\/])[^\r\n]*(?<![\\`])(?P=quote)"""
+    r"""|(?P<option>(?<!\S)-[A-Za-z][\w-]*)["']?(?:[A-Za-z]:[\\/]|[\\/])[^\r\n]*"""
+    r"""|["']?(?:[A-Za-z]:[\\/]|(?<![\w./\\])[\\/])[^\r\n]*"""
+)
 
 
 def check_name(name: str) -> None:
@@ -49,6 +54,16 @@ def redact(text: str, root: Path, homes: list[str] | None = None) -> str:
     for path in sorted(variants, key=len, reverse=True):
         text = re.sub(re.escape(path), lambda _: variants[path], text, flags=re.IGNORECASE)
     return text
+
+
+def redact_log_paths(text: str) -> str:
+    """Remove absolute paths, including external drives/mounts and UNC shares."""
+    # Commands in the build log join arguments without quoting. For an unquoted
+    # path, its spaces cannot be distinguished from later arguments: discard the
+    # remainder of that line rather than expose part of a private directory name.
+    # Quoted spans extend to the last unescaped matching quote on the line, so
+    # shell-joined or escaped quotes do not expose a later part of the path.
+    return LOG_ABSOLUTE_PATH.sub(lambda match: (match.group("option") or "") + "<path>", text)
 
 
 def read_text(path: Path) -> str:
@@ -170,7 +185,7 @@ def collect(root: Path) -> dict[str, str]:
     # Redact strings before JSON encoding (Windows backslashes become escaped).
     members = {name: json.dumps(redact_values(value, root), ensure_ascii=False, indent=2)
                for name, value in data.items()}
-    members["build-log-tail.txt"] = redact(log_tail(root / "build/build-log.txt"), root)
+    members["build-log-tail.txt"] = redact_log_paths(log_tail(root / "build/build-log.txt"))
     return members
 
 
