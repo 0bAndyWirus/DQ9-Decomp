@@ -332,6 +332,7 @@ std::uint32_t Machine::Impl::io_read(CpuId id, std::uint32_t addr, int width) {
         value = state.dispstat | (static_cast<std::uint32_t>(scanline) << 16);
         break;
     case 0x0100: case 0x0104: case 0x0108: case 0x010c: {
+        sync_timers();
         const unsigned ti = (base_off - 0x0100) / 4;
         const TimerState& t = timers[ci * 4 + ti];
         value = t.count | (static_cast<std::uint32_t>(t.control) << 16);
@@ -658,6 +659,7 @@ void Machine::Impl::io_write(CpuId id, std::uint32_t addr, std::uint32_t value, 
         return;
     default:
         if (off >= 0x0100 && off <= 0x010f) {
+            sync_timers();
             const unsigned ti = (off - 0x0100) / 4;
             const unsigned sub = (off - 0x0100) & 3u;
             TimerState& t = timers[ci * 4 + ti];
@@ -682,6 +684,7 @@ void Machine::Impl::io_write(CpuId id, std::uint32_t addr, std::uint32_t value, 
                 }
                 t.control = next;
             }
+            refresh_timer_deadline();
             return;
         }
         if (off >= 0x00b0 && off <= 0x00df) {

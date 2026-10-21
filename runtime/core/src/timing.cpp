@@ -6,16 +6,24 @@
 namespace dsr {
 namespace {
 constexpr std::uint32_t kTimerPrescalers[4] = {1, 64, 256, 1024};
-}
+constexpr unsigned kTimerPrescalerShift[4] = {0, 6, 8, 10}; // dividers 1, 64, 256, 1024
+} // namespace
 
 std::uint64_t Machine::Impl::timer_irq_boundary(std::uint64_t limit) const {
+    // No timer can raise an IRQ before the earliest clocked overflow.
+    if (timers_due_tick == detail::kNoTimerDue || timers_due_tick - total_ticks >= limit)
+        return limit;
+    const std::uint64_t elapsed = total_ticks - timers_synced_tick;
     for (unsigned ci = 0; ci < 2; ++ci) {
         for (unsigned ti = 0; ti < 4; ++ti) {
             const TimerState& timer = timers[ci * 4 + ti];
             if ((timer.control & 0x84u) != 0x80u) continue;
             const std::uint64_t divisor = kTimerPrescalers[timer.control & 3u];
             const std::uint64_t clocks = (0x10000ull - timer.count) * divisor;
-            const std::uint64_t phase = timer.phase;
+            // advance_ticks materializes every overflow, so no cascade has
+            // changed since this epoch. Project elapsed clocks into phase
+            // instead of treating the lazy count/phase as current state.
+            const std::uint64_t phase = timer.phase + elapsed;
             // Work in prescaler clocks until selecting an IRQ. Keeping phase
             // separate also handles a divisor change with clocks already due.
             std::uint64_t deadline = clocks;
@@ -70,18 +78,40 @@ void Machine::Impl::timer_increment(unsigned cpu_index, unsigned timer_index, st
     }
 }
 
-void Machine::Impl::run_timers(std::uint64_t ticks) {
-    static constexpr unsigned prescaler_shift[4] = {0, 6, 8, 10}; // dividers 1, 64, 256, 1024
+void Machine::Impl::sync_timers() {
+    const std::uint64_t ticks = total_ticks - timers_synced_tick;
+    // Control writes retain phase unless they enable a stopped timer. In
+    // particular, reducing the divider must not consume that phase at t=0.
+    if (ticks == 0) return;
+    timers_synced_tick = total_ticks;
     for (unsigned ci = 0; ci < 2; ++ci) {
         for (unsigned ti = 0; ti < 4; ++ti) {
             TimerState& timer = timers[ci * 4 + ti];
             if ((timer.control & 0x80u) == 0 || (timer.control & 4u) != 0) continue;
             timer.phase += ticks;
-            const unsigned shift = prescaler_shift[timer.control & 3u];
+            const unsigned shift = kTimerPrescalerShift[timer.control & 3u];
             const std::uint64_t increments = timer.phase >> shift;
             timer.phase &= (std::uint64_t{1} << shift) - 1u;
             timer_increment(ci, ti, increments);
         }
+    }
+    refresh_timer_deadline();
+}
+
+void Machine::Impl::refresh_timer_deadline() {
+    timers_due_tick = detail::kNoTimerDue;
+    for (const TimerState& timer : timers) {
+        // Preserve bit 2's existing behavior even on timer 0: only a
+        // predecessor's overflow can advance a count-up timer.
+        if ((timer.control & 0x84u) != 0x80u) continue;
+        const unsigned shift = kTimerPrescalerShift[timer.control & 3u];
+        const std::uint64_t first_period_ticks = (0x10000ull - timer.count) << shift;
+        // A divider reduction can leave more phase than the new first
+        // period. The old per-step service consumes it on the next
+        // positive step, never during another I/O access at this tick.
+        const std::uint64_t remaining = timer.phase < first_period_ticks
+            ? first_period_ticks - timer.phase : 1;
+        timers_due_tick = std::min(timers_due_tick, total_ticks + remaining);
     }
 }
 
@@ -265,7 +295,8 @@ void Machine::Impl::advance_ticks(std::uint64_t ticks) {
                 sqrt_busy_ticks -= step;
             }
         }
-        run_timers(step);
+        // Keep the original step boundaries and peripheral/IRQ ordering.
+        if (total_ticks >= timers_due_tick) sync_timers();
         gpu3d.run(static_cast<std::int64_t>(step));
         spu.run(static_cast<std::int64_t>(step));
         if (card) card->run(static_cast<std::int64_t>(step));

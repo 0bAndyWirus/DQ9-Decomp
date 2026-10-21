@@ -2,13 +2,15 @@
 
 #include "dsr/gpu2d.h"
 
+#include <array>
+
 namespace dsr::gpu2d_detail {
 
-// Physical write hook for testing texture invalidation independently of the
-// CPU mapping: texture-only mappings deliberately expose no CPU write window.
+// Internal test access; no writable palette alias escapes the GPU.
 struct Gpu2DTestAccess {
     static void write_bank_byte(Gpu2D& gpu, std::uint8_t bank,
                                 std::uint32_t offset, std::uint8_t value);
+    static std::array<std::uint8_t, 4> palette_color(const Gpu2D& gpu, std::size_t index);
 };
 
 } // namespace dsr::gpu2d_detail

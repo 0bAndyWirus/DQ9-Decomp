@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace dsr {
@@ -30,7 +31,7 @@ struct Spu::Impl {
         std::uint32_t cnt=0, sad=0, len=0;
         std::uint16_t timer=0, pnt=0;
         bool busy=false, holding=false;
-        std::uint64_t phase=0;
+        std::uint64_t origin=0;
         std::uint32_t pos=0;
         std::int32_t current=0, predictor=0, initial_predictor=0;
         int adpcm_index=0, initial_adpcm_index=0;
@@ -52,6 +53,9 @@ struct Spu::Impl {
     std::array<Capture,2> cap{};
     std::uint16_t soundcnt=0, bias=0x0200;
     std::uint64_t sample_phase=0;
+    std::uint64_t now=0;
+    // A stale earlier deadline is safe; writes must never leave it too late.
+    std::uint64_t next_channel_event=std::numeric_limits<std::uint64_t>::max();
     std::array<std::int16_t,kRingSamples> output{};
     std::size_t output_read=0, output_write=0, output_count=0;
     std::int32_t last_left=0, last_right=0;
@@ -78,8 +82,9 @@ struct Spu::Impl {
     static std::int32_t scale7(std::int32_t value, unsigned multiplier) {
         return multiplier==127U ? value : (value*static_cast<std::int32_t>(multiplier))>>7U;
     }
-    void start(Channel& c) {
-        c.busy=true; c.holding=false; c.phase=0; c.pos=0; c.current=0; c.duty_pos=0;
+    void start(Channel& c,unsigned n) {
+        c.busy=true; c.holding=false; c.origin=now; c.pos=0; c.current=0; c.duty_pos=0;
+        next_channel_event=std::min(next_channel_event,c.origin+period(c,n));
         c.predictor=0; c.adpcm_index=0; c.loop_state_valid=false;
         c.lfsr=0x7fff;
         const unsigned fmt=(c.cnt>>29U)&3U;
@@ -140,11 +145,11 @@ struct Spu::Impl {
         c.adpcm_index=std::clamp(c.adpcm_index+kIndexAdjust[static_cast<std::size_t>(code&7)],0,88);
         c.current=c.predictor; ++c.pos;
     }
-    // Consumes the sample periods that have elapsed in c.phase (callers add the ticks first).
+    // Busy channels' elapsed phase is now - origin; consume it at the same step ends.
     void run_events(Channel& c,unsigned n) {
         const std::uint64_t p=period(c,n);
-        while(c.busy && c.phase>=p) {
-            c.phase-=p;
+        while(c.busy && now-c.origin>=p) {
+            c.origin+=p;
             const unsigned fmt=(c.cnt>>29U)&3U;
             if(fmt==2U) { decode_adpcm(c); continue; }
             if(fmt==0U || fmt==1U) {
@@ -174,6 +179,15 @@ struct Spu::Impl {
                 if((c.lfsr&1U)!=0U) c.lfsr=(c.lfsr>>1U)^0x6000U;
                 else c.lfsr>>=1U;
             }
+        }
+    }
+    void run_due_channels() {
+        next_channel_event=std::numeric_limits<std::uint64_t>::max();
+        for(unsigned n=0;n<ch.size();++n) {
+            Channel& c=ch[n];
+            if(!c.busy) continue;
+            run_events(c,n);
+            if(c.busy) next_channel_event=std::min(next_channel_event,c.origin+period(c,n));
         }
     }
     std::uint32_t io_read(std::uint32_t addr,int width) {
@@ -208,13 +222,16 @@ struct Spu::Impl {
                 const bool was_busy=c.busy;
                 c.cnt=(c.cnt&~pmask)|(placed&pmask);
                 if((placed&pmask&0x80000000U)!=0U) {
-                    if(!was_busy) start(c);
+                    if(!was_busy) start(c,n);
                 } else if((pmask&0x80000000U)!=0U && c.busy) stop(c);
                 c.cnt&=0x7fffffffU;
             } else if(off==4U) c.sad=((c.sad&~pmask)|(placed&pmask))&0x07fffffcU;
             else if(off==8U) {
+                const std::uint16_t old_timer=c.timer;
                 c.timer=static_cast<std::uint16_t>((c.timer&~(pmask&65535U))|(placed&pmask&65535U));
                 c.pnt=static_cast<std::uint16_t>((c.pnt&~((pmask>>16U)&65535U))|((placed>>16U)&((pmask>>16U)&65535U)));
+                if(c.busy && c.timer>old_timer)
+                    next_channel_event=std::min(next_channel_event,c.origin+period(c,n));
             } else if(off==12U) c.len=((c.len&~pmask)|(placed&pmask))&0x003fffffU;
             return;
         }
@@ -297,6 +314,7 @@ struct Spu::Impl {
         std::int32_t audible_ch1_left=0,audible_ch1_right=0,audible_ch3_left=0,audible_ch3_right=0;
         for(unsigned n=0;n<16U;++n) {
             const std::int32_t sample=output_channel(n);
+            if(sample==0) continue;
             const unsigned pan=(ch[n].cnt>>16U)&127U;
             const std::int32_t left=scale7(sample,127U-pan);
             const std::int32_t right=scale7(sample,pan);
@@ -357,13 +375,8 @@ void Spu::run(std::int64_t ticks) {
             until=std::min(until,capture.phase>=p?0U:p-capture.phase);
         }
         const std::uint32_t step=static_cast<std::uint32_t>(std::min(remain,until));
-        for(unsigned n=0;n<16;++n) {
-            Impl::Channel& c=impl_->ch[n];
-            if(!c.busy) continue;
-            c.phase+=step;
-            // Most steps end before the next sample boundary; only those that cross one decode.
-            if(c.phase>=impl_->period(c,n)) impl_->run_events(c,n);
-        }
+        impl_->now+=step;
+        if(impl_->now>=impl_->next_channel_event) impl_->run_due_channels();
         impl_->advance_capture(step);
         impl_->sample_phase+=step; remain-=step;
         if(impl_->sample_phase==static_cast<std::uint64_t>(kTicksPerSample)) { impl_->sample_phase=0; impl_->emit(); }

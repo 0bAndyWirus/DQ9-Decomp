@@ -1,6 +1,7 @@
 #include "dsr/gpu2d.h"
 #include "dsr/gpu3d.h"
 #include "../src/composition_order.h"
+#include "../src/gpu2d_test.h"
 
 #include <algorithm>
 #include <array>
@@ -1283,6 +1284,153 @@ void test_scratch_clear_between_engines_and_lines() {
     }
 }
 
+void test_palette_cache_matches_scalar() {
+    std::mt19937 random(0x2DCA5E19U);
+    dsr::Gpu2D gpu;
+    std::array<std::uint8_t, 0x800> expected{};
+    const auto check = [&] {
+        for (unsigned index = 0; index < expected.size() / 2U; ++index) {
+            const unsigned raw = expected[index * 2U] | (expected[index * 2U + 1U] << 8U);
+            const std::array<std::uint8_t, 4> color{
+                static_cast<std::uint8_t>(raw & 31U),
+                static_cast<std::uint8_t>((raw >> 5U) & 31U),
+                static_cast<std::uint8_t>((raw >> 10U) & 31U), 31U};
+            assert(gpu.arm9_read(kPalette + index * 2U, 16) == raw);
+            assert(dsr::gpu2d_detail::Gpu2DTestAccess::palette_color(gpu, index) == color);
+        }
+    };
+    const auto store = [&](std::uint32_t address, std::uint32_t value, int width) {
+        gpu.arm9_write(address, value, width);
+        if (width != 8) {
+            for (int byte = 0; byte < width / 8; ++byte) {
+                expected[((address - kPalette) & 0x7FFU) + byte] =
+                    static_cast<std::uint8_t>(value >> (byte * 8));
+            }
+        }
+        check();
+    };
+    check(); // Constructor reset must decode opaque black, including alpha.
+    for (unsigned index = 0; index < 1024U; ++index) {
+        store(kPalette + index * 2U, random(), 16);
+    }
+    // Every palette boundary and the last aligned word/halfword of each mirror.
+    for (unsigned mirror : {0U, 0x800U, 0x123800U, 0xFFF800U}) {
+        for (unsigned offset : {0U, 0x1FCU, 0x200U, 0x3FCU, 0x400U, 0x5FCU, 0x600U, 0x7FCU}) {
+            store(kPalette + mirror + offset, random(), 32);
+            store(kPalette + mirror + offset + 2U, random(), 16);
+            store(kPalette + mirror + offset + 3U, random(), 8);
+        }
+    }
+    for (unsigned trial = 0; trial < 1024U; ++trial) {
+        const int width = trial % 3U == 0U ? 8 : trial % 3U == 1U ? 16 : 32;
+        const unsigned address = kPalette + ((random() & 0xFFFFFFU) & ~(width / 8U - 1U));
+        store(address, random(), width);
+        assert(gpu.arm9_read(address, width) ==
+            gpu.arm9_read(kPalette + (address & 0x7FFU), width));
+    }
+    // Direct API stores historically keep their byte offsets; refresh partial
+    // halfwords too, without adding alignment that belongs to the CPU bus.
+    store(kPalette + 1U, 0xFEDCBA98U, 32);
+    store(kPalette + 0x7FDU, 0x1234U, 16);
+    gpu.arm7_write(kPalette, 0xFFFFFFFFU, 32); // ARM7 has no palette write window.
+    check();
+    gpu.reset();
+    expected.fill(0U);
+    check();
+    store(kPalette + 0xFFFFFCU, 0xFFFF8000U, 32);
+    gpu.reset();
+    expected.fill(0U);
+    check();
+}
+
+void test_regular_palette_bg_obj_matches_scalar() {
+    std::mt19937 random(0x2DB60B19U);
+    for (bool is_a : {true, false}) {
+        // Text 4/8bpp, affine tiles, indexed bitmap, and large bitmap.
+        for (unsigned background = 0; background < (is_a ? 5U : 4U); ++background) {
+            for (bool obj256 : {false, true}) {
+                dsr::Gpu2D gpu;
+                set_power(gpu);
+                gpu.io_write(is_a ? kVramA : 0x04000242U, is_a ? 0x81U : 0x84U, 8);
+                gpu.io_write(is_a ? kVramB : 0x04000243U, is_a ? 0x82U : 0x84U, 8);
+                const unsigned engine = is_a ? kA : 0x04001000U;
+                const unsigned bg_vram = is_a ? kVram : 0x06200000U;
+                const unsigned obj_vram = is_a ? 0x06400000U : 0x06600000U;
+                const unsigned oam = kOam + (is_a ? 0U : 0x400U);
+                const unsigned bg_palette = is_a ? 0U : 512U;
+                const unsigned obj_palette = bg_palette + 256U;
+                const unsigned mode = background < 2U ? 0U : background == 2U ? 2U
+                    : background == 3U ? 5U : 6U;
+                gpu.io_write(engine, (1U << 16U) | (1U << 10U) | (1U << 12U) | mode, 32);
+                const unsigned cnt = background == 0U ? 0x0005U : background == 1U ? 0x0085U
+                    : background == 2U ? 0x4005U : background == 3U ? 0x4081U : 1U;
+                write16(gpu, engine + 0x0CU, static_cast<std::uint16_t>(cnt));
+                write16(gpu, engine + 0x20U, 0x0100U); // Identity affine transform.
+                write16(gpu, engine + 0x26U, 0x0100U);
+                std::array<unsigned, 256> bg_indices{}, obj_indices{};
+                for (unsigned tile = 0; tile < 32U; ++tile) {
+                    const unsigned bg_bank = random() & 15U, obj_bank = random() & 15U;
+                    if (background < 2U) {
+                        gpu.arm9_write(bg_vram + tile * 2U, tile | (bg_bank << 12U), 16);
+                    } else if (background == 2U && tile % 2U == 0U) {
+                        gpu.arm9_write(bg_vram + tile, tile | ((tile + 1U) << 8U), 16);
+                    }
+                    gpu.arm9_write(oam + tile * 8U, obj256 ? 0x2000U : 0U, 16);
+                    gpu.arm9_write(oam + tile * 8U + 2U, tile * 8U, 16);
+                    gpu.arm9_write(oam + tile * 8U + 4U,
+                        tile * (obj256 ? 2U : 1U) | (obj_bank << 12U), 16);
+                    std::array<std::uint8_t, 8> bg_row{}, obj_row{};
+                    for (unsigned local_x = 0; local_x < 8U; ++local_x) {
+                        const unsigned x = tile * 8U + local_x;
+                        const unsigned bg_index = x % 7U == 0U ? 0U
+                            : 1U + random() % (background == 0U ? 15U : 255U);
+                        const unsigned obj_index = x % 5U == 0U ? 0U
+                            : 1U + random() % (obj256 ? 255U : 15U);
+                        bg_indices[x] = bg_index == 0U ? 0U
+                            : bg_index + (background == 0U ? bg_bank * 16U : 0U);
+                        obj_indices[x] = obj_index == 0U ? 0U
+                            : obj_index + (obj256 ? 0U : obj_bank * 16U);
+                        if (background == 0U) bg_row[local_x / 2U] |= bg_index << ((local_x & 1U) * 4U);
+                        else bg_row[local_x] = static_cast<std::uint8_t>(bg_index);
+                        if (obj256) obj_row[local_x] = static_cast<std::uint8_t>(obj_index);
+                        else obj_row[local_x / 2U] |= obj_index << ((local_x & 1U) * 4U);
+                    }
+                    const unsigned bg_address = bg_vram + (background < 3U
+                        ? 0x4000U + tile * (background == 0U ? 32U : 64U) : tile * 8U);
+                    for (unsigned byte = 0; byte < (background == 0U ? 4U : 8U); byte += 2U) {
+                        gpu.arm9_write(bg_address + byte, bg_row[byte] | (bg_row[byte + 1U] << 8U), 16);
+                    }
+                    for (unsigned byte = 0; byte < (obj256 ? 8U : 4U); byte += 2U) {
+                        gpu.arm9_write(obj_vram + tile * (obj256 ? 64U : 32U) + byte,
+                            obj_row[byte] | (obj_row[byte + 1U] << 8U), 16);
+                    }
+                }
+                for (unsigned object = 32U; object < 128U; ++object) {
+                    gpu.arm9_write(oam + object * 8U, 0x0200U, 16);
+                }
+                // Render the same scene twice with entirely different mirrored
+                // palette stores: output must use each new decoded color immediately.
+                for (unsigned trial = 0; trial < 2U; ++trial) {
+                    std::array<std::uint16_t, 1024> palette{};
+                    for (unsigned index = 0; index < palette.size(); index += 2U) {
+                        const std::uint32_t raw = random();
+                        palette[index] = static_cast<std::uint16_t>(raw);
+                        palette[index + 1U] = static_cast<std::uint16_t>(raw >> 16U);
+                        gpu.arm9_write(kPalette + (trial == 0U ? 0U : 0xFFF800U) + index * 2U, raw, 32);
+                    }
+                    gpu.render_line(0);
+                    const auto* frame = is_a ? gpu.screen_top() : gpu.screen_bottom();
+                    for (unsigned x = 0; x < 256U; ++x) {
+                        const unsigned index = obj_indices[x] != 0U
+                            ? obj_palette + obj_indices[x] : bg_palette + bg_indices[x];
+                        assert(pixel(frame, x) == reference_argb(palette[index], 0U));
+                    }
+                }
+            }
+        }
+    }
+}
+
 void test_composition_order_matches_scalar() {
     std::mt19937 random(0x2046U);
     for (unsigned enabled = 0; enabled < 16; ++enabled) {
@@ -1335,6 +1483,8 @@ const std::uint32_t* Gpu3D::line(int y) const {
 int main(int argc, char** argv) {
     const struct { const char* name; void (*run)(); } tests[]{
         {"composition_order", test_composition_order_matches_scalar},
+        {"palette_cache_scalar", test_palette_cache_matches_scalar},
+        {"palette_cache_bg_obj", test_regular_palette_bg_obj_matches_scalar},
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},
