@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.4
+
+- **GPU2D output conversion:** exact four-wide SSE2 conversion of 2D scanlines to output colour including master brightness (keeps the `floor(channel*255/31)` expansion; portable scalar tables remain). Single-thread instructions retired versus v0.4.3, medians of three: boot -3.0% (cycles -3.9%), movie -2.7% (-2.2%), activity -1.4% (-2.0%). Output is byte-identical.
+
 ## v0.4.3
 
 - **GPU3D framebuffer packing:** non-fog pixels are packed four at a time with SSE2 (scalar fallback elsewhere and for fog groups/tails). Single-thread instructions retired versus v0.4.2, medians of three: boot -5.0% (cycles -3.1%), movie -4.2% (-2.9%), activity -2.2% (-1.7%). Output (five-language boot hashes, English WAV, render-thread 0/2/3 streams, saves) is byte-identical. Two further attempts (window span fill, toon-table cache) were measured and rejected.
