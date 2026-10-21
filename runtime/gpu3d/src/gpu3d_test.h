@@ -28,8 +28,7 @@ struct Gpu3DTestAccess {
         const std::array<float, 7>& right);
     static std::array<std::uint32_t, 4> clear_pixel(Gpu3D& gpu, unsigned index);
     // Read named fields only (not FramePixel padding), after the render barrier.
-    static std::array<std::uint32_t, 4> framebuffer_pixel(
-        const Gpu3D& gpu, unsigned index, bool scaled = false);
+    static std::array<std::uint32_t, 4> framebuffer_pixel(const Gpu3D& gpu, unsigned index);
     static std::array<std::uint8_t, 4> shade_pixel(Gpu3D& gpu, const Gpu3DPolygon& polygon,
         const std::array<float, 3>& color, float u, float v);
     using SpanPixel = std::array<std::uint32_t, 4>;

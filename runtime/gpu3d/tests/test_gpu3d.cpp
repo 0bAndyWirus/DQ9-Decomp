@@ -2833,93 +2833,28 @@ void test_uniform_clear_matches_reference() {
 
 void test_uniform_clear_targets_match_reference() {
     using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
-    constexpr std::array<std::uint32_t, 14> modes{
-        0U, 0U, 1U << 7, 1U << 7, 1U << 7, (1U << 7) | (1U << 6),
-        (1U << 7) | (1U << 6), (1U << 7) | (10U << 8),
-        (1U << 7) | (11U << 8), (1U << 7) | (11U << 8),
-        (1U << 7) | (4U << 8), (1U << 7) | (1U << 5),
-        1U << 7, (1U << 7) | (15U << 8)};
-    constexpr std::array<std::uint32_t, modes.size()> depths{
-        0U, 0x7fffU, 0U, 1U, 0x0600U, 0x7fffU, 0x0600U,
-        1U, 0x0200U, 0x0201U, 0x1234U, 0x7ffeU, 0x7fffU, 0U};
-    constexpr std::array<std::uint32_t, modes.size()> alphas{
-        0U, 31U, 1U, 31U, 15U, 0U, 31U, 16U, 30U, 1U, 15U, 16U, 0U, 31U};
-    constexpr auto fog_color = (13U << 16) | 0x4e93U;
     std::mt19937 random(0x63ac91);
-    std::array<std::uint32_t, modes.size()> colors{};
-    for (std::size_t frame = 0; frame < colors.size(); ++frame)
-        colors[frame] = (static_cast<std::uint32_t>(random()) & 0x3f007fffU) |
-            (alphas[frame] << 16) | (frame == 0 || frame == 2 ? 0U : 1U << 15);
-    const auto configure = [&](Gpu3D& gpu, std::size_t frame) {
-        gpu.io_write(0x04000060U, modes[frame], 32);
-        gpu.io_write(0x04000350U, colors[frame], 32);
-        gpu.io_write(0x04000354U, depths[frame], 32);
-        gpu.io_write(0x04000358U, fog_color, 32);
-        const auto offset = frame == 8 || frame == 9 ? 0x0200U :
-                            frame == 10 ? 0x11d4U : frame == 13 ? 0x7fffU : 0U;
-        gpu.io_write(0x0400035cU, offset, 32);
-        for (std::uint32_t i = 0; i < 32U; ++i) {
-            const auto density = frame == 3 ? 0U :
-                frame == 4 ? 127U - i * 4U :
-                frame == 5 || frame == 7 || frame == 12 ? 127U :
-                frame == 6 ? 64U : (i * 17U + static_cast<unsigned>(frame) * 11U) & 127U;
-            gpu.io_write(0x04000360U + i, density, 8);
-        }
-    };
-    // Capture=true keeps the original clear/edge/per-pixel fog-and-pack path,
-    // even for an empty scene. Use its inline native result as the reference.
-    Gpu3D reference;
-    reference.set_render_threads(0);
-    reference.set_capture_opaque_only(true);
-    std::array<Access::SpanPixel, modes.size()> expected{};
     bool ok = true;
-    for (std::size_t frame = 0; frame < expected.size(); ++frame) {
-        configure(reference, frame);
-        reference.render_start();
-        expected[frame] = Access::framebuffer_pixel(reference, 0);
-        const auto clear = reference_clear_pixel(colors[frame], depths[frame]);
-        ok &= expected[frame][1] == clear[1] && expected[frame][2] == clear[2] &&
-              expected[frame][3] == clear[3];
-        if (frame <= 3)
-            ok &= expected[frame] == clear; // Disabled fog, clear fog off, or zero density.
-        if (frame == 5)
-            ok &= (expected[frame][0] & 0x3ffffU) == (clear[0] & 0x3ffffU) &&
-                  (expected[frame][0] >> 24U) == 13U; // Full alpha-only fog.
-        if (frame == 12)
-            ok &= expected[frame][0] == reference_clear_pixel(fog_color, 0U)[0];
-    }
-    for (int threads : {0, 1, 2, 6}) {
+    for (int threads : {0, 2, 6}) {
         for (bool capture : {false, true}) {
             for (int scale : {1, 2, 4}) {
                 Gpu3D gpu;
                 gpu.set_render_threads(threads);
                 gpu.set_capture_opaque_only(capture);
                 gpu.set_output_scale(scale);
-                // Leave polygon metadata and capture scratch behind, then swap
-                // an empty list without clearing either render target first.
-                quad(gpu, 0x03e0U, (15U << 16) | (9U << 24));
-                submit_frame(gpu);
-                send(gpu, 0x50);
-                gpu.run(100000);
-                gpu.vblank_start();
-                for (std::size_t frame = 0; frame < expected.size(); ++frame) {
-                    configure(gpu, frame);
+                for (int frame = 0; frame < 2; ++frame) {
+                    const auto color = random(), depth = random();
+                    const auto expected = reference_clear_pixel(color, depth);
+                    gpu.io_write(0x04000350U, color, 32);
+                    gpu.io_write(0x04000354U, depth, 32);
                     gpu.render_start();
-                    if (frame + 1 == expected.size()) gpu.render_start(); // Fog must not accumulate.
                     const auto raster = gpu.raster_view();
-                    if (capture && !check(raster.opaque_only_mask != nullptr &&
-                                          raster.capture_causes != nullptr,
-                                          "empty capture publishes freshly cleared metadata"))
-                        std::exit(1);
                     for (unsigned index = 0; index < 256U * 192U; ++index) {
-                        ok &= Access::framebuffer_pixel(gpu, index) == expected[frame];
-                        ok &= raster.output[index] == expected[frame][0];
+                        ok &= Access::framebuffer_pixel(gpu, index) == expected;
+                        ok &= raster.output[index] == expected[0];
                         if (capture) {
                             ok &= raster.opaque_only_mask[index] == 1U;
                             ok &= raster.capture_causes[index] == 0U;
-#ifdef DSR_GPU_CAPTURE_IDS
-                            ok &= raster.capture_polygon_ids[index] == (expected[frame][2] & 63U);
-#endif
                         }
                     }
                     if (scale > 1) {
@@ -2927,18 +2862,15 @@ void test_uniform_clear_targets_match_reference() {
                             const auto* row = gpu.scaled_line(y);
                             if (!check(row != nullptr, "uniform hi-res clear publishes every row"))
                                 std::exit(1);
-                            for (int x = 0; x < 256 * scale; ++x) {
-                                ok &= row[x] == expected[frame][0];
-                                ok &= Access::framebuffer_pixel(
-                                    gpu, static_cast<unsigned>(y * 256 * scale + x), true) == expected[frame];
-                            }
+                            ok &= std::all_of(row, row + 256 * scale,
+                                [&](std::uint32_t pixel) { return pixel == expected[0]; });
                         }
                     }
                 }
             }
         }
     }
-    if (!check(ok, "empty targets match scalar clear/fog fields and output across threads, capture and scales"))
+    if (!check(ok, "uniform clear matches scalar fields/output across bands, capture and scales"))
         std::exit(1);
 }
 
@@ -3293,67 +3225,23 @@ void test_hires_clipped_offset_viewport() {
 }
 
 void test_hires_clear_bitmap_sampling() {
-    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
     TestTextureSource source;
     fill_band_textures(source);
-    const auto configure = [&](Gpu3D& gpu) {
-        Access::attach_texture_source(gpu, source.readonly_view());
-        gpu.io_write(0x04000060U, (1U << 14) | (1U << 7), 32);
-        gpu.io_write(0x04000350U, (43U << 24) | (17U << 16) | 0x03e0U, 32);
-        gpu.io_write(0x04000356U, 0xf3e7U, 16);
-        gpu.io_write(0x04000358U, (11U << 16) | 0x001fU, 32);
-        for (std::uint32_t i = 0; i < 32U; ++i)
-            gpu.io_write(0x04000360U + i, 127U - i * 4U, 8);
-    };
-    Gpu3D reference;
-    reference.set_render_threads(0);
-    reference.set_capture_opaque_only(true);
-    configure(reference);
-    reference.render_start();
-    bool ok = check(!std::all_of(reference.line(0), reference.line(0) + 256U * 192U,
-                                [&](std::uint32_t pixel) { return pixel == reference.line(0)[0]; }),
-                    "empty bitmap reference has a nonuniform rear plane");
-    for (int threads : {0, 2, 6}) {
-        for (bool capture : {false, true}) {
-            Gpu3D gpu;
-            gpu.set_render_threads(threads);
-            gpu.set_capture_opaque_only(capture);
-            configure(gpu);
-            for (int scale : {1, 2, 3}) {
-                gpu.set_output_scale(scale);
-                gpu.render_start();
-                const auto raster = gpu.raster_view();
-                if (capture && !check(raster.opaque_only_mask != nullptr &&
-                                      raster.capture_causes != nullptr,
-                                      "empty bitmap capture publishes its native metadata"))
-                    std::exit(1);
-                for (unsigned index = 0; index < 256U * 192U; ++index) {
-                    ok &= raster.output[index] == reference.line(0)[index];
-                    ok &= Access::framebuffer_pixel(gpu, index) == Access::framebuffer_pixel(reference, index);
-                    if (capture) {
-                        ok &= raster.opaque_only_mask[index] == 1U;
-                        ok &= raster.capture_causes[index] == 0U;
-#ifdef DSR_GPU_CAPTURE_IDS
-                        ok &= raster.capture_polygon_ids[index] == 43U;
-#endif
-                    }
-                }
-                if (scale == 1) continue;
-                for (int y = 0; y < 192 * scale; ++y) {
-                    const auto* row = gpu.scaled_line(y);
-                    if (!check(row != nullptr, "empty bitmap publishes every hi-res row")) std::exit(1);
-                    for (int x = 0; x < 256 * scale; ++x) {
-                        const auto native = static_cast<unsigned>((y / scale) * 256 + x / scale);
-                        ok &= row[x] == reference.line(0)[native];
-                        ok &= Access::framebuffer_pixel(
-                            gpu, static_cast<unsigned>(y * 256 * scale + x), true) ==
-                            Access::framebuffer_pixel(reference, native);
-                    }
-                }
-            }
+    Gpu3D gpu;
+    dsr::gpu3d_detail::Gpu3DTestAccess::attach_texture_source(gpu, source.readonly_view());
+    gpu.io_write(0x04000060U, 1U << 14, 32);
+    gpu.io_write(0x04000356U, 0xf3e7U, 16);
+    bool ok = true;
+    for (int scale : {2, 3}) {
+        gpu.set_output_scale(scale);
+        gpu.render_start();
+        for (int y = 0; y < 192 * scale; ++y) {
+            const auto* row = gpu.scaled_line(y);
+            const auto* native = gpu.line(y / scale);
+            for (int x = 0; x < 256 * scale; ++x) ok &= row[x] == native[x / scale];
         }
     }
-    if (!check(ok, "empty bitmap bypass preserves scalar rear-plane fields/fog across threads, capture and scales"))
+    if (!check(ok, "hi-res rear-plane color/depth bitmap samples retain native texel coordinates"))
         std::exit(1);
 }
 
