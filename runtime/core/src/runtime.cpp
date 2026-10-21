@@ -243,6 +243,7 @@ void Machine::Impl::call(Cpu* cpu, std::uint32_t target) {
 }
 
 void Machine::Impl::enter_irq(CpuRuntime& rt, std::uint32_t pc) {
+    rt.restore_irq_budget();
     Cpu& c = rt.cpu;
     const std::uint32_t old_cpsr = rt.banks.cpsr(c);
     const bool nested = rt.in_irq;

@@ -125,11 +125,32 @@ publications until the main thread acknowledges their keys.
 
 `get_top_texture()` and `get_bottom_texture()` return stable `ImageTexture` objects (256×192 RGBA8), updated in place as completed frames are consumed. `get_top_image()` and `get_bottom_image()` return the same main-thread `Image` backing data for deterministic frame hashing/tests. `get_audio_player()` returns a child `AudioStreamPlayer` using an `AudioStreamGenerator` at the Godot output mix rate. Worker-produced interleaved stereo signed-16 audio enters a bounded ring protected by a separate audio mutex. The worker holds that mutex only to copy PCM into the ring; it never waits for main-thread resampling or generator access. The main thread snapshots only enough PCM to fill the generator's available space toward a 40 ms target for rendered backends under the mutex, then resamples and pushes outside it with ±1% adaptive rate correction. The headless backend fills its 100 ms generator buffer because its dummy mixer does not provide realtime output pacing.
 
+Returning from unpaced playback to any paced speed, or reducing a
+faster-than-1x speed, trims the source ring to its newest emulated frame.
+The already bounded generator queue is retained;
+normal playback is not stopped/restarted. Pause/stop retain queued PCM, and
+resume re-primes the generator before unpausing it. Neither policy changes the
+emulated PCM stream or the existing adaptive resampling policy.
+
 `get_session_start_save()` returns the save bytes captured when `load_game()` was called; `get_input_history()` returns one `frame buttons x y` row per completed frame (zero-based frame numbering, `-1 -1` when touch is up). `get_rtc_epoch()` and `get_rtc_timezone_offset_minutes()` return the deterministic RTC values configured before load. The Godot launcher uses these to create replayable `user://debug` bundles; see `tools/debug_bundle.py replay`.
 
 Signals: `frame_ready(frame: int)` is emitted when a new frame is uploaded; `error(message: String)` reports worker-step errors.
 
 `get_stats()` returns `frame`, `ticks`, `fps`, `audio_queue_ms` (ring fill), `underruns` (AudioStreamGeneratorPlayback skips), `dropped_audio_ms`, `running`, and `paused`; `audio_frames_pushed` is an additional cumulative count of frames accepted by generator playback.
+`audio_ring_overflows` counts source frames overwritten only at physical ring
+capacity (separate from intentional latency drops); `audio_ring_max_ms` is the
+source ring high-water mark. `fast_forward_discarded_ms` is the subset of
+`dropped_audio_ms` discarded specifically on fast-forward release. These
+counters and the high-water mark reset on `load_game`.
+
+Diagnostic builds configured with `-DDQ9_AUDIO_TESTS=ON` additionally expose
+`set_test_audio_capture(enabled)` and `take_test_audio()`. Capture is disabled
+until explicitly enabled; toggling it clears the diagnostic buffer.
+`take_test_audio()` drains the collected **source** stereo signed-16
+little-endian PCM, before ring drops, resampling, volume and Godot mixing.
+Use short, bounded local runs; diagnostic capture is intentionally unbounded
+and is absent from production builds. See
+`tests/audio_pcm.gd` and the audio checks in `docs/USING_GODOT.md`.
 Replay diagnostics also expose `replay_active` and the zero-based `replay_target`.
 `loaded` reports whether a live session is available. `last_save_ok` is the result
 of the most recent completed explicit or shutdown flush, published under the

@@ -135,6 +135,106 @@ From the pause panel you can capture a note: a frame-indexed input history, the 
 
 Build the extension with `python tools/build_port.py --rom PATH --godot` (or `--godot-only` after a game build), then run `tools/run_godot.sh --menu`. The binding checkout is downloaded and verified the same way. Windows is the platform this guide targets; Godot support on Windows has not been run end to end by the author.
 
+### Audio and frame pacing
+
+The native worker targets **59.8261 emulated frames/second** at 1×; the Godot
+window has a separate 60 FPS presentation cap. Source audio enters a bounded
+stereo ring before the host resamples it to Godot's mix rate. The rendered host
+targets 40 ms in the generator, with the existing ±1% queue correction. This is
+not a promise of 40 ms speaker latency: the source ring, mixer and output device
+add their own latency.
+
+- Releasing **Tab** trims old fast-forward source audio to the newest emulated
+  frame, including when the selected return speed is 0.25×, 0.5× or 2×. It keeps
+  the short generator queue instead of stopping/restarting the audio player.
+  Reducing a faster-than-1× speed applies the same source trim.
+- Pause/stop keep buffered PCM. Resume waits for the retained generator queue to
+  be primed again before unpausing, rather than exposing an almost-empty buffer.
+  This changes host delivery only, not the emulated samples.
+- `get_stats()` separates source-ring fill/high water, intentional dropped
+  milliseconds and physical-capacity overwrites. `underruns` is Godot's skip
+  counter, including startup skips; it is not a count of verified audible pops.
+  Fast-forward deliberately drops source audio rather than building seconds of
+  latency. Non-1× playback does not implement time stretching: slow motion can
+  underrun, and faster playback can drop samples.
+
+#### Local measurement (Linux, Godot 4.5)
+
+A real-extension Xvfb run with PulseAudio and Mesa llvmpipe used a fresh EEPROM
+64 KB save, fixed RTC, English and 3,000 no-input frames:
+
+| Measurement | Observed |
+|---|---|
+| 1× emulation pacing | 3,000 frames in 50.142 s, approximately 59.83 FPS |
+| Steady host frame interval, after the first two seconds | 16.666 ms average; 16.667 ms maximum reported delta |
+| Main-thread process monitor, same interval | 5.96 ms average; 14.10 ms maximum |
+| Source ring / combined source + generator high water | 50.17 ms / 73.46 ms |
+| 1× drops / physical ring overwrites | 0 ms / 0 frames |
+| Generator skips | 4 at startup; no additional skips during the run |
+| Unpaced-to-1× release, immediate source backlog | 199.98 ms before trim; 16.74 ms after, discarding 183.23 ms |
+
+The original host retained approximately 200 ms on release; its new release
+regression fails against the original implementation and passes with the trim.
+A separate rendered launcher run exercised the actual Tab handler through
+3,000 frames, including release back to 1×; its post-startup main-thread monitor
+averaged 6.56 ms with a 12.26 ms maximum. Return-to-0.25×/0.5×/2× checks exercise
+the same handler. A ten-cycle pause/manual-step/resume regression also fails
+against the original host and passes with re-priming. These are local Linux
+measurements, not Windows, hardware, subjective listening or general performance
+guarantees. Shared-machine load and the software GL driver affect these numbers.
+
+#### Reproduce locally
+
+Use your own ROM and compatible generated code; keep saves, PCM and logs outside
+the tracked source. Run realtime probes with a real audio driver, **not**
+`--headless`/Dummy, whose mixer does not provide realtime pacing. These scripts
+find the local ABI configuration like the launcher; `DQ9_ABI_CONFIG` can override
+it explicitly. Use a fresh, different save path for each comparison.
+
+```sh
+python tools/build_port.py --godot-only --quiet
+ctest --test-dir build/godot -R dq9_audio_ring_tests --output-on-failure
+xvfb-run -a "$GODOT" --path godot --audio-driver PulseAudio \
+  --script res://tests/audio_pass.gd -- "$ROM" /local/normal.sav normal
+xvfb-run -a "$GODOT" --path godot --audio-driver PulseAudio \
+  --script res://tests/audio_pass.gd -- "$ROM" /local/fast.sav fast-forward
+xvfb-run -a "$GODOT" --path godot --audio-driver PulseAudio \
+  --script res://tests/test_tab_audio.gd -- "$ROM" /local/tab.sav
+xvfb-run -a "$GODOT" --path godot --audio-driver PulseAudio \
+  --script res://tests/test_pause_audio.gd -- --rom "$ROM" \
+  --save /local/pause.sav --backup-type eeprom64k --autostart
+```
+
+`audio_pass.gd` also accepts `pause`. `test_tab_audio.gd` accepts an optional
+return speed and end-frame count, for example `0.5 2100`. It samples the UI one
+host tick after release, when the producer may already have refilled the ring;
+the direct 1× probe and ROM-free native test check immediate retention.
+The native test needs no ROM and checks stereo order, wraparound, exact capacity,
+latency trimming, oversized pushes, stale consumer snapshots, release retention
+and counter reset.
+
+For a source-PCM A/B check, opt into diagnostic capture after the normal build:
+
+```sh
+cmake -S . -B build/godot -DDQ9_AUDIO_TESTS=ON
+cmake --build build/godot --target dq9_godot -j 4
+xvfb-run -a "$GODOT" --path godot --audio-driver PulseAudio \
+  --script res://tests/audio_pcm.gd -- "$ROM" /local/godot.sav /local/godot.pcm
+build/game/game/dq9 --rom "$ROM" --save /local/native.sav \
+  --backup-type eeprom64k --headless --frames 3000 --language en \
+  --rtc-epoch 1700000000 --dump-audio /local/native.wav
+python -c 'import pathlib,wave; w=wave.open("/local/native.wav","rb"); assert w.readframes(w.getnframes()) == pathlib.Path("/local/godot.pcm").read_bytes()'
+```
+
+The measured comparison was **byte-identical: 1,641,179 stereo source frames,
+6,564,716 bytes**, including non-silent audio. This compares the real extension's
+emulated signed-16 little-endian PCM before drops/resampling against the WAV data
+chunk, not the WAV header or Godot's resampled floating-point/device output.
+Match source/generated code, fresh-save bytes, chip, language, RTC and inputs;
+the supplied probe uses no input. Diagnostic capture is absent by default and
+must be explicitly enabled in a diagnostic build; keep captures short because
+its buffer is unbounded. Restore `-DDQ9_AUDIO_TESTS=OFF` and rebuild afterward.
+
 ## Local Windows Desktop export (experimental)
 
 The tracked **Windows Desktop** preset targets **x86_64**, with a separate PCK.

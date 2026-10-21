@@ -1,6 +1,9 @@
 add_library(dsr_periph STATIC src/periph.cpp)
 target_link_libraries(dsr_periph PUBLIC dsr_headers)
 dsr_target_compile_options(dsr_periph -Wall -Wextra -Wpedantic)
+if(WIN32)
+    target_link_libraries(dsr_periph PRIVATE bcrypt)
+endif()
 
 add_executable(dsr_periph_tests tests/periph_tests.cpp)
 target_link_libraries(dsr_periph_tests PRIVATE dsr_periph)

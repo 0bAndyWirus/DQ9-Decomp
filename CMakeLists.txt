@@ -101,6 +101,13 @@ foreach(target dsr_core dsr_gpu2d dsr_gpu3d dsr_spu dsr_periph)
 endforeach()
 add_subdirectory(runtime/session)
 
+# Host-side frame selection is testable without generated code, SDL or a ROM.
+add_executable(dq9_frame_spec_tests game/frame_spec_tests.cpp)
+target_link_libraries(dq9_frame_spec_tests PRIVATE dsr_headers)
+dsr_target_compile_options(dq9_frame_spec_tests -Wall -Wextra)
+add_test(NAME dq9_frame_spec_tests COMMAND dq9_frame_spec_tests)
+set_tests_properties(dq9_frame_spec_tests PROPERTIES TIMEOUT 30)
+
 if(DQ9_GENERATED_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/CMakeLists.txt")
   add_subdirectory(game)
 endif()

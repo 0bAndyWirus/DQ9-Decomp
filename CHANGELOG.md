@@ -4,6 +4,12 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.1
+
+- **Security hardening:** save temp files are created exclusively and without following links (a pre-planted symlink no longer gets truncated); `BUILD-DQ9.bat` rejects a `DQ9_BACKUP_TYPE` that is not a supported chip name (previously a value containing `&` ran extra commands); the diagnostics ZIP now redacts every absolute path in the log tail; the SDL SDK archive is SHA-256 pinned before extraction; `--dump-frames` ranges are bounded and overflow-safe; CI actions are pinned to commit SHAs.
+- **Timing accuracy:** timer overflow IRQs now end a CPU slice at the exact event, and positive CPU budget displaced by a forced IRQ checkpoint is carried instead of discarded. Early timer seed error versus the oracle dropped from 1,263 to 1,089 counts (13.8%); card-load timing is unchanged; ten frame records of the 3,000-frame English boot hash stream change (first at frame 271). Not a parity claim.
+- **Godot audio:** releasing fast-forward trims stale source audio to the newest frame (backlog 199.98 to 16.74 ms), pause/resume re-primes retained audio, with ROM-free ring tests and diagnostics. Linux measurement: 59.83 FPS at 1x, zero drops in normal play, emulated PCM byte-identical to the SDL dump. Windows audio and listening quality are not verified.
+
 ## v0.4.0
 
 - **Timing model (changes frame phase):** ARM9 charges 161/64 cycles per instruction with fractional carry (derived from 22.4 M oracle instructions over a cartridge load), Slot-1 holds READY through a block with a bounded card-DMA drain, and data/delay SWIs use the oracle's cycle totals. Card-command timing at the title-to-preview load moves from 1035/1050/1099 to 1035/1045/1090 (oracle 1035/1044/1087); the oracle's top screen matches pixel-exactly at native +7 frames. Boot hash streams change from frame 49 (about 2,200 of 3,000 frames) because of phase; saves are unaffected. Regenerate local guest code after updating. Not a complete parity claim.

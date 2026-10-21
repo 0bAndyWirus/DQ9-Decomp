@@ -4,6 +4,47 @@
 #include <cstdint>
 
 namespace dsr {
+namespace {
+constexpr std::uint32_t kTimerPrescalers[4] = {1, 64, 256, 1024};
+}
+
+std::uint64_t Machine::Impl::timer_irq_boundary(std::uint64_t limit) const {
+    for (unsigned ci = 0; ci < 2; ++ci) {
+        for (unsigned ti = 0; ti < 4; ++ti) {
+            const TimerState& timer = timers[ci * 4 + ti];
+            if ((timer.control & 0x84u) != 0x80u) continue;
+            const std::uint64_t divisor = kTimerPrescalers[timer.control & 3u];
+            const std::uint64_t clocks = (0x10000ull - timer.count) * divisor;
+            const std::uint64_t phase = timer.phase;
+            // Work in prescaler clocks until selecting an IRQ. Keeping phase
+            // separate also handles a divisor change with clocks already due.
+            std::uint64_t deadline = clocks;
+            if (deadline > phase && deadline - phase >= limit) continue;
+            if ((timer.control & 0x40u) != 0) {
+                limit = deadline > phase ? deadline - phase : 1;
+                continue;
+            }
+            std::uint64_t period = (0x10000ull - timer.reload) * divisor;
+            for (unsigned next = ti + 1; next < 4; ++next) {
+                const TimerState& cascade = timers[ci * 4 + next];
+                if ((cascade.control & 0x84u) != 0x84u) break;
+                const std::uint64_t overflows = 0xffffu - cascade.count;
+                // Saturate the search at this slice, not at every upstream
+                // overflow: a /1 source can feed a long, non-IRQ cascade.
+                const std::uint64_t window = phase + limit - 1;
+                if (overflows != 0 && period > (window - deadline) / overflows) break;
+                deadline += overflows * period;
+                if ((cascade.control & 0x40u) != 0) {
+                    limit = deadline > phase ? deadline - phase : 1;
+                    break;
+                }
+                const std::uint64_t reload_period = 0x10000ull - cascade.reload;
+                period = period > window / reload_period ? window + 1 : period * reload_period;
+            }
+        }
+    }
+    return limit;
+}
 
 void Machine::Impl::timer_increment(unsigned cpu_index, unsigned timer_index, std::uint64_t increments) {
     if (timer_index >= 4 || increments == 0) return;
