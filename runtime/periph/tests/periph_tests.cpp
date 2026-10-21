@@ -14,7 +14,9 @@
 #include <string_view>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -463,6 +465,54 @@ void assert_restore_fails(dsr::GameCard& card, const std::filesystem::path& sour
     }
     assert(failed);
     assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Failed);
+}
+
+void test_save_temp_preplanted_link(const std::filesystem::path& rom,
+                                   const std::filesystem::path& directory) {
+    std::filesystem::create_directories(directory);
+    const auto save = directory / "safe.sav";
+    const auto victim = directory / "unrelated.txt";
+    const std::string sentinel = "unrelated bytes must not be overwritten";
+    write_bytes(victim, sentinel);
+    auto old_temp = save;
+    old_temp += ".tmp.";
+#if defined(_WIN32)
+    old_temp += std::to_string(::_getpid());
+    // A hard link exercises CREATE_ALWAYS without requiring Windows symlink privileges.
+    std::filesystem::create_hard_link(victim, old_temp);
+#else
+    old_temp += std::to_string(::getpid());
+    std::filesystem::create_symlink(victim, old_temp);
+#endif
+    // The former predictable O_TRUNC/CREATE_ALWAYS open overwrote the victim before rename.
+    // No timing, permission assumptions or real game ROM are needed to expose that failure.
+    {
+        dsr::GameCard card(rom, save, dsr::BackupType::Eeprom512B);
+        std::string expected(512, '\xff');
+        for (const std::uint8_t value : {0x4a, 0x7b}) {
+            write_eeprom_byte(card, value);
+            expected[1] = static_cast<char>(value);
+            assert(card.flush_save());
+            assert(card.save_write_status() == dsr::GameCard::SaveWriteStatus::Saved);
+            assert(slurp(victim) == sentinel);
+            assert(slurp(save) == expected);
+            assert(std::filesystem::is_regular_file(std::filesystem::symlink_status(save)));
+        }
+    }
+    assert(slurp(victim) == sentinel);
+    assert(slurp(old_temp) == sentinel);
+#if defined(_WIN32)
+    assert(std::filesystem::equivalent(victim, old_temp));
+#else
+    assert(std::filesystem::is_symlink(std::filesystem::symlink_status(old_temp)));
+    assert(std::filesystem::read_symlink(old_temp) == victim);
+#endif
+    std::size_t entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        assert(entry.path() == save || entry.path() == victim || entry.path() == old_temp);
+        ++entries;
+    }
+    assert(entries == 3); // Successful publication leaves no newly created staging files.
 }
 
 // Preserve the pre-session file once, including across reset, not at every autosave.
@@ -1328,6 +1378,7 @@ int main() {
     test_unwritable_save_does_not_throw(rom, temp.path);
     test_larger_eeproms(rom, temp.path);
     test_previous_save_backup(rom, temp.path / "previous.sav");
+    test_save_temp_preplanted_link(rom, temp.path / "preplanted-save-temp");
     test_save_backup_rotation(rom, temp.path / "rotation");
     test_save_backup_unrelated_retention(rom, temp.path / "unrelated");
     test_save_backup_listing(rom, temp.path / "listing");
