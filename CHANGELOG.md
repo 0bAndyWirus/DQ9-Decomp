@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.2
+
+- **Output-identical speedups, measured by instruction count:** SPU work is scheduled by deadline and silent samples skip mixing, regular BG/OBJ palette colours are cached and updated on write, and hardware timers synchronise only at overflow deadlines or timer I/O (IRQ/cascade ordering preserved). Single-thread user instructions retired versus v0.4.1, medians of three: boot 1,500 frames -19.4% (cycles -15.7%), 6,000-frame movie -13.3% (-10.4%), 12,500-frame activity run -8.1% (-7.2%); with two render threads wall-clock medians improved 9.8% / 8.7% / 5.7% (secondary metric). Five-language boot hashes, English WAV, render-thread 0/2/3 streams and saves are byte-identical to v0.4.1. A GPU3D empty-target fill optimisation was rejected because it cost cycles. Earlier wall-clock-only perf attempts in v0.4.0 were inconclusive on this noisy machine; the instruction-count method replaces them.
+
 ## v0.4.1
 
 - **Security hardening:** save temp files are created exclusively and without following links (a pre-planted symlink no longer gets truncated); `BUILD-DQ9.bat` rejects a `DQ9_BACKUP_TYPE` that is not a supported chip name (previously a value containing `&` ran extra commands); the diagnostics ZIP now redacts every absolute path in the log tail; the SDL SDK archive is SHA-256 pinned before extraction; `--dump-frames` ranges are bounded and overflow-safe; CI actions are pinned to commit SHAs.
