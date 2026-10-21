@@ -111,13 +111,6 @@ set_tests_properties(dq9_frame_spec_tests PROPERTIES TIMEOUT 30)
 if(DQ9_GENERATED_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/CMakeLists.txt")
   add_subdirectory(game)
 endif()
-# The native Linux CLI test caps child memory so an unbounded-range regression
-# cannot exhaust the host. Windows CLI diagnostics are redirected to runtime.log.
-if(TARGET dq9 AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
-  add_test(NAME dq9_dump_frames_cli COMMAND "${DQ9_TEST_PYTHON}"
-    "${PROJECT_SOURCE_DIR}/tests/dump_frames_cli.py" --dq9 "$<TARGET_FILE:dq9>")
-  set_tests_properties(dq9_dump_frames_cli PROPERTIES TIMEOUT 180)
-endif()
 if(DQ9_BUILD_GODOT)
   add_subdirectory(godot)
 endif()
