@@ -40,6 +40,7 @@
 #include "dsr/gpu3d.h"
 #include "debug_tool.h"
 #include "debug_workflow_test.h"
+#include "frame_spec.h"
 
 namespace {
 using FrameIndex = std::int64_t;
@@ -118,6 +119,7 @@ struct Options {
         "  --hash-file FILE        `frame top_fnv1a64 bottom_fnv1a64` per frame (FNV-1a over the RGB bytes)\n"
         "  --dump-frames SPEC      write frame_NNNN_{top,bottom}.ppm (+ _regs.txt, + _{top,bottom}_hires.ppm with\n"
         "                          --gpu3d-scale) for frames such as 100,500-900/100 into --dump-dir\n"
+        "                          (at most 1000000 requested indices across all --dump-frames options)\n"
         "  --dump-dir DIR          where dumps go (default build/dq9-frames)\n"
         "  --dump-ram / --dump-vram   also write frame_NNNN_mainram.bin / _video.bin and _vram.bin\n"
         "  --dump-audio FILE       write all emitted audio as a 16-bit stereo WAV\n"
@@ -156,24 +158,6 @@ int local_timezone_offset_minutes(std::time_t epoch) {
 }
 
 
-// Frame lists: comma-separated indices; `a-b` and `a-b/step` are inclusive ranges
-// (same grammar as the oracle driver's --snapshots).
-void parse_frame_spec(const std::string& spec, std::set<FrameIndex>& frames) {
-    std::stringstream list(spec);
-    for (std::string item; std::getline(list, item, ',');) {
-        if (item.empty()) continue;
-        const std::size_t dash = item.find('-', 1);
-        if (dash == std::string::npos) {
-            frames.insert(std::stoll(item));
-            continue;
-        }
-        const std::size_t slash = item.find('/', dash);
-        const FrameIndex first = std::stoll(item.substr(0, dash));
-        const FrameIndex last = std::stoll(item.substr(dash + 1, slash == std::string::npos ? std::string::npos : slash - dash - 1));
-        const FrameIndex step = slash == std::string::npos ? 1 : std::max<FrameIndex>(1, std::stoll(item.substr(slash + 1)));
-        for (FrameIndex f = first; f <= last; f += step) frames.insert(f);
-    }
-}
 void load_recorded_rtc(Options& options) {
     if (options.input_script.empty()) return;
     std::ifstream input(dsr::host::path_with_suffix(options.input_script, ".rtc"));
@@ -203,6 +187,7 @@ const char* g_parsing_option = nullptr; // for the message when a numeric value 
 
 Options parse_args_unchecked(int argc, char** argv) {
     Options o;
+    std::size_t requested_dump_frames = 0;
     o.abi_config = dsr::guest_abi_config_path_from_environment();
 #if defined(_WIN32)
     if (const wchar_t* env = _wgetenv(L"DQ9_ROM")) o.rom = env;
@@ -268,7 +253,14 @@ Options parse_args_unchecked(int argc, char** argv) {
         else if (a == "--dump-vram") o.dump_vram = true;
         else if (a == "--dump-audio") o.dump_audio = dsr::host::path_from_utf8(value());
         else if (a == "--hash-file") o.hash_file = dsr::host::path_from_utf8(value());
-        else if (a == "--dump-frames") parse_frame_spec(std::string(value()), o.dump_frames);
+        else if (a == "--dump-frames") {
+            try {
+                dq9::parse_frame_spec(std::string(value()), o.dump_frames, requested_dump_frames);
+            } catch (const std::length_error& error) {
+                std::fprintf(stderr, "dq9: %s\n", error.what());
+                usage(2);
+            }
+        }
         else if (a == "--help" || a == "-h") usage(0);
         else {
             std::fprintf(stderr, "dq9: unknown argument '%s'\n", argv[i]);

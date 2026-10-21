@@ -112,7 +112,7 @@ prints usage and exits). These are runtime options, not arguments to
 | `--input-script FILE` | Replay `frame button_mask touch_x touch_y` lines. Mask follows KEYINPUT order, with X at bit 10 and Y at bit 11; `-1 -1` releases touch. |
 | `--record-input FILE` | Record nonempty frame inputs in that grammar for replay with the same starting save. |
 | `--hash-file FILE` | Write `frame top_fnv1a64 bottom_fnv1a64` (RGB-byte hashes). |
-| `--dump-frames SPEC` | Dump selected frames, e.g. `100,500-900/100`, as top/bottom PPM and register text; hi-res PPMs are also emitted when enabled. |
+| `--dump-frames SPEC` | Dump selected frames, e.g. `100,500-900/100`, as top/bottom PPM and register text; hi-res PPMs are also emitted when enabled. Ranges include their endpoints when reached by the step. At most 1,000,000 frame indices may be requested across all occurrences of this option, counting duplicates and overlaps; larger requests exit with status 2 before loading a ROM. |
 | `--dump-dir DIR` | Dump destination; default `build/dq9-frames`. |
 | `--dump-ram`, `--dump-vram` | Add RAM/video-memory snapshots to selected frame dumps. |
 | `--dump-audio FILE` | Write emitted audio to 16-bit stereo WAV, including headless runs. |
