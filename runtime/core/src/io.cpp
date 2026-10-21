@@ -238,7 +238,7 @@ void Machine::Impl::set_irq(unsigned cpu_index, unsigned bit) {
         rt.halted = false;
         rt.stopped = false;
     }
-    if (can_deliver_irq(cpu_index)) rt.cpu.budget = 0;
+    if (can_deliver_irq(cpu_index)) rt.force_irq_checkpoint();
 }
 
 void Machine::Impl::handle_key_irq() {
@@ -507,6 +507,7 @@ void Machine::Impl::io_write(CpuId id, std::uint32_t addr, std::uint32_t value, 
         rt.stopped = (value & 0x80u) != 0;
         rt.halt_until_irq = !rt.stopped;
         rt.waiting_for_irq = false;
+        rt.irq_budget_reserve = 0;
         rt.cpu.budget = 0; // stop at the next checkpoint
         rt.halt_wait_mask = 0xffffffffu;
     };
@@ -602,7 +603,7 @@ void Machine::Impl::io_write(CpuId id, std::uint32_t addr, std::uint32_t value, 
         std::uint32_t cur = irq[ci].ime;
         cur = insert(cur, value, addr, width);
         irq[ci].ime = cur & 1u;
-        if (can_deliver_irq(ci)) cpus[ci].cpu.budget = 0;
+        if (can_deliver_irq(ci)) cpus[ci].force_irq_checkpoint();
         return;
     }
     case 0x0210: case 0x0211: case 0x0212: case 0x0213: {
@@ -610,7 +611,7 @@ void Machine::Impl::io_write(CpuId id, std::uint32_t addr, std::uint32_t value, 
         cur = insert(cur, value, addr, width);
         irq[ci].ie = cur;
         if ((irq[ci].ie & irq[ci].flags) && cpus[ci].halted) cpus[ci].halted = false;
-        if (can_deliver_irq(ci)) cpus[ci].cpu.budget = 0;
+        if (can_deliver_irq(ci)) cpus[ci].force_irq_checkpoint();
         return;
     }
     case 0x0214: case 0x0215: case 0x0216: case 0x0217: {

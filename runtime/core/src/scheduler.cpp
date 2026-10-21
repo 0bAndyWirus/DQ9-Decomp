@@ -39,7 +39,7 @@ void Machine::Impl::run_cpu_slice(unsigned cpu_index, std::uint64_t ticks) {
     rt.cpu.budget = debt + static_cast<std::int64_t>(std::min<std::uint64_t>(
         cycles, static_cast<std::uint64_t>(INT64_MAX / 2)));
     if (rt.cpu.budget <= 0) return;
-    if (can_deliver_irq(cpu_index)) rt.cpu.budget = 0;
+    if (can_deliver_irq(cpu_index)) rt.force_irq_checkpoint();
     Fiber::switch_to(*rt.active_fiber);
     if (rt.active_fiber->finished()) {
         rt.fiber_done = true;
@@ -74,9 +74,11 @@ void Machine::Impl::run_ticks(std::uint64_t ticks) {
 void Machine::Impl::checkpoint(Cpu* cpu, std::uint32_t pc) {
     CpuRuntime& rt = runtime(cpu->id);
     rt.current_pc = pc;
+    rt.restore_irq_budget();
     if (can_deliver_irq(static_cast<unsigned>(cpu->id))) enter_irq(rt, pc);
     if (cpu->budget <= 0) {
         Fiber::yield();
+        rt.restore_irq_budget();
         if (can_deliver_irq(static_cast<unsigned>(cpu->id))) enter_irq(rt, pc);
     }
 }
@@ -84,6 +86,7 @@ void Machine::Impl::checkpoint(Cpu* cpu, std::uint32_t pc) {
 void Machine::Impl::halt(Cpu* cpu) {
     CpuRuntime& rt = runtime(cpu->id);
     rt.halted = true;
+    rt.irq_budget_reserve = 0;
     cpu->budget = 0;
     Fiber::yield(); // the scheduler resumes this CPU once IE & IF != 0
 }
@@ -108,6 +111,7 @@ void Machine::Impl::intr_wait(Cpu* cpu, std::uint32_t mask, bool discard_old, st
         } else {
             // A request is pending but did not satisfy the wait (or is not
             // acknowledged by the handler): give up the slice so time moves.
+            runtime(cpu->id).irq_budget_reserve = 0;
             cpu->budget = 0;
             Fiber::yield();
         }
