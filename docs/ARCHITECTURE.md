@@ -143,6 +143,12 @@ Regular BG/OBJ palette RAM also maintains decoded colours eagerly on each
 accepted write and reset; ignored byte stores remain ignored. Extended palettes
 stay on the live VRAM path, including overlapping mappings. Scalar-reference
 tests cover reset, mirrored/boundary writes and both engines' BG/OBJ output.
+GPU2D also converts four output colours at a time on supported x86-64 targets,
+dispatching master brightness once per line. Integer SSE2 arithmetic preserves
+the exact `floor(channel * 255 / 31)` expansion and brightness truncation, not
+bit replication. Other targets retain the cached scalar output tables.
+Reference tests exhaust every five-bit component, brightness mode/factor and
+vector lane on both engines, including register changes and reset.
 On supported x86-64 targets, GPU3D packs four non-fog framebuffer pixels at a
 time with SSE2 using the scalar RGB6/alpha5 masks and shifts. Fog-containing
 groups, tails and other architectures keep scalar packing and fog mutation
