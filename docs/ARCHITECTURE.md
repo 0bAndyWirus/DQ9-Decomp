@@ -45,6 +45,14 @@ compiled game builds remain private and must not be published.
 - Shared-code region `MOV pc, lr` returns targeting the same region resume through its dispatcher; external returns leave the region after recording the guest return target.
 - Guest execution contexts map onto host fibers; context-switch primitives are runtime services, while scheduling decisions remain in generated code.
 
+The SPU keeps each busy channel's elapsed phase as a global tick origin and
+caches the earliest channel deadline. Calls before that deadline avoid the
+16-channel phase scan; timer writes and starts lower the cached deadline when
+needed. Capture and output-DAC step boundaries and channel event order are
+unchanged. Silent samples skip only the subsequent zero-valued pan/mix math.
+ROM-free tests compare the original scalar scheduler's ordered memory accesses,
+capture bytes, registers and PCM under randomized writes and interval splits.
+
 `MachineConfig::guest_abi` supplies optional CPU context layouts without embedding
 title-specific offsets in the runtime. `SessionConfig::abi_config_path` or
 `DQ9_ABI_CONFIG` selects the caller's local INI metadata; the SDL host exposes
