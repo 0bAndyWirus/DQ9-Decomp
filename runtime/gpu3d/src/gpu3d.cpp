@@ -1632,6 +1632,19 @@ struct Gpu3D::Impl {
         return static_cast<std::uint16_t>(raw >> ((addr & 2U) * 8U));
     }
 
+    FramePixel clear_frame_pixel() const {
+        const auto clear_color = get32(0x04000350U);
+        const auto clear_depth = depth15_to24(
+            static_cast<std::uint16_t>(get32(0x04000354U) & 0x7fffU));
+        const auto id = static_cast<std::uint8_t>((clear_color >> 24) & 63U);
+        const bool fog = (clear_color & (1U << 15)) != 0U;
+        const auto alpha = static_cast<std::uint8_t>((clear_color >> 16) & 31U);
+        const auto red = expand6(color5(static_cast<std::uint16_t>(clear_color), 0));
+        const auto green = expand6(color5(static_cast<std::uint16_t>(clear_color), 5));
+        const auto blue = expand6(color5(static_cast<std::uint16_t>(clear_color), 10));
+        return FramePixel{red, green, blue, alpha, clear_depth, id, fog};
+    }
+
     template<bool Capture = false, bool Scaled = false>
     void clear_framebuffer(int y_begin, int y_end) {
         static_assert(!Capture || !Scaled, "debug capture is native-only");
@@ -1645,20 +1658,12 @@ struct Gpu3D::Impl {
             for (int band = y_begin / tgt_.band_height; band < (y_end + tgt_.band_height - 1) / tgt_.band_height; ++band)
                 capture_data->polygon_touches[band].fill(0);
         }
-        const auto clear_color = get32(0x04000350U);
-        const auto clear_depth = depth15_to24(
-            static_cast<std::uint16_t>(get32(0x04000354U) & 0x7fffU));
-        const auto id = static_cast<std::uint8_t>((clear_color >> 24) & 63U);
-        const bool fog = (clear_color & (1U << 15)) != 0U;
-        const auto alpha = static_cast<std::uint8_t>((clear_color >> 16) & 31U);
-        const auto red = expand6(color5(static_cast<std::uint16_t>(clear_color), 0));
-        const auto green = expand6(color5(static_cast<std::uint16_t>(clear_color), 5));
-        const auto blue = expand6(color5(static_cast<std::uint16_t>(clear_color), 10));
+        const auto clear = clear_frame_pixel();
         const bool bitmap = (disp3d & (1U << 14)) != 0U;
         if (!bitmap) {
             std::fill(tgt_.fb + y_begin * tgt_.width,
                       tgt_.fb + y_end * tgt_.width,
-                      FramePixel{red, green, blue, alpha, clear_depth, id, fog});
+                      clear);
             return;
         }
         const auto* color_slot = texture_source.texture_slot(2);
@@ -1670,7 +1675,7 @@ struct Gpu3D::Impl {
              y < static_cast<std::size_t>(y_end); ++y) {
             const auto source_y = Scaled ? y / tgt_.scale : y;
             for (std::size_t x = 0; x < static_cast<std::size_t>(tgt_.width); ++x) {
-                auto pixel = FramePixel{red, green, blue, alpha, clear_depth, id, fog};
+                auto pixel = clear;
                 if (bitmap) {
                     // Rear-plane VRAM stays at native resolution. Specializing
                     // this division away preserves the native clear-image path.
@@ -2848,6 +2853,19 @@ struct Gpu3D::Impl {
 
     template<bool Capture, bool Scaled = false>
     void render_target() {
+        if constexpr (!Capture) {
+            if (render_polygon_count == 0U && (disp3d & ((1U << 14) | (1U << 5))) == 0U) {
+                auto pixel = clear_frame_pixel();
+                // pack_rows mutates the framebuffer when fog is enabled; retain
+                // that post-fog state as well as its packed presentation value.
+                if (pixel.fog) apply_fog(pixel, pixel.depth);
+                const auto pixels = static_cast<std::size_t>(tgt_.width) * tgt_.height;
+                std::fill(tgt_.fb, tgt_.fb + pixels, pixel);
+                std::fill(tgt_.out, tgt_.out + pixels,
+                          pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha));
+                return;
+            }
+        }
         if (pool->worker_count() <= 1) {
             // Inline means one full-frame pass, not eight serialized bands.
             // No pool submission, worker, or band preparation storage is needed.
@@ -3017,8 +3035,8 @@ std::array<std::uint32_t, 4> gpu3d_detail::Gpu3DTestAccess::clear_pixel(Gpu3D& g
 }
 
 std::array<std::uint32_t, 4> gpu3d_detail::Gpu3DTestAccess::framebuffer_pixel(
-    const Gpu3D& gpu, unsigned index) {
-    const auto& pixel = gpu.impl_->framebuffer[index];
+    const Gpu3D& gpu, unsigned index, bool scaled) {
+    const auto& pixel = scaled ? gpu.impl_->hires_fb[index] : gpu.impl_->framebuffer[index];
     return {pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha), pixel.depth,
         pixel.polygon_id | (static_cast<std::uint32_t>(pixel.translucent_polygon_id) << 8U),
         static_cast<std::uint32_t>(pixel.fog) | (static_cast<std::uint32_t>(pixel.stencil) << 1U) |
