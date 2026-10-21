@@ -45,6 +45,18 @@ compiled game builds remain private and must not be published.
 - Shared-code region `MOV pc, lr` returns targeting the same region resume through its dispatcher; external returns leave the region after recording the guest return target.
 - Guest execution contexts map onto host fibers; context-switch primitives are runtime services, while scheduling decisions remain in generated code.
 
+Hardware timers accumulate elapsed ticks lazily until their earliest overflow
+deadline, rather than updating eight counters on every scheduler slice. Timer
+reads and writes synchronize counters first; writes recompute the deadline.
+Overflow/IRQ/cascade order and the scheduler's existing service boundaries are
+unchanged. A prescaler reduction that retains an overdue phase takes effect on
+the next positive step, not a same-tick read. Seeded scalar-reference tests
+compare both CPUs' counters, controls, synchronized phases and interrupt flags.
+Exact IRQ slice limits project elapsed clocks into the synchronized counter
+epoch, retaining downstream cascade-IRQ deadlines without forcing a counter
+scan on ordinary slices. Forced IRQ checkpoints keep the scheduler's positive
+budget reserve/carry unchanged.
+
 The SPU keeps each busy channel's elapsed phase as a global tick origin and
 caches the earliest channel deadline. Calls before that deadline avoid the
 16-channel phase scan; timer writes and starts lower the cached deadline when

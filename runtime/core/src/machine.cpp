@@ -84,6 +84,8 @@ void Machine::Impl::reset() {
     io_shadow[1].fill(0);
     irq = {};
     timers = {};
+    timers_synced_tick = 0;
+    timers_due_tick = detail::kNoTimerDue;
     dmas = {};
     gx_dma_active = false;
     ipc = {};

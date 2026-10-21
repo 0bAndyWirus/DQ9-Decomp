@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -37,6 +38,7 @@ inline constexpr std::uint64_t kLineTicks = 2130;
 inline constexpr std::uint64_t kHBlankTick = 1606;
 inline constexpr unsigned kLinesPerFrame = 263;
 inline constexpr unsigned kVBlankLine = 192;
+inline constexpr std::uint64_t kNoTimerDue = std::numeric_limits<std::uint64_t>::max();
 
 enum class Bank : unsigned { UsrSys, Fiq, Irq, Svc, Abt, Und };
 
@@ -236,6 +238,9 @@ struct Machine::Impl {
     std::array<std::uint8_t, 0x1000> io_shadow[2]{};
     std::array<IrqState, 2> irq{};
     std::array<TimerState, 2 * 4> timers{};
+    // Counts and prescaler phases are materialized at timers_synced_tick.
+    std::uint64_t timers_synced_tick = 0;
+    std::uint64_t timers_due_tick = detail::kNoTimerDue;
     std::array<DmaState, 2 * 4> dmas{};
     bool gx_dma_active = false;
     IpcState ipc{};
@@ -303,7 +308,8 @@ struct Machine::Impl {
     void process_hblank();
     void process_line_start();
     std::uint64_t timer_irq_boundary(std::uint64_t limit) const;
-    void run_timers(std::uint64_t ticks);
+    void sync_timers();
+    void refresh_timer_deadline();
     void timer_increment(unsigned cpu_index, unsigned timer_index, std::uint64_t increments);
     void enable_dma(unsigned cpu_index, unsigned channel);
     void trigger_dma(unsigned cpu_index, unsigned mode);
