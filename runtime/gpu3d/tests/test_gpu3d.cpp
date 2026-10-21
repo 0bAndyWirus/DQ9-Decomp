@@ -2793,6 +2793,46 @@ void test_batch_spans_match_original_fragments() {
     std::cout << "PASS: batch/scalar spans match original shading/depth/blend, 4096 randomized cases\n";
 }
 
+void test_pack_pixels_matches_scalar() {
+    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
+    Gpu3D gpu;
+    std::mt19937 random(0x9ac405U);
+    constexpr std::array<unsigned, 12> counts{0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 64, 253};
+    for (unsigned fog_config = 0; fog_config < 5; ++fog_config) {
+        constexpr std::array<unsigned, 5> shifts{0, 0, 4, 10, 15};
+        gpu.io_write(0x04000060U, fog_config == 0U ? 0U :
+            (1U << 7U) | (shifts[fog_config] << 8U) | (fog_config == 2U ? 1U << 6U : 0U), 16);
+        gpu.io_write(0x04000358U, random(), 32);
+        gpu.io_write(0x0400035cU, random(), 16);
+        for (unsigned i = 0; i < 32; ++i)
+            gpu.io_write(0x04000360U + i, random() & 127U, 8);
+        for (bool capture : {false, true}) {
+            for (unsigned fog_mask = 0; fog_mask < 16; ++fog_mask) {
+                for (unsigned first = 0; first < 4; ++first) {
+                    for (unsigned count : counts) {
+                        Access::PackState initial{};
+                        for (unsigned i = 0; i < initial.size(); ++i) {
+                            initial[i] = {static_cast<std::uint32_t>(random()),
+                                static_cast<std::uint32_t>(random()) & 0xffffffU,
+                                static_cast<std::uint32_t>(random()),
+                                (static_cast<std::uint32_t>(random()) & 30U) |
+                                    ((fog_mask >> ((i - first) & 3U)) & 1U),
+                                static_cast<std::uint32_t>(random())};
+                        }
+                        const auto expected = Access::pack_pixels(gpu, initial, first, count, capture, true);
+                        const auto actual = Access::pack_pixels(gpu, initial, first, count, capture, false);
+                        if (actual == expected) continue;
+                        std::cerr << "FAIL: packing scalar reference fog_config=" << fog_config
+                                  << " capture=" << capture << " mask=" << fog_mask
+                                  << " first=" << first << " count=" << count << '\n';
+                        std::exit(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
 static std::array<std::uint32_t, 4> reference_clear_pixel(std::uint32_t color, std::uint32_t depth) {
     const auto expand = [](unsigned value) { return value == 0 ? 0 : value * 2U + 1U; };
     return {expand(color & 31U) | (expand((color >> 5U) & 31U) << 6U) |
@@ -3063,6 +3103,35 @@ void band_scene(Gpu3D& gpu, TestTextureSource& source, BandScene scene, int vari
         break;
     }
     submit_frame(gpu, sort_mode);
+}
+
+void test_pack_targets_match_scalar() {
+    using Access = dsr::gpu3d_detail::Gpu3DTestAccess;
+    for (int threads : {0, 2, 6}) {
+        for (bool capture : {false, true}) {
+            for (int scale : {1, 2, 4}) {
+                for (auto scene : {BandScene::Gradient, BandScene::EdgesFog}) {
+                    TestTextureSource source;
+                    fill_band_textures(source);
+                    Gpu3D gpu;
+                    gpu.set_render_threads(threads);
+                    gpu.set_capture_opaque_only(capture);
+                    gpu.set_output_scale(scale);
+                    band_scene(gpu, source, scene, 0);
+                    for (unsigned frame = 0; frame < 2; ++frame) {
+                        if (frame != 0U) {
+                            gpu.io_write(0x04000350U, (13U << 16) | 0x03e0U | (19U << 24), 32);
+                            gpu.io_write(0x04000358U, (7U << 16) | 0x7c00U, 32);
+                            gpu.render_start();
+                        }
+                        if (!check(Access::packed_targets_match_scalar(gpu),
+                                   "all native/scaled pixels and capture IDs match scalar packing"))
+                            std::exit(1);
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct BandSnapshot {
@@ -3693,6 +3762,8 @@ int main() {
     test_batch_spans_match_original_fragments();
     test_uniform_clear_matches_reference();
     test_uniform_clear_targets_match_reference();
+    test_pack_pixels_matches_scalar();
+    test_pack_targets_match_scalar();
     test_shade_pixel_matches_reference();
     test_geometry_reference_command_semantics();
     test_inclusive_viewport_coverage();

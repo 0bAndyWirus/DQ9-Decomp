@@ -37,6 +37,11 @@ struct Gpu3DTestAccess {
         int x_left, int x_right, const std::array<float, 7>& left,
         const std::array<float, 7>& right, const SpanState& initial,
         bool front_facing, bool translucent_polygon, bool w_depth, bool batch);
+    // RGBA bytes, depth, IDs (pixel/translucent/captured), flags, packed output.
+    using PackState = std::array<std::array<std::uint32_t, 5>, 256>;
+    static PackState pack_pixels(Gpu3D& gpu, const PackState& initial,
+        unsigned first, unsigned count, bool capture, bool scalar);
+    static bool packed_targets_match_scalar(const Gpu3D& gpu);
 };
 
 } // namespace dsr::gpu3d_detail
