@@ -1098,6 +1098,64 @@ void test_random_text_rows_reference() {
     }
 }
 
+void test_pack_line_reference() {
+    using Access = dsr::gpu2d_detail::Gpu2DTestAccess;
+    dsr::Gpu2D gpu;
+    std::mt19937 random(0x2D504143U);
+    std::array<std::array<std::uint8_t, 4>, 256> input{};
+    std::array<std::uint32_t, 256> output{};
+    const auto check = [&](bool engine_b, std::uint16_t master) {
+        Access::pack_line(gpu, engine_b, input, output);
+        for (std::size_t x = 0; x < input.size(); ++x) {
+            const auto& c = input[x];
+            const auto raw = static_cast<std::uint16_t>(c[0] | (c[1] << 5U) | (c[2] << 10U));
+            assert(output[x] == reference_argb(raw, master));
+        }
+    };
+    // Exhaustively prove the reciprocal for all legal component inputs,
+    // including the values for which bit replication is not floor(c*255/31).
+    for (unsigned c = 0; c < 32U; ++c) {
+        assert(((c * 255U * 16913U) >> 19U) == c * 255U / 31U);
+    }
+    for (unsigned mode = 0; mode < 4U; ++mode) {
+        for (unsigned factor = 0; factor < 32U; ++factor) {
+            const auto master_a = static_cast<std::uint16_t>((mode << 14U) | factor);
+            const auto master_b = static_cast<std::uint16_t>(((3U - mode) << 14U) | (31U - factor));
+            write16(gpu, kA + 0x6CU, master_a);
+            write16(gpu, kA + 0x1000U + 0x6CU, master_b);
+            // Each channel covers all 32 inputs in every vector lane, including
+            // the first and last vectors. Alpha must never affect host output.
+            for (unsigned x = 0; x < input.size(); ++x) {
+                input[x] = {static_cast<std::uint8_t>((x / 4U + x % 4U) & 31U),
+                            static_cast<std::uint8_t>((x / 4U + 7U * (x % 4U)) & 31U),
+                            static_cast<std::uint8_t>((31U - x / 4U + x % 4U) & 31U),
+                            static_cast<std::uint8_t>(random())};
+            }
+            check(false, master_a);
+            check(true, master_b);
+            for (auto& c : input) {
+                c = {static_cast<std::uint8_t>(random() & 31U),
+                     static_cast<std::uint8_t>(random() & 31U),
+                     static_cast<std::uint8_t>(random() & 31U),
+                     static_cast<std::uint8_t>(random())};
+            }
+            check(true, master_b);
+            check(false, master_a);
+        }
+    }
+    // Exercise register changes without modifying the line, independently for
+    // each engine, and ensure reset discards any portable cached brightness.
+    for (const std::uint16_t master : {0x4010U, 0x801FU, 0xC010U, 0x4000U, 0x0000U}) {
+        write16(gpu, kA + 0x6CU, master);
+        write16(gpu, kA + 0x1000U + 0x6CU, master ^ 0xC000U);
+        check(false, master);
+        check(true, master ^ 0xC000U);
+    }
+    gpu.reset();
+    check(false, 0U);
+    check(true, 0U);
+}
+
 void test_output_reference() {
     dsr::Gpu2D gpu;
     set_power(gpu);
@@ -1529,6 +1587,7 @@ int main(int argc, char** argv) {
         {"random_text_reference", test_random_text_reference},
         {"random_text_rows_reference", test_random_text_rows_reference},
         {"output_reference", test_output_reference},
+        {"pack_line_reference", test_pack_line_reference},
         {"random_palette_reference", test_random_palette_reference},
         {"random_bitmap_reference", test_random_bitmap_reference},
         {"scratch_clear", test_scratch_clear_between_engines_and_lines},

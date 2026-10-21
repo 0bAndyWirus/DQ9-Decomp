@@ -13,6 +13,12 @@
 #include <cstdint>
 #include <limits>
 
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || \
+    (defined(__x86_64__) && defined(__GNUC__) && !defined(__clang__) && defined(__ELF__))
+#include <immintrin.h>
+#define DSR_X86_PACK_LINE 1
+#endif
+
 namespace dsr {
 namespace {
 
@@ -134,9 +140,11 @@ struct Engine {
     int last_affine_line = -1;
     std::array<std::array<Pixel, kScreenWidth>, 4> bg_mosaic{};
     std::array<Pixel, kScreenWidth> obj_mosaic{};
+#if !defined(DSR_X86_PACK_LINE)
     std::array<std::uint32_t, 32> output_r{}, output_g{}, output_b{};
     std::uint16_t output_master = 0U;
     bool output_valid = false;
+#endif
 };
 
 constexpr std::uint32_t engine_reg(const Engine& e, std::uint32_t offset) {
@@ -1495,10 +1503,59 @@ struct Gpu2D::Impl {
         return pixel;
     }
 
-    // Cache brightness and RGB555 expansion once per register change. The
-    // output loop only indexes three small tables and packs their channels.
+#if defined(DSR_X86_PACK_LINE)
+    template<unsigned Mode>
+    static __m128i expand_output_channels(__m128i channels, __m128i factor) {
+        if constexpr (Mode == 1U) {
+            channels = _mm_add_epi16(channels, _mm_srli_epi16(_mm_mullo_epi16(
+                _mm_sub_epi16(_mm_set1_epi16(31), channels), factor), 4));
+        } else if constexpr (Mode == 2U) {
+            channels = _mm_sub_epi16(channels,
+                _mm_srli_epi16(_mm_mullo_epi16(channels, factor), 4));
+        }
+        // For c in [0,31], x = c*255 <= 7905. This unsigned reciprocal
+        // computes floor(x/31) exactly, unlike 5-to-8-bit replication.
+        const auto scaled = _mm_sub_epi16(_mm_slli_epi16(channels, 8), channels);
+        return _mm_srli_epi16(_mm_mulhi_epu16(scaled, _mm_set1_epi16(16913)), 3);
+    }
+
+    template<unsigned Mode>
+    static void pack_line_x86(const std::array<Color, kScreenWidth>& line,
+                              std::uint32_t* output, std::uint8_t brightness) {
+        static_assert(sizeof(Color) == 4U);
+        const auto zero = _mm_setzero_si128();
+        const auto factor = _mm_set1_epi16(brightness);
+        const auto rb_mask = _mm_set1_epi32(0x00FF00FF);
+        const auto g_mask = _mm_set1_epi32(0x0000FF00);
+        const auto alpha = _mm_set1_epi32(-16777216);
+        for (std::size_t x = 0; x < kScreenWidth; x += 4U) {
+            const auto colors = _mm_loadu_si128(reinterpret_cast<const __m128i*>(line.data() + x));
+            const auto lo = expand_output_channels<Mode>(_mm_unpacklo_epi8(colors, zero), factor);
+            const auto hi = expand_output_channels<Mode>(_mm_unpackhi_epi8(colors, zero), factor);
+            const auto bytes = _mm_packus_epi16(lo, hi);
+            // Color bytes are RGBA; little-endian host ARGB needs BGRA.
+            const auto rb = _mm_and_si128(_mm_or_si128(
+                _mm_slli_epi32(bytes, 16), _mm_srli_epi32(bytes, 16)), rb_mask);
+            const auto packed = _mm_or_si128(alpha,
+                _mm_or_si128(rb, _mm_and_si128(bytes, g_mask)));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(output + x), packed);
+        }
+    }
+#endif
+
+    // Dispatch brightness once per line; portable targets cache exact RGB555
+    // expansion tables instead of repeating brightness arithmetic per pixel.
     static void pack_line(Engine& engine, const std::array<Color, kScreenWidth>& line,
                           std::uint32_t* output, std::uint16_t master) {
+#if defined(DSR_X86_PACK_LINE)
+        (void)engine;
+        const auto factor = clamp_factor(master & 31U);
+        switch ((master >> 14U) & 3U) {
+        case 1U: pack_line_x86<1U>(line, output, factor); break;
+        case 2U: pack_line_x86<2U>(line, output, factor); break;
+        default: pack_line_x86<0U>(line, output, factor); break;
+        }
+#else
         if (!engine.output_valid || engine.output_master != master) {
             const auto mode = (master >> 14U) & 3U;
             const auto factor = clamp_factor(master & 31U);
@@ -1521,6 +1578,7 @@ struct Gpu2D::Impl {
             const auto color = line[x];
             output[x] = engine.output_r[color.r] | engine.output_g[color.g] | engine.output_b[color.b];
         }
+#endif
     }
 
     void capture_line(int y) {
@@ -1809,6 +1867,19 @@ struct Gpu2D::Impl {
 void gpu2d_detail::Gpu2DTestAccess::write_bank_byte(
         Gpu2D& gpu, std::uint8_t bank, std::uint32_t offset, std::uint8_t value) {
     gpu.impl_->write_bank_byte(bank, offset, value);
+}
+
+void gpu2d_detail::Gpu2DTestAccess::pack_line(
+        Gpu2D& gpu, bool engine_b,
+        const std::array<std::array<std::uint8_t, 4>, 256>& input,
+        std::array<std::uint32_t, 256>& output) {
+    std::array<Color, kScreenWidth> line{};
+    for (std::size_t x = 0; x < line.size(); ++x) {
+        line[x] = {input[x][0], input[x][1], input[x][2], input[x][3]};
+    }
+    auto& engine = engine_b ? gpu.impl_->engine_b : gpu.impl_->engine_a;
+    Gpu2D::Impl::pack_line(engine, line, output.data(),
+        static_cast<std::uint16_t>(engine_reg(engine, 0x6CU)));
 }
 
 std::array<std::uint8_t, 4> gpu2d_detail::Gpu2DTestAccess::palette_color(
