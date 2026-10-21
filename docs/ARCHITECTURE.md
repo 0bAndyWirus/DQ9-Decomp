@@ -143,6 +143,11 @@ Regular BG/OBJ palette RAM also maintains decoded colours eagerly on each
 accepted write and reset; ignored byte stores remain ignored. Extended palettes
 stay on the live VRAM path, including overlapping mappings. Scalar-reference
 tests cover reset, mirrored/boundary writes and both engines' BG/OBJ output.
+On supported x86-64 targets, GPU3D packs four non-fog framebuffer pixels at a
+time with SSE2 using the scalar RGB6/alpha5 masks and shifts. Fog-containing
+groups, tails and other architectures keep scalar packing and fog mutation
+order. Capture IDs remain independent of packing. ROM-free scalar-reference
+tests cover channel bytes, fog masks, tails, offsets and native/scaled targets.
 Synthetic uniform-clear regressions seed every named framebuffer field with stale values, compare against the scalar register-clear result, and check complete native/scaled targets across render-thread counts and capture modes. The test state injector preserves facing metadata as well as colour, depth, IDs and stencil/fog flags; no framebuffer representation padding is compared.
 GPU3D rejects failed-depth fragments before texture sampling and colour shading. Depth-failed ID-zero shadow masks still update stencil; successful fragments retain the same shading and blend order. Regression coverage checks that both filled and wireframe hidden polygons avoid texture lookups while visible polygons still sample.
 Texture-palette address slots 6 and 7 mirror physical slots 1 and 2, matching the DS palette wrap.

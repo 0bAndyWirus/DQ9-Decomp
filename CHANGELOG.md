@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.3
+
+- **GPU3D framebuffer packing:** non-fog pixels are packed four at a time with SSE2 (scalar fallback elsewhere and for fog groups/tails). Single-thread instructions retired versus v0.4.2, medians of three: boot -5.0% (cycles -3.1%), movie -4.2% (-2.9%), activity -2.2% (-1.7%). Output (five-language boot hashes, English WAV, render-thread 0/2/3 streams, saves) is byte-identical. Two further attempts (window span fill, toon-table cache) were measured and rejected.
+
 ## v0.4.2
 
 - **Output-identical speedups, measured by instruction count:** SPU work is scheduled by deadline and silent samples skip mixing, regular BG/OBJ palette colours are cached and updated on write, and hardware timers synchronise only at overflow deadlines or timer I/O (IRQ/cascade ordering preserved). Single-thread user instructions retired versus v0.4.1, medians of three: boot 1,500 frames -19.4% (cycles -15.7%), 6,000-frame movie -13.3% (-10.4%), 12,500-frame activity run -8.1% (-7.2%); with two render threads wall-clock medians improved 9.8% / 8.7% / 5.7% (secondary metric). Five-language boot hashes, English WAV, render-thread 0/2/3 streams and saves are byte-identical to v0.4.1. A GPU3D empty-target fill optimisation was rejected because it cost cycles. Earlier wall-clock-only perf attempts in v0.4.0 were inconclusive on this noisy machine; the instruction-count method replaces them.
