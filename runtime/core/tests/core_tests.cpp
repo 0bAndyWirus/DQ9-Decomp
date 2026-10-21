@@ -73,6 +73,29 @@ void frame_key_waiter(Cpu* cpu) {
     }
 }
 
+std::array<std::array<std::uint64_t, 3>, 2> timer_irq_ticks{};
+std::array<unsigned, 2> timer_irq_counts{};
+std::array<std::uint64_t, 3> timer_guest_ticks{};
+unsigned timer_guest_count = 0;
+
+void timer_irq_entry(Cpu* cpu) {
+    const unsigned ci = static_cast<unsigned>(cpu->id);
+    if (timer_irq_counts[ci] < timer_irq_ticks[ci].size())
+        timer_irq_ticks[ci][timer_irq_counts[ci]] = cpu->m->ticks();
+    ++timer_irq_counts[ci];
+    cpu->m->write32(cpu->id, 0x04000214, 0x78u);
+}
+
+void timer_irq_waiter(Cpu* cpu) {
+    for (;;) {
+        if (timer_guest_count < timer_guest_ticks.size())
+            timer_guest_ticks[timer_guest_count] = cpu->m->ticks();
+        ++timer_guest_count;
+        cpu->budget = 0;
+        dsr_checkpoint(cpu, 0x02001000);
+    }
+}
+
 
 int overlay_choice = 0;
 bool call_overlay = false;
@@ -265,6 +288,99 @@ void test_irq_and_nested_return() {
     check(cpu.cpsr_ctrl == kModeIrq, "BIOS IRQ wrapper restores the interrupted mode");
     check((machine.read32(CpuId::Arm9, 0x04000214) & ((1u << 5) | (1u << 6))) == 0,
           "nested IRQ handler acknowledges both IF bits");
+}
+
+void test_timer_irq_event_boundaries() {
+    struct TimerCase {
+        const char* name;
+        unsigned root;
+        unsigned irq_timer;
+        std::array<std::uint16_t, 4> reloads;
+        unsigned prescaler;
+        std::uint64_t warmup;
+        bool change_reload;
+        std::uint16_t next_reload;
+        std::array<std::uint64_t, 3> expected;
+    };
+    constexpr TimerCase cases[] = {
+        {"timer 0 /17", 0, 0, {0xffef}, 0, 0, false, 0, {17, 34, 51}},
+        {"timer 2 /63", 2, 2, {0, 0, 0xffc1}, 0, 0, false, 0, {63, 126, 189}},
+        {"prescale 64, phase 47", 0, 0, {0xffff}, 1, 47, false, 0, {64, 128, 192}},
+        {"prescale 256, phase 193", 0, 0, {0xffff}, 2, 193, false, 0, {256, 512, 768}},
+        {"prescale 1024, phase 1007", 0, 0, {0xffff}, 3, 1007, false, 0, {1024, 2048, 3072}},
+        {"changed reload /17 then /63", 0, 0, {0xffef}, 0, 5, true, 0xffc1, {17, 80, 143}},
+        {"one cascade", 0, 1, {0xfffb, 0xfffd}, 0, 0, false, 0, {15, 30, 45}},
+        {"two cascades /63", 0, 2, {0xfff9, 0xfffd, 0xfffd}, 0, 0, false, 0, {63, 126, 189}},
+        {"three cascades, /1 source", 0, 3, {0xffff, 0xfffd, 0xfffd, 0xfff9}, 0, 0, false, 0, {63, 126, 189}},
+    };
+    for (CpuId id : {CpuId::Arm9, CpuId::Arm7}) {
+        for (bool chunked : {false, true}) {
+            for (const TimerCase& test : cases) {
+                GuestFn main_slot = timer_irq_waiter;
+                GuestFn irq_slot = timer_irq_entry;
+                const std::int32_t module = id == CpuId::Arm9 ? kModuleArm9Main : kModuleArm7MainRam;
+                FnEntry entries[] = {
+                    {0x02001000, 4, module, 0, 0, &main_slot, "timer_irq_waiter"},
+                    {0x02002000, 4, module, 0, 0, &irq_slot, "timer_irq_entry"},
+                };
+                MachineConfig config;
+                config.direct_boot = false;
+                if (id == CpuId::Arm9) config.arm9_table = {entries, 2};
+                else config.arm7_table = {entries, 2};
+                Machine machine(config);
+                Cpu& cpu = machine.cpu(id);
+                cpu.cpsr_ctrl = kModeIrq;
+                cpu.r[13] = id == CpuId::Arm9 ? 0x00803fa0 : 0x0380ffa0;
+                machine.write32(id, id == CpuId::Arm9 ? 0x00803ffc : 0x0380fffc, 0x02002000);
+                machine.write32(id, 0x04000208, 1);
+                machine.write32(id, 0x04000210, 1u << (3 + test.irq_timer));
+                timer_irq_ticks = {};
+                timer_irq_counts = {};
+                timer_guest_ticks = {};
+                timer_guest_count = 0;
+                for (unsigned ti = test.root; ti <= test.irq_timer; ++ti) {
+                    const unsigned control = 0x80u |
+                        (ti == test.root ? test.prescaler : 4u) |
+                        (ti == test.irq_timer ? 0x40u : 0u);
+                    machine.write32(id, 0x04000100 + ti * 4,
+                                    (control << 16) | test.reloads[ti]);
+                }
+                machine.run_ticks(test.warmup);
+                if (test.change_reload)
+                    machine.write16(id, 0x04000100 + test.root * 4, test.next_reload);
+                machine.start_cpu(id, 0x02001000);
+                const std::uint64_t end = test.expected.back() + 1;
+                constexpr std::array<unsigned, 5> chunks = {5, 19, 3, 41, 7};
+                unsigned chunk_index = 0;
+                while (machine.ticks() < end) {
+                    std::uint64_t step = end - machine.ticks();
+                    if (chunked && step > chunks[chunk_index % chunks.size()])
+                        step = chunks[chunk_index % chunks.size()];
+                    machine.run_ticks(step);
+                    ++chunk_index;
+                }
+                const unsigned ci = static_cast<unsigned>(id);
+                const auto& observed = timer_irq_ticks[ci];
+                char message[320];
+                std::snprintf(message, sizeof(message),
+                    "%s %s %s IRQ ticks [%llu,%llu,%llu], calls %u; expected [%llu,%llu,%llu], calls 3",
+                    id == CpuId::Arm9 ? "ARM9" : "ARM7", test.name,
+                    chunked ? "chunked" : "single run",
+                    static_cast<unsigned long long>(observed[0]),
+                    static_cast<unsigned long long>(observed[1]),
+                    static_cast<unsigned long long>(observed[2]), timer_irq_counts[ci],
+                    static_cast<unsigned long long>(test.expected[0]),
+                    static_cast<unsigned long long>(test.expected[1]),
+                    static_cast<unsigned long long>(test.expected[2]));
+                check(timer_irq_counts[ci] == test.expected.size() && observed == test.expected, message);
+                check(machine.ticks() == end, "timer IRQ boundaries preserve the requested run_ticks duration");
+                if (!chunked && test.irq_timer == 3)
+                    check(timer_guest_count == 4 &&
+                          timer_guest_ticks == std::array<std::uint64_t, 3>{0, 63, 126},
+                          "a /1 cascade source does not force per-clock CPU slices before its downstream IRQ");
+            }
+        }
+    }
 }
 
 void test_timers_dma_and_ipc() {
@@ -1297,6 +1413,7 @@ void test_wifi_baseband_and_rf_transactions() {
 int run_core_tests() {
     test_main_ram_write_watch_expands_mirrors();
     test_irq_and_nested_return();
+    test_timer_irq_event_boundaries();
     test_timers_dma_and_ipc();
     test_core_register_contracts();
     test_rtc_core_io_contract();

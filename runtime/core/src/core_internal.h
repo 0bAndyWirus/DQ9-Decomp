@@ -81,6 +81,21 @@ struct CpuRuntime {
     std::uint32_t halt_wait_mask = 0xffffffffu;
     std::uint32_t entry = 0;
     std::uint32_t current_pc = 0;
+    // An IRQ checkpoint uses budget <= 0 as a sentinel, not as consumed time.
+    // Keep its displaced positive cycles separate from charged negative debt.
+    std::int64_t irq_budget_reserve = 0;
+
+    void force_irq_checkpoint() {
+        if (cpu.budget <= 0) return;
+        irq_budget_reserve += cpu.budget;
+        cpu.budget = 0;
+    }
+
+    void restore_irq_budget() {
+        cpu.budget += irq_budget_reserve;
+        irq_budget_reserve = 0;
+    }
+
     std::unique_ptr<Fiber> fiber;  // boot thread (runs the CPU entry point)
     // Guest threads on fibers (see thread.cpp). active_fiber is the fiber the
     // scheduler resumes for this CPU.
@@ -287,6 +302,7 @@ struct Machine::Impl {
     void advance_ticks(std::uint64_t ticks);
     void process_hblank();
     void process_line_start();
+    std::uint64_t timer_irq_boundary(std::uint64_t limit) const;
     void run_timers(std::uint64_t ticks);
     void timer_increment(unsigned cpu_index, unsigned timer_index, std::uint64_t increments);
     void enable_dma(unsigned cpu_index, unsigned channel);

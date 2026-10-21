@@ -131,6 +131,7 @@ void Machine::Impl::reset() {
         rt.halt_wait_mask = 0xffffffffu;
         rt.entry = 0;
         rt.current_pc = 0;
+        rt.irq_budget_reserve = 0;
         rt.fiber.reset();
         rt.page_read.fill(nullptr);
         rt.page_write.fill(nullptr);
