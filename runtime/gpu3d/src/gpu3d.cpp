@@ -188,6 +188,12 @@ struct FramePixel {
     bool stencil = false;
     std::uint8_t facing = 0; // 0 = nothing drawn yet, 1 = front-facing polygon, 2 = back-facing
 };
+#ifdef DSR_X86_SPANS
+// The SSE2 packer loads each complete pixel and gathers its leading RGBA word.
+static_assert(sizeof(FramePixel) == 16 && offsetof(FramePixel, r) == 0 &&
+              offsetof(FramePixel, g) == 1 && offsetof(FramePixel, b) == 2 &&
+              offsetof(FramePixel, alpha) == 3);
+#endif
 
 struct Target {
     FramePixel* fb;
@@ -2787,10 +2793,43 @@ struct Gpu3D::Impl {
     }
 
     template<bool Capture>
-    void pack_rows(int y_begin, int y_end) {
-        const auto first = static_cast<std::size_t>(y_begin) * tgt_.width;
-        const auto end = static_cast<std::size_t>(y_end) * tgt_.width;
-        for (auto i = first; i < end; ++i) {
+    void pack_pixels(std::size_t first, std::size_t end) {
+        auto i = first;
+#ifdef DSR_X86_SPANS
+        for (; end - i >= 4U; i += 4U) {
+            const auto* pixels = tgt_.fb + i;
+            if ((static_cast<unsigned>(pixels[0].fog) | pixels[1].fog |
+                 pixels[2].fog | pixels[3].fog) == 0U) {
+                const auto a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels));
+                const auto b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels + 1));
+                const auto c = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels + 2));
+                const auto d = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels + 3));
+                const auto rgba = _mm_unpacklo_epi64(
+                    _mm_unpacklo_epi32(a, b), _mm_unpacklo_epi32(c, d));
+                const auto ra = _mm_and_si128(rgba, _mm_set1_epi32(0x1f00003f));
+                const auto g = _mm_and_si128(_mm_srli_epi32(rgba, 2), _mm_set1_epi32(0x00000fc0));
+                const auto blue = _mm_and_si128(_mm_srli_epi32(rgba, 4), _mm_set1_epi32(0x0003f000));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(tgt_.out + i),
+                    _mm_or_si128(ra, _mm_or_si128(g, blue)));
+#ifdef DSR_GPU_CAPTURE_IDS
+                if constexpr (Capture)
+                    for (unsigned lane = 0; lane < 4U; ++lane)
+                        capture_data->polygon_ids[i + lane] = pixels[lane].polygon_id;
+#endif
+            } else {
+                // Keep fog application and framebuffer mutation in scalar order.
+                for (unsigned lane = 0; lane < 4U; ++lane) {
+                    auto& pixel = tgt_.fb[i + lane];
+                    if (pixel.fog) apply_fog(pixel, pixel.depth);
+                    tgt_.out[i + lane] = pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha);
+#ifdef DSR_GPU_CAPTURE_IDS
+                    if constexpr (Capture) capture_data->polygon_ids[i + lane] = pixel.polygon_id;
+#endif
+                }
+            }
+        }
+#endif
+        for (; i < end; ++i) {
             auto& pixel = tgt_.fb[i];
             if (pixel.fog) apply_fog(pixel, pixel.depth);
             tgt_.out[i] = pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha);
@@ -2798,6 +2837,12 @@ struct Gpu3D::Impl {
             if constexpr (Capture) capture_data->polygon_ids[i] = pixel.polygon_id;
 #endif
         }
+    }
+
+    template<bool Capture>
+    void pack_rows(int y_begin, int y_end) {
+        pack_pixels<Capture>(static_cast<std::size_t>(y_begin) * tgt_.width,
+                             static_cast<std::size_t>(y_end) * tgt_.width);
     }
 
     template<bool Capture>
@@ -3066,6 +3111,80 @@ gpu3d_detail::Gpu3DTestAccess::SpanState gpu3d_detail::Gpu3DTestAccess::draw_spa
     SpanState result{};
     for (std::size_t i = 0; i < result.size(); ++i) result[i] = framebuffer_pixel(gpu, i);
     return result;
+}
+
+gpu3d_detail::Gpu3DTestAccess::PackState gpu3d_detail::Gpu3DTestAccess::pack_pixels(
+    Gpu3D& gpu, const PackState& initial, unsigned first, unsigned count, bool capture, bool scalar) {
+    if (capture) gpu.set_capture_opaque_only(true);
+    for (std::size_t i = 0; i < initial.size(); ++i) {
+        const auto& state = initial[i];
+        auto& pixel = gpu.impl_->framebuffer[i];
+        pixel.r = static_cast<std::uint8_t>(state[0]);
+        pixel.g = static_cast<std::uint8_t>(state[0] >> 8U);
+        pixel.b = static_cast<std::uint8_t>(state[0] >> 16U);
+        pixel.alpha = static_cast<std::uint8_t>(state[0] >> 24U);
+        pixel.depth = state[1];
+        pixel.polygon_id = state[2] & 255U;
+        pixel.translucent_polygon_id = (state[2] >> 8U) & 255U;
+        pixel.fog = (state[3] & 1U) != 0U;
+        pixel.stencil = (state[3] & 2U) != 0U;
+        pixel.is_translucent_polygon = (state[3] & 4U) != 0U;
+        pixel.facing = (state[3] >> 3U) & 3U;
+        gpu.impl_->output[i] = state[4];
+#ifdef DSR_GPU_CAPTURE_IDS
+        if (capture) gpu.impl_->capture_data->polygon_ids[i] = (state[2] >> 16U) & 255U;
+#endif
+    }
+    if (scalar) {
+        for (unsigned i = first; i < first + count; ++i) {
+            auto& pixel = gpu.impl_->framebuffer[i];
+            if (pixel.fog) gpu.impl_->apply_fog(pixel, pixel.depth);
+            gpu.impl_->output[i] = pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha);
+#ifdef DSR_GPU_CAPTURE_IDS
+            if (capture) gpu.impl_->capture_data->polygon_ids[i] = pixel.polygon_id;
+#endif
+        }
+    } else if (capture) gpu.impl_->pack_pixels<true>(first, first + count);
+    else gpu.impl_->pack_pixels<false>(first, first + count);
+    PackState result = initial;
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        const auto& pixel = gpu.impl_->framebuffer[i];
+        result[i][0] = pixel.r | (static_cast<std::uint32_t>(pixel.g) << 8U) |
+            (static_cast<std::uint32_t>(pixel.b) << 16U) | (static_cast<std::uint32_t>(pixel.alpha) << 24U);
+        result[i][1] = pixel.depth;
+        result[i][2] = (initial[i][2] & 0xffff0000U) | pixel.polygon_id |
+            (static_cast<std::uint32_t>(pixel.translucent_polygon_id) << 8U);
+#ifdef DSR_GPU_CAPTURE_IDS
+        if (capture) result[i][2] = (result[i][2] & 0xff00ffffU) |
+            (static_cast<std::uint32_t>(gpu.impl_->capture_data->polygon_ids[i]) << 16U);
+#endif
+        result[i][3] = static_cast<std::uint32_t>(pixel.fog) |
+            (static_cast<std::uint32_t>(pixel.stencil) << 1U) |
+            (static_cast<std::uint32_t>(pixel.is_translucent_polygon) << 2U) |
+            (static_cast<std::uint32_t>(pixel.facing) << 3U);
+        result[i][4] = gpu.impl_->output[i];
+    }
+    return result;
+}
+
+bool gpu3d_detail::Gpu3DTestAccess::packed_targets_match_scalar(const Gpu3D& gpu) {
+    const auto matches = [](const FramePixel* pixels, const std::uint32_t* output, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i)
+            if (output[i] != pack_pixel(pixels[i].r, pixels[i].g, pixels[i].b, pixels[i].alpha))
+                return false;
+        return true;
+    };
+    if (!matches(gpu.impl_->framebuffer.data(), gpu.impl_->output.data(), kScreenPixels)) return false;
+    if (gpu.impl_->rendered_scale > 1 &&
+        !matches(gpu.impl_->hires_fb.data(), gpu.impl_->hires_out.data(), gpu.impl_->hires_fb.size()))
+        return false;
+#ifdef DSR_GPU_CAPTURE_IDS
+    if (gpu.impl_->opaque_only_valid)
+        for (std::size_t i = 0; i < kScreenPixels; ++i)
+            if (gpu.impl_->capture_data->polygon_ids[i] != gpu.impl_->framebuffer[i].polygon_id)
+                return false;
+#endif
+    return true;
 }
 
 Gpu3D::Gpu3D() : impl_(new Impl()) {}
