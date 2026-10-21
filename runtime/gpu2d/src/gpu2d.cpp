@@ -174,6 +174,7 @@ constexpr std::uint32_t bank_offset(std::uint8_t bank, std::uint32_t offset) {
 struct Gpu2D::Impl {
     std::array<std::uint8_t, 9U * kBankCapacity> vram{};
     std::array<std::uint8_t, 0x800U> palettes{};
+    std::array<Color, 0x800U / 2U> palette_colors{};
     std::array<std::uint8_t, 0x800U> oam{};
     std::array<std::uint8_t, 9U> vramcnt{}; // Banks A-I; 0x04000247 is WRAMCNT.
     Engine engine_a{};
@@ -630,28 +631,6 @@ struct Gpu2D::Impl {
         return bg;
     }
 
-    std::uint16_t palette_color(bool engine_a_palette, bool object,
-                                std::uint32_t index, bool extended, int bg = 0) const {
-        if (extended) {
-            const int slot = object ? 0 : bg_ext_slot(engine_a_palette ? engine_a : engine_b, bg);
-            const std::uint32_t off = object ? index * 2U : index * 2U;
-            return read_ext(engine_a_palette, object, static_cast<std::uint32_t>(slot), off);
-        }
-        const std::uint32_t base = engine_a_palette ? 0U : 0x400U;
-        const std::uint32_t object_offset = object ? 0x200U : 0U;
-        const std::uint32_t byte_offset = base + object_offset + (index & 0xFFU) * 2U;
-        return read_half(palettes, byte_offset);
-    }
-
-    std::uint16_t bg_palette_color(bool is_a, int bg, std::uint32_t color_index,
-                                   bool extended) const {
-        return palette_color(is_a, false, color_index, extended, bg);
-    }
-
-    std::uint16_t obj_palette_color(bool is_a, std::uint32_t color_index,
-                                    bool extended) const {
-        return palette_color(is_a, true, color_index, extended);
-    }
 
     static bool window_range(std::uint8_t coordinate, std::uint8_t start, std::uint8_t end) {
         if (start <= end) {
@@ -747,8 +726,8 @@ struct Gpu2D::Impl {
         const unsigned source_y = (screen_y + engine_half(engine, 0x12U + bg * 4U)) & height_mask;
         const unsigned map_row = screen_base + ((source_y >> 3U) & 31U) * 64U +
             (source_y >> 8U) * ((size & 1U) != 0U ? 0x1000U : 0x800U);
-        const auto* palette = Extended ? palette_pointer(is_a, false, bg)
-                                      : palettes.data() + (is_a ? 0U : 0x400U);
+        const auto* palette = Extended ? palette_pointer(is_a, false, bg) : nullptr;
+        const auto* regular_palette = palette_colors.data() + (is_a ? 0U : 0x200U);
         const BackgroundVram source{*this, arm9_pages.data() + (is_a ? 0U : 128U),
                                    is_a ? 0x06000000U : 0x06200000U,
                                    is_a ? 0x7FFFFU : 0x1FFFFU};
@@ -781,8 +760,14 @@ struct Gpu2D::Impl {
                 // The line was cleared once before sampling. Write the fields
                 // directly, avoiding a partially rebuilt 12-byte Pixel temporary.
                 Pixel& pixel = line[x + i];
-                pixel.color = palette != nullptr ? indexed_color(palette, palette_base + index)
-                    : direct_color(bg_palette_color(is_a, bg, palette_base + index, true));
+                if constexpr (Extended) {
+                    pixel.color = palette != nullptr ? indexed_color(palette, palette_base + index)
+                        : direct_color(read_ext(is_a, false,
+                            static_cast<std::uint32_t>(bg_ext_slot(engine, bg)),
+                            (palette_base + index) * 2U));
+                } else {
+                    pixel.color = regular_palette[palette_base + index];
+                }
                 pixel.priority = static_cast<std::uint8_t>(cnt & 3U);
                 pixel.layer = static_cast<std::uint8_t>(bg);
                 pixel.opaque = true;
@@ -872,14 +857,15 @@ struct Gpu2D::Impl {
         const std::uint32_t affine_reg_base = bg == 2 ? 0x20U : 0x30U;
         const std::int16_t pa = static_cast<std::int16_t>(engine_half(engine, affine_reg_base));
         const std::int16_t pc = static_cast<std::int16_t>(engine_half(engine, affine_reg_base + 4U));
-        const auto* regular_palette = palettes.data() + (is_a ? 0U : 0x400U);
+        const auto* regular_palette = palette_colors.data() + (is_a ? 0U : 0x200U);
         const auto* extended_palette = palette_pointer(is_a, false, bg);
         const auto palette_lookup = [&](std::uint32_t index, bool extended) {
             if (!extended) {
-                return indexed_color(regular_palette, index & 0xFFU);
+                return regular_palette[index & 0xFFU];
             }
             return extended_palette != nullptr ? indexed_color(extended_palette, index)
-                : direct_color(bg_palette_color(is_a, bg, index, true));
+                : direct_color(read_ext(is_a, false,
+                    static_cast<std::uint32_t>(bg_ext_slot(engine, bg)), index * 2U));
         };
         const BackgroundVram bg_vram{*this, arm9_pages.data() + (is_a ? 0U : 128U),
                                      is_a ? 0x06000000U : 0x06200000U,
@@ -1003,7 +989,7 @@ struct Gpu2D::Impl {
             {{{16, 8}, {32, 8}, {32, 16}, {64, 32}}},
             {{{8, 16}, {8, 32}, {16, 32}, {32, 64}}}}};
         const std::uint32_t object_oam_base = is_a ? 0U : 0x400U;
-        const auto* regular_palette = palettes.data() + (is_a ? 0x200U : 0x600U);
+        const auto* regular_palette = palette_colors.data() + (is_a ? 0x100U : 0x300U);
         const auto* extended_palette = palette_pointer(is_a, true, 0);
         for (int object = 0; object < 128; ++object) {
             const std::uint32_t attr_base = object_oam_base +
@@ -1152,9 +1138,9 @@ struct Gpu2D::Impl {
                             const std::uint32_t palette_index = color256
                                 ? (((attr2 >> 12U) & 0xFU) * 256U + color_index)
                                 : (((attr2 >> 12U) & 0xFU) * 16U + color_index);
-                            color = !ext ? indexed_color(regular_palette, palette_index & 0xFFU)
+                            color = !ext ? regular_palette[palette_index & 0xFFU]
                                 : extended_palette != nullptr ? indexed_color(extended_palette, palette_index)
-                                : direct_color(obj_palette_color(is_a, palette_index, true));
+                                : direct_color(read_ext(is_a, true, 0U, palette_index * 2U));
                         }
                     }
                     if (transparent) {
@@ -1339,7 +1325,6 @@ struct Gpu2D::Impl {
             const std::uint32_t priority = engine_half(engine, cnt_offset) & 3U;
             bg_order[priority][bg_order_count[priority]++] = static_cast<std::uint8_t>(bg);
         }
-        const std::uint16_t backdrop_raw = read_half(palettes, (is_a ? 0U : 0x400U));
         const std::uint16_t blend_control = engine_half(engine, 0x50U);
         const std::uint16_t blend_alpha = engine_half(engine, 0x52U);
         const std::uint32_t effect = (blend_control >> 6U) & 3U;
@@ -1350,7 +1335,7 @@ struct Gpu2D::Impl {
         const std::uint32_t evy = clamp_factor(engine_half(engine, 0x54U) & 31U);
         // A brightness effect on the backdrop applies to the backdrop colour itself, which
         // is then also what blending sees underneath.
-        Color backdrop = direct_color(backdrop_raw);
+        Color backdrop = palette_colors[is_a ? 0U : 0x200U];
         if ((target1 & (1U << 5U)) != 0U) {
             if (effect == 2U) {
                 backdrop = brighten(backdrop, evy);
@@ -1800,6 +1785,7 @@ struct Gpu2D::Impl {
     void reset() {
         vram.fill(0U);
         palettes.fill(0U);
+        palette_colors.fill(direct_color(0U));
         oam.fill(0U);
         vramcnt.fill(0U);
         engine_a = {};
@@ -1823,6 +1809,12 @@ struct Gpu2D::Impl {
 void gpu2d_detail::Gpu2DTestAccess::write_bank_byte(
         Gpu2D& gpu, std::uint8_t bank, std::uint32_t offset, std::uint8_t value) {
     gpu.impl_->write_bank_byte(bank, offset, value);
+}
+
+std::array<std::uint8_t, 4> gpu2d_detail::Gpu2DTestAccess::palette_color(
+        const Gpu2D& gpu, std::size_t index) {
+    const Color color = gpu.impl_->palette_colors[index];
+    return {color.r, color.g, color.b, color.alpha};
 }
 
 Gpu2D::Gpu2D() : impl_(new Impl) {
@@ -1882,7 +1874,14 @@ void Gpu2D::arm9_write(std::uint32_t addr, std::uint32_t value, int width) {
         return;
     }
     if (addr >= kPaletteBase && addr < kVramBase) {
-        store_le(impl_->palettes.data() + ((addr - kPaletteBase) & 0x7ffU), value, width);
+        const std::uint32_t offset = (addr - kPaletteBase) & 0x7ffU;
+        store_le(impl_->palettes.data() + offset, value, width);
+        // Decode the stored bytes, not the input value: preserve the store's
+        // byte order and refresh every halfword touched by a partial store.
+        // The bus naturally aligns 16/32-bit stores before routing them here.
+        for (std::uint32_t at = offset & ~1U; at < offset + bytes; at += 2U) {
+            impl_->palette_colors[at / 2U] = direct_color(read_half(impl_->palettes, at));
+        }
         return;
     }
     if (addr >= kOamBase && addr < 0x08000000U) {
