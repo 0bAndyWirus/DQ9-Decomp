@@ -426,7 +426,11 @@ jobs:
           New-Item -ItemType Directory -Force (Join-Path $kit 'tools'), (Join-Path $kit 'build') | Out-Null
           Copy-Item tools/windows/COLLECT-DIAGNOSTICS.bat $kit
           Copy-Item tools/collect_diagnostics.py, tools/audit_package.py (Join-Path $kit 'tools')
-          Set-Content -Encoding utf8 (Join-Path $kit 'build/build-log.txt') "fixture $kit $env:USERPROFILE"
+          Set-Content -Encoding utf8 (Join-Path $kit 'build/build-log.txt') @(
+            "fixture $kit $env:USERPROFILE"
+            'image /mnt/external-like/private/x.nds'
+            'image D:\Games\x.nds'
+          )
           '[ "tools/collect_diagnostics.py", "COLLECT-DIAGNOSTICS.bat" ]' | Set-Content -Encoding ascii (Join-Path $kit 'script-paths.json')
           & (Join-Path $kit 'COLLECT-DIAGNOSTICS.bat')
           $status = $LASTEXITCODE
@@ -447,7 +451,8 @@ jobs:
                   if name.endswith(".json"):
                       json.loads(text)
               tail = archive.read("build-log-tail.txt").decode("utf-8")
-              assert "<KIT>" in tail and "<HOME>" in tail
+              assert tail.splitlines() == ["fixture <path>", "image <path>", "image <path>"]
+              assert "/mnt/external-like" not in tail and "D:\\Games" not in tail
               assert len(json.loads(archive.read("script-sha256.json"))) == 2
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
