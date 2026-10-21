@@ -61,7 +61,8 @@ void Machine::Impl::run_ticks(std::uint64_t ticks) {
             ? detail::kHBlankTick - line_tick
             : detail::kLineTicks - line_tick;
         if (to_event == 0) to_event = detail::kLineTicks;
-        const std::uint64_t slice = std::min<std::uint64_t>({ticks, to_event, 128});
+        const std::uint64_t slice = timer_irq_boundary(
+            std::min<std::uint64_t>({ticks, to_event, 128}));
         run_cpu_slice(0, slice);
         if (!soft_reset_requested) run_cpu_slice(1, slice);
         advance_ticks(slice);

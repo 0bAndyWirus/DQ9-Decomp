@@ -287,6 +287,7 @@ struct Machine::Impl {
     void advance_ticks(std::uint64_t ticks);
     void process_hblank();
     void process_line_start();
+    std::uint64_t timer_irq_boundary(std::uint64_t limit) const;
     void run_timers(std::uint64_t ticks);
     void timer_increment(unsigned cpu_index, unsigned timer_index, std::uint64_t increments);
     void enable_dma(unsigned cpu_index, unsigned channel);

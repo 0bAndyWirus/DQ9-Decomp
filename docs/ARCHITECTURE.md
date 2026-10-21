@@ -80,6 +80,8 @@ from unsupported SWIs. No per-byte copy/decompression charge is invented.
 two/eight on ARM9 with/without enabled TCM. Other control SWIs retain their
 cooperative halt/wait accounting.
 
+Scheduler slices retain their 128-bus-tick upper bound but also stop at the next timer overflow that will set a timer IRQ flag on either CPU. The boundary calculation uses the enabled non-cascade source's current count, prescaler phase and reload, plus the current counts/reloads of any enabled cascade chain. Non-IRQ overflows are skipped: even a one-tick source does not require one-tick CPU slices when only a later cascade stage requests an IRQ. This removes whole-slice timer IRQ lateness for timer state known at the start of a slice; it does not change timer divisors, CPU cycle estimates or RNG state. Guest execution and IRQ entry still use generated-code checkpoints, and timer writes made during a running CPU slice are not timestamped within that slice. ROM-free core tests cover exact handler-observed ticks on ARM9 and ARM7, split `run_ticks` calls, prescaler remainders, reload changes and cascades. These checks do not establish cycle accuracy, an RNG fix or game/route parity.
+
 Slot-1 schedules its initial READY after `(8 + gap) * clocks + 4` machine
 ticks and holds READY until the card block is consumed. CPU polling can read
 successive words without another scheduler slice. One readiness callback lets
