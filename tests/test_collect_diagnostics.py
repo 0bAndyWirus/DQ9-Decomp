@@ -21,6 +21,42 @@ class DiagnosticsTests(unittest.TestCase):
         nested = diagnostics.redact_values({'path': str(root / 'build')}, root)
         self.assertEqual(json.loads(json.dumps(nested))['path'], '<KIT>' + os.sep + 'build')
 
+    def test_log_redacts_external_absolute_paths_and_quoted_variants(self):
+        cases = [
+            ('image /mnt/external-like/x.nds', 'image <path>'),
+            (r'image D:\Games\x.nds', 'image <path>'),
+            ('image D:/Games/x.nds', 'image <path>'),
+            (r'image \\fileserver\private share\x.nds', 'image <path>'),
+            ('image //fileserver/private share/x.nds', 'image <path>'),
+            (r'image \Games\x.nds', 'image <path>'),
+            ('image /mnt/external disk/Élodie !/x.nds', 'image <path>'),
+            (r'image D:\Games with spaces\Élodie !\x.nds', 'image <path>'),
+            ('image "/mnt/external disk/Élodie !/x.nds": refused', 'image <path>: refused'),
+            ("image '/mnt/external disk/Élodie !/x.nds': refused", 'image <path>: refused'),
+            (r'''image "D:\Games with spaces\x.nds": refused''', 'image <path>: refused'),
+            (r"""image 'D:\Games with spaces\x.nds': refused""", 'image <path>: refused'),
+            (r'''image "\\fileserver\private share\x.nds": refused''', 'image <path>: refused'),
+            ('--rom=/mnt/external-like/x.nds --language en', '--rom=<path>'),
+            (r'--rom=D:\Games\x.nds --language en', '--rom=<path>'),
+            ('c++ -I/mnt/external-like/include -c own.cpp', 'c++ -I<path>'),
+            (r'''image "/mnt/private \"quoted\" disk/x.nds": refused''', 'image <path>: refused'),
+            (r"""image '/mnt/private '\''quoted'\'' disk/x.nds': refused""", 'image <path>: refused'),
+            (r'''image "/mnt/private \"quoted\" disk/x.nds''', 'image <path>'),
+            (r'''copy "/mnt/external-like/x.nds" "D:\Games\x.nds": refused''', 'copy <path>: refused'),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(diagnostics.redact_log_paths(text + '\n'), expected + '\n')
+
+    def test_log_redaction_preserves_relative_paths_progress_and_line_boundaries(self):
+        text = ('[3/10] tools/build_port.py build\\game\\game\n'
+                'image /mnt/external-like/private disk/x.nds\r\n'
+                'error: missing input\n')
+        expected = ('[3/10] tools/build_port.py build\\game\\game\n'
+                    'image <path>\r\n'
+                    'error: missing input\n')
+        self.assertEqual(diagnostics.redact_log_paths(text), expected)
+
     def test_refuses_shared_forbidden_suffixes_and_save_derivatives(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'out.zip'
@@ -54,7 +90,12 @@ class DiagnosticsTests(unittest.TestCase):
             (root / 'build/game/game').mkdir(parents=True)
             (root / 'godot/bin').mkdir(parents=True)
             (root / 'build/gen/abi.ini').write_text('[cartridge]\nbackup_type=eeprom64k\nsecret=PRIVATE\n')
-            (root / 'build/build-log.txt').write_text(f'build in {root}\n', encoding='utf-8')
+            (root / 'build/build-log.txt').write_text(
+                f'build in {root / "private build"}\n'
+                'image /mnt/external-like/private/x.nds\n'
+                'image D:\\Games\\x.nds\n'
+                'image "/mnt/external disk/Élodie !/x.nds"\n'
+                'image "D:\\Games with spaces\\x.nds"\n', encoding='utf-8')
             for name in ['game.nds', 'save.sav.bak', 'build/gen/chunk.cpp',
                          'build/game/game/dq9.exe', 'godot/bin/session.dll', 'screenshot.png', 'inputs.txt']:
                 (root / name).write_bytes(b'PRIVATE CONTENT DO NOT COLLECT')
@@ -69,6 +110,8 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE', combined)
                 self.assertNotIn(str(root), combined)
                 self.assertIn('<KIT>', combined)
+                self.assertEqual(archive.read('build-log-tail.txt').decode(),
+                                 'build in <path>\n' + 'image <path>\n' * 4)
                 config = json.loads(archive.read('configuration.json'))
                 self.assertEqual(config['abi_backup_type'], 'eeprom64k')
                 binaries = json.loads(archive.read('binaries.json'))

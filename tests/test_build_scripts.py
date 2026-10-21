@@ -153,6 +153,14 @@ class BuildScriptTests(unittest.TestCase):
         (sdk / "bin/SDL2.dll").write_bytes(b"test SDK fixture")
         return root, generated, sdk
 
+    def test_windows_sdl_uses_shared_verified_download_and_safe_extraction(self):
+        script = (ROOT / "tools/build_windows.sh").read_text()
+        self.assertIn("download_verified(SDL_URL, archive, \"sha256\", SDL_SHA256)", script)
+        self.assertIn("extract_sdk(archive, deps)", script)
+        self.assertIn('PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"', script)
+        self.assertNotIn('tar -xzf "$archive"', script)
+        self.assertNotIn('curl -fL', script)
+
     def test_windows_zig_configuration_preserves_paths_with_spaces(self):
         root, generated, sdk = self._windows_fixture()
         result = subprocess.run(

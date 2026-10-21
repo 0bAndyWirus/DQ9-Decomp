@@ -61,6 +61,8 @@ BACKUP_TYPE_CHOICES = ("auto", "eeprom512b", "eeprom8k", "eeprom64k", "eeprom128
                        "flash256k", "flash512k", "flash1m", "flash8m")  # keep in sync with tools/derive_abi_config.py
 WORKSPACE_MARKER = "rom.sha256"  # local-only fingerprint of the image the workspace was extracted from
 SDL_VERSION = "2.30.12"
+# Official release-2.30.12 MinGW SDK; verify before extracting executable code.
+SDL_SHA256 = "dddafbf0705a8cbe1f97c69680886ce147ed4d38f1d04e03523681298e081b0f"
 SDL_URL = (
     "https://github.com/libsdl-org/SDL/releases/download/"
     f"release-{SDL_VERSION}/SDL2-devel-{SDL_VERSION}-mingw.tar.gz"
@@ -230,7 +232,7 @@ def windows_cmake_options(deps: Path, sdl: bool = True) -> list[str]:
         if not (root / "bin" / "SDL2.dll").is_file():
             deps.mkdir(parents=True, exist_ok=True)
             archive = deps / f"SDL2-devel-{SDL_VERSION}-mingw.tar.gz"
-            urllib.request.urlretrieve(SDL_URL, archive)
+            download_verified(SDL_URL, archive, "sha256", SDL_SHA256)
             extract_sdk(archive, deps)
         options += [
             f"-DDQ9_WINDOWS_SDL_ROOT={root}",

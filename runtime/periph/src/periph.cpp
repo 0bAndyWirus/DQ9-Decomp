@@ -25,6 +25,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <bcrypt.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -595,7 +596,7 @@ struct GameCard::Impl {
                 ++sequence;
             }
         }
-        // Also avoid occupied names belonging to non-regular entries or interrupted temp writes.
+        // Also avoid occupied names belonging to non-regular entries or interrupted stages.
         for (; sequence < 1'000'000; ++sequence) {
             char suffix[12]{};
             std::snprintf(suffix, sizeof(suffix), "-%06u.bak", sequence);
@@ -606,10 +607,8 @@ struct GameCard::Impl {
             const auto managed = directory / filename;
             auto target = managed;
             if (staged) target += ".pending";
-            const auto temp = save_temp_path(target);
             if (std::filesystem::exists(std::filesystem::symlink_status(target)) ||
-                (staged && std::filesystem::exists(std::filesystem::symlink_status(managed))) ||
-                std::filesystem::exists(std::filesystem::symlink_status(temp)))
+                (staged && std::filesystem::exists(std::filesystem::symlink_status(managed))))
                 continue;
             return target;
         }
@@ -693,14 +692,37 @@ struct GameCard::Impl {
     }
 
     static std::filesystem::path save_temp_path(const std::filesystem::path& target) {
-        auto temp = target;
+        std::array<std::uint8_t, 16> random{};
 #if defined(_WIN32)
-        temp += L".tmp.";
-        temp += std::to_wstring(GetCurrentProcessId());
+        if (BCryptGenRandom(nullptr, random.data(), static_cast<ULONG>(random.size()),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+            throw std::runtime_error("could not generate random save temp name");
 #else
-        temp += ".tmp.";
-        temp += std::to_string(::getpid());
+        const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        if (fd < 0)
+            throw std::system_error(errno, std::generic_category(), "open save temp entropy");
+        std::size_t received = 0;
+        while (received < random.size()) {
+            const ssize_t amount = ::read(fd, random.data() + received, random.size() - received);
+            if (amount < 0 && errno == EINTR) continue;
+            if (amount <= 0) {
+                const int error = amount < 0 ? errno : EIO;
+                ::close(fd);
+                throw std::system_error(error, std::generic_category(), "read save temp entropy");
+            }
+            received += static_cast<std::size_t>(amount);
+        }
+        if (::close(fd) != 0)
+            throw std::system_error(errno, std::generic_category(), "close save temp entropy");
 #endif
+        constexpr char hex[] = "0123456789abcdef";
+        std::array<char, 38> suffix{'.', 't', 'm', 'p', '.'};
+        for (std::size_t i = 0; i < random.size(); ++i) {
+            suffix[5 + i * 2] = hex[random[i] >> 4];
+            suffix[6 + i * 2] = hex[random[i] & 0x0f];
+        }
+        auto temp = target;
+        temp += suffix.data();
         return temp;
     }
 
@@ -709,8 +731,8 @@ struct GameCard::Impl {
                                   bool replace_existing = true) {
         const auto temp_path = save_temp_path(target);
 #if defined(_WIN32)
-        HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr,
-                                  replace_existing ? CREATE_ALWAYS : CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (file == INVALID_HANDLE_VALUE)
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
                                     "open save temp");
@@ -743,9 +765,8 @@ struct GameCard::Impl {
                                     "close save temp");
         }
 #else
-        const auto temp_name = temp_path.string();
-        const int fd = ::open(temp_name.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC |
-                              (replace_existing ? O_TRUNC : O_EXCL), 0600);
+        const int fd = ::open(temp_path.c_str(),
+                              O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd < 0) throw std::system_error(errno, std::generic_category(), "open save temp");
         std::size_t written = 0;
         while (written < bytes.size()) {
@@ -754,7 +775,7 @@ struct GameCard::Impl {
             if (amount <= 0) {
                 const int error = amount < 0 ? errno : EIO;
                 ::close(fd);
-                ::unlink(temp_name.c_str());
+                ::unlink(temp_path.c_str());
                 throw std::system_error(error, std::generic_category(), "write save temp");
             }
             written += static_cast<std::size_t>(amount);
@@ -762,12 +783,12 @@ struct GameCard::Impl {
         if (::fsync(fd) != 0) {
             const int error = errno;
             ::close(fd);
-            ::unlink(temp_name.c_str());
+            ::unlink(temp_path.c_str());
             throw std::system_error(error, std::generic_category(), "sync save temp");
         }
         if (::close(fd) != 0) {
             const int error = errno;
-            ::unlink(temp_name.c_str());
+            ::unlink(temp_path.c_str());
             throw std::system_error(error, std::generic_category(), "close save temp");
         }
 #endif

@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions DisableDelayedExpansion
 title DQ9-Decomp - build
 rem BUILD-DQ9.bat ["C:\path\game.nds"] [--godot]
 rem   No argument: asks for the ROM (you can drag the file into this window).
@@ -32,12 +32,15 @@ echo.
 
 pushd "%ROOT%" || goto failure
 if not exist "tools\build_port.py" goto failure_pop
+if not defined DQ9_BACKUP_TYPE set "DQ9_BACKUP_TYPE=eeprom64k"
 
 if defined ROM goto havarom
 set "INTERACTIVE=1"
 echo  Drag your European Dragon Quest IX .nds file into this window,
 set /p "ROM=  then press Enter: "
 if not defined ROM goto usage
+rem Remove drag-and-drop quotes before expanding prompt input in quoted commands.
+rem Delayed expansion stays disabled to preserve literal exclamation marks in paths.
 set "ROM=%ROM:"=%"
 for %%F in ("%ROM%") do set "ROM=%%~fF"
 :havarom
@@ -57,6 +60,16 @@ echo  Setup: creating a private Python environment in .venv ...
 if errorlevel 1 goto failure_pop
 :havevenv
 
+rem Read untrusted input from the environment, never by expanding it into cmd syntax.
+rem Only exact supported names may reach the quoted build argument below.
+".venv\Scripts\python.exe" -c "import os, sys; sys.exit(0 if os.environ.get('DQ9_BACKUP_TYPE') in ('auto', 'eeprom512b', 'eeprom8k', 'eeprom64k', 'eeprom128k', 'flash256k', 'flash512k', 'flash1m', 'flash8m') else 1)"
+if errorlevel 1 (
+  echo  [FAIL] Unsupported DQ9_BACKUP_TYPE. 1>&2
+  echo         Choose auto, eeprom512b, eeprom8k, eeprom64k, eeprom128k, 1>&2
+  echo         flash256k, flash512k, flash1m, or flash8m. 1>&2
+  goto failure_pop
+)
+
 if exist ".venv\dq9-deps-v1.ok" goto depsok
 echo  Setup: installing build tools (first run only; a few hundred MB) ...
 ".venv\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check PyYAML capstone unicorn cmake ninja ziglang==0.16.0
@@ -64,10 +77,9 @@ if errorlevel 1 goto failure_pop
 echo installed> ".venv\dq9-deps-v1.ok"
 :depsok
 
-if not defined DQ9_BACKUP_TYPE set "DQ9_BACKUP_TYPE=eeprom64k"
 echo  Building. The compile step is long and shows its progress.
 echo  Details are written to build\build-log.txt
-".venv\Scripts\python.exe" tools\build_port.py --rom "%ROM%" --backup-type %DQ9_BACKUP_TYPE% --quiet %GODOT_FLAGS%
+".venv\Scripts\python.exe" tools\build_port.py --rom "%ROM%" --backup-type "%DQ9_BACKUP_TYPE%" --quiet %GODOT_FLAGS%
 if errorlevel 1 goto failure_pop
 
 echo.

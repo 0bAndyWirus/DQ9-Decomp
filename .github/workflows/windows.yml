@@ -20,11 +20,11 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
       - name: Install SDL2
@@ -67,8 +67,8 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
           cache: pip
@@ -228,12 +228,51 @@ jobs:
           Assert-Equal (Read-Record $record) "--rom|$rom|--backup-type|eeprom64k|--quiet" 'prompt arguments'
           Remove-Item $record
 
+          # Prompt input is data, including shell metacharacters in real file names.
+          $metaRom = Join-Path $work 'game & (fixture) ^ 100% !.nds'
+          Set-Content -Encoding ascii $metaRom 'fixture'
+          $r = Invoke-Entry $bat '' ('"' + $metaRom + '"')
+          Assert-Equal $r.Code 0 'metacharacter prompt status'
+          Assert-Equal (Read-Record $record) "--rom|$metaRom|--backup-type|eeprom64k|--quiet" 'metacharacter prompt arguments'
+          Remove-Item $record
+
+          # Embedded quotes must not turn a pasted prompt value into commands.
+          $r = Invoke-Entry $bat '' ('"' + $rom + '" & echo INJECTED & rem "')
+          Assert-Equal $r.Code 1 'malicious ROM prompt status'
+          Assert-Match $r.Text 'ROM file not found' 'malicious ROM prompt message'
+          if ($r.Text -match '(?m)^[ \t]*INJECTED[ \t]*\r?$') { throw 'ROM prompt executed an injected command' }
+          if (Test-Path $record) { throw 'build tool must not run for a malicious ROM prompt' }
+
           # Argument form with --godot and a save-chip override.
           $env:DQ9_BACKUP_TYPE = 'flash512k'
           try { $r = Invoke-Entry $bat ('"' + $rom + '" --godot') } finally { $env:DQ9_BACKUP_TYPE = $null }
           Assert-Equal $r.Code 0 'godot status'
           Assert-Equal (Read-Record $record) "--rom|$rom|--backup-type|flash512k|--quiet|--godot|--fetch-godot-editor" 'godot arguments'
           Remove-Item $record
+
+          # Every supported chip name is accepted exactly and forwarded as one argument.
+          foreach ($backup in @('auto', 'eeprom512b', 'eeprom8k', 'eeprom64k', 'eeprom128k',
+                                 'flash256k', 'flash512k', 'flash1m', 'flash8m')) {
+            $env:DQ9_BACKUP_TYPE = $backup
+            try { $r = Invoke-Entry $bat ('"' + $rom + '"') } finally { $env:DQ9_BACKUP_TYPE = $null }
+            Assert-Equal $r.Code 0 "backup type $backup status"
+            Assert-Equal (Read-Record $record) "--rom|$rom|--backup-type|$backup|--quiet" "backup type $backup arguments"
+            Remove-Item $record
+          }
+
+          # Environment values must never be interpreted as cmd syntax, even with embedded quotes.
+          foreach ($backup in @('eeprom64k & echo INJECTED',
+                                 'eeprom64k" & echo INJECTED & rem "',
+                                 'eeprom64k|echo INJECTED', 'eeprom64k^&echo INJECTED',
+                                 'eeprom64k --godot', 'eeprom64kextra', 'eeprom64k ',
+                                 'EEPROM64K', '"eeprom64k"', "eeprom64k`r`neeprom8k")) {
+            $env:DQ9_BACKUP_TYPE = $backup
+            try { $r = Invoke-Entry $bat ('"' + $rom + '"') } finally { $env:DQ9_BACKUP_TYPE = $null }
+            Assert-Equal $r.Code 1 'invalid backup type status'
+            Assert-Match $r.Text 'Unsupported DQ9_BACKUP_TYPE' 'invalid backup type message'
+            if ($r.Text -match 'INJECTED') { throw 'backup type executed or echoed an injected command' }
+            if (Test-Path $record) { throw 'build tool must not run for an invalid backup type' }
+          }
 
           # A failing build returns status 1 and points at the log.
           $env:FAKE_EXIT = '5'
@@ -387,7 +426,11 @@ jobs:
           New-Item -ItemType Directory -Force (Join-Path $kit 'tools'), (Join-Path $kit 'build') | Out-Null
           Copy-Item tools/windows/COLLECT-DIAGNOSTICS.bat $kit
           Copy-Item tools/collect_diagnostics.py, tools/audit_package.py (Join-Path $kit 'tools')
-          Set-Content -Encoding utf8 (Join-Path $kit 'build/build-log.txt') "fixture $kit $env:USERPROFILE"
+          Set-Content -Encoding utf8 (Join-Path $kit 'build/build-log.txt') @(
+            "fixture $kit $env:USERPROFILE"
+            'image /mnt/external-like/private/x.nds'
+            'image D:\Games\x.nds'
+          )
           '[ "tools/collect_diagnostics.py", "COLLECT-DIAGNOSTICS.bat" ]' | Set-Content -Encoding ascii (Join-Path $kit 'script-paths.json')
           & (Join-Path $kit 'COLLECT-DIAGNOSTICS.bat')
           $status = $LASTEXITCODE
@@ -408,7 +451,8 @@ jobs:
                   if name.endswith(".json"):
                       json.loads(text)
               tail = archive.read("build-log-tail.txt").decode("utf-8")
-              assert "<KIT>" in tail and "<HOME>" in tail
+              assert tail.splitlines() == ["fixture <path>", "image <path>", "image <path>"]
+              assert "/mnt/external-like" not in tail and "D:\\Games" not in tail
               assert len(json.loads(archive.read("script-sha256.json"))) == 2
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

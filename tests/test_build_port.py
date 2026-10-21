@@ -129,6 +129,33 @@ class BuildPortTests(unittest.TestCase):
                 run.assert_called_once_with(sys.executable, "-m", "pip", "install", "ziglang==0.16.0")
                 self.assertEqual(build_port.tool_environment()["DQ9_ZIG_PYTHON"], sys.executable)
 
+    def test_sdl_download_rejects_tampering_before_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            deps = Path(directory)
+            def download(url, destination):
+                Path(destination).write_bytes(b"tampered SDL SDK")
+            with mock.patch.object(build_port, "os", self.windows_os()), \
+                    mock.patch.object(build_port.importlib, "import_module"), \
+                    mock.patch.object(build_port.urllib.request, "urlretrieve", side_effect=download), \
+                    mock.patch.object(build_port, "extract_sdk") as extract:
+                with self.assertRaisesRegex(SystemExit, "SHA256 mismatch"):
+                    build_port.windows_cmake_options(deps)
+                extract.assert_not_called()
+            self.assertFalse(list(deps.glob("*.download")))
+            self.assertFalse(list(deps.glob("*.tar.gz")))
+
+    def test_sdl_download_uses_pinned_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            deps = Path(directory)
+            with mock.patch.object(build_port, "os", self.windows_os()), \
+                    mock.patch.object(build_port.importlib, "import_module"), \
+                    mock.patch.object(build_port, "download_verified") as download, \
+                    mock.patch.object(build_port, "extract_sdk") as extract:
+                build_port.windows_cmake_options(deps)
+            archive = deps.resolve() / f"SDL2-devel-{build_port.SDL_VERSION}-mingw.tar.gz"
+            download.assert_called_once_with(build_port.SDL_URL, archive, "sha256", build_port.SDL_SHA256)
+            extract.assert_called_once_with(archive, deps.resolve())
+
     def test_switching_images_requires_a_clean_workspace(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

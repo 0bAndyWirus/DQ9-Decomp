@@ -70,6 +70,13 @@ else()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(DQ9_TEST_PYTHON "${Python3_EXECUTABLE}")
 endif()
+# The native Linux CLI test caps child memory so an unbounded-range regression
+# cannot exhaust the host. Windows CLI diagnostics are redirected to runtime.log.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME dq9_dump_frames_cli COMMAND "${DQ9_TEST_PYTHON}"
+    "${PROJECT_SOURCE_DIR}/tests/dump_frames_cli.py" --dq9 "$<TARGET_FILE:dq9>")
+  set_tests_properties(dq9_dump_frames_cli PROPERTIES TIMEOUT 180)
+endif()
 add_test(NAME debug_replay_parity COMMAND "${DQ9_TEST_PYTHON}"
   "${PROJECT_SOURCE_DIR}/tests/debug_replay_parity.py"
   --dq9 "$<TARGET_FILE:dq9>"

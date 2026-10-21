@@ -21,7 +21,7 @@ Usage: tools/build_windows.sh [--sdl-only | --godot-only | --both]
        [--gen DIR] [--jobs N] [--deps DIR] [--sdl-root DIR] [--no-ccache] [--test]
 
 Separately supplied generated sources are required: --gen DIR or DQ9_GEN.
-Requires the repository .venv, CMake, Ninja, curl and tar. Installs ziglang into
+Requires the repository .venv, CMake and Ninja. Installs ziglang into
 .venv if absent and downloads the official SDL2 MinGW SDK into ignored build/.
 --test requires Wine on PATH; no Windows execution is claimed without it.
 Environment: DQ9_GEN, GODOT_CPP_DIR (Godot 4.5 bindings), JOBS (default 6), DQ9_ZIG_PYTHON.
@@ -84,8 +84,8 @@ if [[ "$MODE" != godot ]]; then
     SDL_ROOT="$DEPS/SDL2-$SDL_VERSION/x86_64-w64-mingw32"
     if [[ ! -f "$SDL_ROOT/bin/SDL2.dll" ]]; then
       archive="$DEPS/SDL2-devel-$SDL_VERSION-mingw.tar.gz"
-      curl -fL --retry 2 "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VERSION/SDL2-devel-$SDL_VERSION-mingw.tar.gz" -o "$archive"
-      tar -xzf "$archive" -C "$DEPS"
+      # Share the native Windows builder's digest and safe archive extraction.
+      PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'import sys; from pathlib import Path; from tools.build_port import SDL_URL, SDL_SHA256, download_verified, extract_sdk; archive, deps = map(Path, sys.argv[1:]); download_verified(SDL_URL, archive, "sha256", SDL_SHA256); extract_sdk(archive, deps)' "$archive" "$DEPS"
     fi
   fi
   SDL_ROOT=$(cd "$SDL_ROOT" && pwd)
