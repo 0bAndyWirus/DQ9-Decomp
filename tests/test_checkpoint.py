@@ -107,6 +107,37 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("RECORDED oracle: 10 frames", output)
         self.assertNotIn("NOTE oracle:", self.invoke("run", "oracle", "--repeat", "1")[1])
 
+    def test_set_oracle_without_binary_or_rom(self):
+        self.assertEqual(self.add()[0], 0)
+        oracle = self.root / "oracle"
+        oracle.write_text("".join(f"{n} 0123456789abcdef fedcba9876543210\n" for n in range(3)))
+        self.mock_run.reset_mock()
+        out = io.StringIO()
+        with patch.dict("os.environ", {"DQ9_ROM": ""}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            status = checkpoint.main(["--ladder", str(self.root / "ladder"),
+                                      "--dq9", str(self.root / "missing-dq9"),
+                                      "set-oracle", "segment", str(oracle)])
+        self.assertEqual(status, 0, out.getvalue())
+        self.assertIn("ORACLE SET segment: 3 rows (frames 0-2)", out.getvalue())
+        self.mock_run.assert_not_called()
+        seg = self.root / "ladder/segment"
+        self.assertEqual(json.loads((seg / "segment.json").read_text())["oracle_hashes"], "oracle.hashes")
+        self.assertEqual((seg / "oracle.hashes").read_bytes(), oracle.read_bytes())
+        status, output = self.invoke("run", "segment", "--oracle", "--repeat", "1")
+        self.assertEqual(status, 0, output)
+        self.assertTrue(any(line.startswith("ORACLE segment:") for line in output.splitlines()))
+
+    def test_set_oracle_errors_do_not_run_game(self):
+        self.assertEqual(self.add()[0], 0)
+        self.mock_run.reset_mock()
+        bad = self.root / "bad-oracle"
+        bad.write_text("invalid\n")
+        for name, path in (("segment", self.root / "missing"), ("segment", bad),
+                           ("bad name", bad), ("missing", bad)):
+            status, output = self.invoke("set-oracle", name, str(path))
+            self.assertEqual(status, 2, output)
+        self.mock_run.assert_not_called()
+
     def test_failed_process_removes_new_segment_and_keeps_log(self):
         self.mock_run.side_effect = lambda command, **kwargs: subprocess.CompletedProcess(command, 7)
         status, output = self.add()
