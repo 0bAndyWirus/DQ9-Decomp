@@ -1,90 +1,87 @@
-# Roadmap
+# Roadmap to v1
 
-Ordered gates; no delivery dates or completion estimates. A failed gate stops dependent port work rather than being papered over. Linux, Windows and Steam Deck remain in every build/platform plan.
+Agreed with the project lead on 2026-10-27. v1 is the final planned release; after it the project only takes patches (see M8). No dates: each milestone is closed by its gate. Linux desktop is the primary platform; Windows and Steam Deck must work.
 
-## 0. Feasibility and legal review
+This roadmap states goals, not achieved results. Nothing here claims that the game is playable to completion, that the decompilation is complete, or that Windows or Steam Deck have been validated on hardware; see [Getting started](GETTING_STARTED.md#status-reviewed-2026-10-20) for dated observations.
 
-**Work:** Confirm authoritative EU release identification/provenance without sharing an image; map existing EU reverse-engineering/tool support and legal constraints; establish ownership/licensing policy.
+## v1 definition
 
-**Depends on:** Nothing.
+1. **Faithful port (SDL `dq9`)**: a host built locally from the user's own copy can play the European game from new game to the end credits, with persistent saves, on Linux. It runs statically recompiled original code ([architecture](ARCHITECTURE.md)).
+2. **Remaster build (Godot host)**: the same core with optional presentation upgrades. 1x mode is pixel-identical to SDL, and presentation settings never change simulation state.
+3. **Decompilation**: work on the remaining unmatched functions runs in parallel until v1; 100% is the stretch goal. Whatever remains at release is classified and documented with its blocker. Coverage totals stay private ([decompilation status](DECOMP_STATUS.md)).
+4. **DLC**: investigated only for content already present on the user's own cartridge image, enabled offline, never distributing game data (M7 decides).
+5. **Out of scope**: local wireless multiplayer, tag mode, online services, and Windows/Deck performance tuning beyond "works".
 
-**Acceptance:** Sourced region/revision evidence; documented differences/unknowns; counsel/rights assessment appropriate to planned conduct; data-handling policy. No assets enter repository.
+Data policy unchanged: no ROM, ROM-derived bytes, assets, saves, captures, generated game code or game builds enter this repository or any release ([LEGAL.md](../LEGAL.md)).
 
-**Gate F0:** If the target cannot be reliably identified, or planned reverse-engineering/asset handling lacks a defensible legal path, pause port implementation and resolve before proceeding.
+## Starting state (2026-10-27)
 
-## 1. Reproducible reference baseline
+| Area | State |
+|---|---|
+| Runtime and tools | Recompiler, hardware runtime, SDL and Godot host sources, matching/integration tools are public; source-only pre-releases up to v0.4.4 |
+| Observed locally | Builds from the user's copy reach the opening credits in all five languages; scripted Linux runs reached an early field scene |
+| Not verified | Story past the opening, battle at scale, save/load across sessions, sustained interactive play and pacing, a game run on Windows, Steam Deck hardware |
+| Godot | Host, render-state capture and opt-in GPU 3D sources exist ([remaster stage 1](REMASTER_STAGE1.md)); milestone G2-G4 status to be audited in M6 |
 
-**Work:** Define an owner-local workflow to identify/hash a compatible European copy without copying it into the repo; document tool versions and emulator/debugger configuration; record versioned black-box observations, input traces and reference captures for representative boot, menu, field, battle, audio, save/load and timing paths. Record source/tool provenance and uncertainty.
+The earlier feasibility gates F0-F3 are superseded: the native static-recompilation path is in place.
 
-**Depends on:** F0 and lawful local reference access.
+```mermaid
+flowchart LR
+  M1[M1 Decomp residue - parallel] --> M8
+  M2[M2 Checkpoint tooling] --> M3[M3 Playthrough to credits]
+  M3 --> M4[M4 Accuracy residuals]
+  M3 --> M5[M5 Performance + platforms]
+  M2 --> M6[M6 Godot remaster build]
+  M7[M7 DLC spike] --> M8
+  M4 --> M8[M8 v1 release]
+  M5 --> M8
+  M6 --> M8
+```
 
-**Acceptance:** Repeatable, privacy-preserving local procedure; independently repeatable observations; measurable source simulation cadence/timing and known tolerances; no uploaded/distributed game data.
+## M1 Decomp residue push (parallel until v1)
 
-**Status (2026-10-12):** Local-input verification and structural-inventory tools are present. Public tests use synthetic fixtures; no image fingerprints, game traces, or gameplay acceptance results are distributed. A complete local compatibility baseline remains a separate requirement.
+**Work:** toolchain fixes in blocker order: label synthesis for raw immediate branches, word-aligned Thumb unit grouping, units that own the data adjoining a function, relocation-aware assembly verification; authoring waves on functions without a known blocker, integrated with `tools/integrate_batch.py` in chunks of 20; ARM7 coverage accounting.
 
-**Gate F1:** Do not port game subsystems based on assumed USA/JPN equivalence or unmeasured frame timing.
+**Gate:** `tools/status.py --modules` reports every module check passing; `tools/rom_compare.py` differs only in the secure area and header CRC16; every unmatched function is recorded with its blocker (locally). Stretch: 0 unmatched.
 
-## Full European decompilation workstream (active objective)
+## M2 Checkpoint and triage tooling
 
-**Work:** Account for every EU ARM9/ARM7 executable region, ARM9/ARM7 overlay, in-memory ARM9 section, and executable game-logic script. Use USA/JPN symbols and implementations as evidence only after verifying each correspondence against the EU image. Reconstruct code, data boundaries, relocations, and script semantics; keep ROM-derived payloads local under the project data policy.
+**Work:** a local checkpoint ladder: one save per story chapter plus key systems (first battle, vocation change, alchemy, grotto), each with a short scripted segment (12-frame held input) and recorded frame hashes, save bytes and audio. A local regression runner replays every segment natively and against a reference emulator where available. Debug-bundle intake (`tools/debug_bundle.py`) produces a reproducible segment from each reported issue. Saves and recordings stay local; only the tooling is published.
 
-**Depends on:** F0, lawful local access to the identified EU image, and the F1 reference/toolchain baseline.
+**Gate:** runner replays all existing checkpoints deterministically twice with identical hashes and save bytes; one bundle-to-segment round trip demonstrated.
 
-**Acceptance:** Every executable byte/function is assigned to a module and classified; no untracked code gaps remain; each claimed matching module builds or otherwise compares byte-for-byte against the exact EU reference. All game-logic script formats are classified and their semantics needed for a full decompilation are documented. Non-code resources are inventoried and their formats/roles classified; counting files alone does not qualify.
+## M3 Playthrough to credits
 
-**Status (2026-10-12):** Matching and transactional integration tools are present. Game-derived candidates, metadata, results, and coverage totals remain private. The public tree makes no claim of complete decompilation; see [workflow status](DECOMP_STATUS.md).
+**Work:** the project lead plays the SDL build on Linux from new game to the credits, saving checkpoints at every chapter and filing bundles for any defect; fixes land with a regression segment. Subsystem matrix tracked: field, battle (spells, coup de grâce, party AI), menus, shops, alchemy, vocations, quick save/full save (EEPROM 64K), real-time-clock features, touch input, music/SFX.
 
-## Required native Linux game execution
+**Gate:** credits reached natively; save reload verified after a process restart at each checkpoint; zero open blocker defects; matrix has no unverified row.
 
-**Work:** Validate a local x86_64 Linux host with a separately supplied generated-code directory and an already locally available compatible image. Preserve game behavior through original runtime services; synthetic tests or a window alone do not prove native full-game behavior. No game-derived inputs or resulting binaries may be published.
+## M4 Accuracy residuals
 
-**Depends on:** Complete EU code and executable-script analysis, resource-format understanding, and a proven behavioral reference path. Reverse-engineering results must be EU-specific; USA/JPN implementations are references only after matching is verified.
+**Work:** remaining native vs reference-emulator divergences found in M3 segments: late top-screen 3D differences from differing submitted draw state, cartridge-load timing, any audio drift. One hypothesis per change.
 
-**Acceptance:** Build and launch the actual native game process on the target device; verify an end-to-end real game path with input, state transition, rendering/audio as applicable, and locally supplied resources. Demonstrate that execution is native code rather than an emulator. Keep full-game behavior and full decompilation as project objectives; a prototype or isolated vertical slice does not satisfy this requirement.
+**Gate:** `tools/regress_frames.py` exit 0; all checkpoint segments within documented tolerances; every remaining difference listed with cause.
 
-**Status (2026-10-20):** Original ARM/Thumb recompiler components, hardware runtime services, and SDL/Godot host sources are present. `tools/build_port.py` builds a host from your own image that boots to the opening credits (checked headless in all five languages). Scripted Linux runs also reached an early field scene and short live input checks responded; see [the dated observations and limits](GETTING_STARTED.md#status-reviewed-2026-10-20). No game build is shipped. Full-game behavior, sustained interactive play, device performance, and Windows / Steam Deck hardware compatibility remain unclaimed.
+## M5 Performance and platforms
 
+**Work:** sustained full speed (59.83 Hz) with headroom on Linux in the heaviest M3 scenes; optimizations compared A/B with a deterministic instruction metric (`perf stat` instructions, single render thread); the Windows kit runs the game; Steam Deck runs with controller input and save persistence.
 
-## 2. Native platform and presentation prototype
+**Gate:** Linux: over a 10-minute battle-heavy live run, measured wall-clock frame times meet the 59.83 Hz deadline with no missed frames and the frontend logs no audio underruns or drops (instruction counts do not prove real-time speed). Windows and Deck: lead-performed smoke run (boot, load checkpoint, battle, save, restart, reload) passes. These are user-verified, not CI-verified.
 
-**Work:** Build a small non-game C++ prototype on Linux, Windows and SteamOS/Deck: window/input/audio service seams, SDL GPU/Vulkan and D3D12 feasibility, renderer snapshots, Classic/Enhanced presentation toggle over a synthetic deterministic simulation. Measure shader portability, controller/window lifecycle, build/dependency reproducibility, latency, and output. Compare SDL GPU with bgfx on requirements.
+## M6 Godot remaster build
 
-**Depends on:** F1 baseline criteria and build setup.
+**Work:** audit G0-G4 ([Godot port plan](GODOT_PORT_PLAN.md)); finish G2 playable, G3 hosting (layouts, rebinding, scaling, debug bundles), G4 stage 1 (hi-res 3D with a 1x exact mode, [remaster stage 1](REMASTER_STAGE1.md)). Packaged alongside SDL.
 
-**Acceptance:** Same recorded inputs yield identical synthetic simulation state across presentation toggle/backends; target builds and visible interaction work on each target; backend shader/render limitations and costs recorded. This prototype must be explicitly labeled non-game.
+**Gate:** 1x mode 3000-frame hashes identical to SDL; toggling presentation during a checkpoint segment leaves frame-state hashes and save bytes unchanged; one M3 checkpoint played start-to-finish in Godot on Linux.
 
-**Gate F2:** Choose renderer and platform libraries only after this evidence. If required parity/target support fails, revise architecture before subsystem migration.
+## M7 DLC spike
 
-## 3. Vertical-slice port feasibility
+**Work:** determine which downloadable content (quests, shop stock, guests) is present but flag-gated on the cartridge image versus delivered only over the network. If on-image content exists, an offline enabling tool that operates on the user's own save and ships no game data.
 
-**Work:** Select one small, representative game behavior/data path only after EU binary structures/code are understood. Port or reuse legally available logic; compare original/reference and port using the recorded trace, state, timing, rendering and audio evidence.
+**Gate:** written finding; either a working tool verified on a local checkpoint save, or DLC documented as out of scope.
 
-**Depends on:** F0–F2, EU-specific analysis and local reference.
+## M8 v1 release and patch policy
 
-**Acceptance:** Trace-level deterministic simulation parity for the slice; stable resource lifecycle; measured timing; documented unported boundaries and repeatable Linux/Windows builds with Deck validation plan.
+**Work:** beginner README (user supplies their own ROM); final source-only kits for SDL and Godot; release notes with the verified-vs-unverified matrix; patch policy: a `v1.x` branch that accepts only crash, save-corruption, progression-blocking and build-breakage fixes, each with a regression segment.
 
-**Gate F3:** Continue broad port only if the slice demonstrates a credible path to game-wide behavior, assets and platform parity. Otherwise stop or re-scope with explicit owner approval.
-
-## 4. Incremental subsystem coverage
-
-**Work:** Expand only in dependency order from proven slices (platform/time/input, core state, scripts/data, world, battle, UI, audio, save/load, then network features if in scope). Maintain EU-specific evidence and parity tests. No enhancements ahead of fidelity.
-
-**Depends on:** F3 pass; each subsystem requires its own behavioral evidence and acceptance criteria.
-
-**Acceptance:** Per-subsystem compatibility matrix and tests; no unsupported subsystem represented as complete; all first-release targets continuously built/tested.
-
-## 5. Faithful Classic release candidate
-
-**Work:** Integrate complete required single-player flows; validate all required targets and controller usability, timing, persistence, audio, recovery and asset-locality. Establish formal release/legal review.
-
-**Depends on:** All required subsystem gates passed.
-
-**Acceptance:** Measured representative behavior parity and explicit residual deviations; local Linux, Windows, and Steam Deck/SteamOS builds validated on hardware. Publish original sources and synthetic tests only: no game data, generated game code, captures, or compiled game builds.
-
-## 6. Optional Enhanced mode
-
-**Work:** After Classic is accepted, add higher resolution/widescreen/effects incrementally, with mode-toggle transition and paired deterministic gameplay trace checks.
-
-**Depends on:** Faithful Classic acceptance.
-
-**Acceptance:** Toggle does not change simulation state, RNG, event order, save state or timing; Enhanced visuals have independent quality/performance targets. Optional publicly licensed upscaler integration only after a separate decision; never depend on leaked/unreleased DLSS.
+**Gate:** exact-head CI green; fresh-clone package byte-compared to the downloaded release; `tools/audit_package.py` finds no forbidden files; tag matches packaged HEAD.

@@ -139,7 +139,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 | [Charter](docs/PROJECT_CHARTER.md) | Purpose, scope and the data boundary |
 | [Architecture](docs/ARCHITECTURE.md) | Components, execution model, presentation invariants |
 | [Tools reference](docs/TOOLS.md) | What each tool does and its exit codes |
-| [Roadmap](docs/ROADMAP.md) | Milestones and feasibility gates |
+| [Roadmap](docs/ROADMAP.md) | Milestones and gates to the final v1 release |
 | [Static recompilation decision](docs/DECISIONS/0004-static-recompilation.md) | Why this approach |
 | [Launcher and debug capture](docs/LAUNCHER_AND_DEBUG.md) | Private capture and replay workflow |
 | [Source credits](docs/RESEARCH_LOG.md) | Prior work this project builds on |
