@@ -3,6 +3,7 @@
 
 Each ladder directory contains NAME/segment.json, start.sav, input.txt,
 expected.hashes and optionally oracle.hashes. Runs never modify start.sav.
+Use set-oracle NAME FILE to attach oracle hashes to an existing segment.
 Exit 0 on success, 1 on a comparison mismatch, 2 on configuration or dq9 error.
 """
 from __future__ import annotations
@@ -258,6 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     bundle.add_argument("bundle")
     bundle.add_argument("name")
     bundle.add_argument("--debug-dir", type=Path, default=DEFAULT_DEBUG_DIR)
+    attach = sub.add_parser("set-oracle")
+    attach.add_argument("name")
+    attach.add_argument("file", type=Path)
     sub.add_parser("list")
     args = parser.parse_args(argv)
     try:
@@ -266,6 +270,15 @@ def main(argv: list[str] | None = None) -> int:
                 meta = load_meta(segment(args.ladder, name))
                 recorded = meta["recorded"] or {}
                 print(f"{name}  frames={meta['frames']}  {meta['source']}  recorded={recorded.get('date', '')} bin={recorded.get('binary_sha256', '')[:12]}  oracle={'yes' if meta['oracle_hashes'] else 'no'}  {meta['note']}")
+            return 0
+        if args.command == "set-oracle":
+            seg = segment(args.ladder, args.name)
+            meta = load_meta(seg)
+            rows = hashes(args.file)
+            shutil.copyfile(args.file, seg / "oracle.hashes")
+            meta["oracle_hashes"] = "oracle.hashes"
+            write_meta(seg, meta)
+            print(f"ORACLE SET {args.name}: {len(rows)} rows (frames {min(rows)}-{max(rows)})")
             return 0
         if args.rom is None:
             if os.environ.get("DQ9_ROM"):
