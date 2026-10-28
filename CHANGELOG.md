@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.4.5
+
+- **GPU3D edge walker rewrite:** the scanline edge walker (polygon edge setup and per-row span stepping) was rewritten from the hardware description in [docs/GPU3D_EDGE_WALKER.md](docs/GPU3D_EDGE_WALKER.md). Output is byte-identical to v0.4.4: 3,000-frame boot hash streams in en/fr/de/es/it, the English WAV and saves, plus four scripted runs totalling 113,811 frames (screens, save and audio) with an explicit ABI configuration and EEPROM64K. Not a parity or provenance claim beyond this component.
+
 ## v0.4.4
 
 - **GPU2D output conversion:** exact four-wide SSE2 conversion of 2D scanlines to output colour including master brightness (keeps the `floor(channel*255/31)` expansion; portable scalar tables remain). Single-thread instructions retired versus v0.4.3, medians of three: boot -3.0% (cycles -3.9%), movie -2.7% (-2.2%), activity -1.4% (-2.0%). Output is byte-identical.
