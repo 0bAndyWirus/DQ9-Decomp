@@ -6,6 +6,7 @@ add_library(dsr_core STATIC
   src/bus.cpp
   src/io.cpp
   src/timing.cpp
+  src/render_boundary.cpp
   src/scheduler.cpp
   src/runtime.cpp
   src/swi.cpp

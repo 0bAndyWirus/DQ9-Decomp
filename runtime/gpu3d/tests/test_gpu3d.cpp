@@ -1586,9 +1586,8 @@ void test_specular_lighting_uses_reference_half_vector_normalization() {
 }
 
 void test_light_half_vector_matches_reference_normalization() {
-    // Reference (gfx3d.cpp:999-1009): half = dir - 1.0z; half = half * 64 / sqrt(dot(half, half)).
-    // fixed_dot already has 4.12 scale, so sqrt(dot) = |half| / 64 and the result is unit length.
-    // Light straight along -Z gives half = (0, 0, -2.0) = (0, 0, -8192) -> z = -4096.
+    // Light along -Z maps (0, 0, -8192) to (0, 0, -4096) in Q4.12.
+    // Project compatibility target: a reference emulator's observable output.
     Gpu3D gpu;
     send(gpu, 0x32, {0x20000000U});
     gpu.run(100);

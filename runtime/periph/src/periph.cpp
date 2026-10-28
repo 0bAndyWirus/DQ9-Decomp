@@ -1,4 +1,5 @@
 #include "dsr/periph.h"
+#include "cartridge_first_word.h"
 
 #include <algorithm>
 #include <array>
@@ -398,10 +399,7 @@ struct GameCard::Impl {
             complete_card_transfer();
             return;
         }
-        const std::uint32_t gap = value & 0x1fffu;
-        const std::uint32_t clocks = (value & (1u << 27)) != 0 ? 8u : 5u;
-        // Oracle's NDS_RescheduleReadSlot1 uses twice this machine's tick rate.
-        transfer_ticks_ = static_cast<std::int64_t>((8u + gap) * clocks + 4u);
+        transfer_ticks_ = detail::cartridge_first_word_ticks(value);
     }
 
     void complete_card_transfer() {

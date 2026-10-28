@@ -431,6 +431,110 @@ void test_five_bit_output_expansion() {
     }
 }
 
+// Exercise the observable LCDC display output, including the unused high bit.
+void test_rgb555_output_exhaustive() {
+    constexpr std::array<unsigned, 32> expand{
+        0, 8, 16, 24, 32, 41, 49, 57, 65, 74, 82, 90, 98, 106, 115, 123,
+        131, 139, 148, 156, 164, 172, 180, 189, 197, 205, 213, 222, 230, 238, 246, 255};
+    dsr::Gpu2D gpu;
+    set_power(gpu);
+    gpu.io_write(kVramA, 0x80U, 8);
+    gpu.io_write(kA, 2U << 16U, 32);
+    for (unsigned high = 0; high < 2; ++high) {
+        for (unsigned y = 0; y < 128; ++y) {
+            for (unsigned x = 0; x < 256; ++x) {
+                const unsigned raw = (high << 15U) | (y * 256U + x);
+                gpu.arm9_write(kLcdcA + (y * 256U + x) * 2U, raw, 16);
+            }
+            gpu.render_line(y);
+            for (unsigned x = 0; x < 256; ++x) {
+                const unsigned raw = y * 256U + x;
+                const auto expected = 0xFF000000U | (expand[raw & 31U] << 16U) |
+                    (expand[(raw >> 5U) & 31U] << 8U) | expand[(raw >> 10U) & 31U];
+                assert(pixel(gpu.screen_top(), x, y) == expected);
+            }
+        }
+    }
+}
+
+// Every alpha, source channel and destination channel combination is exercised
+// through the BG0/3D and backdrop interface, independently for all channels.
+void test_3d_over_backdrop_exhaustive() {
+    constexpr std::array<unsigned, 32> expand{
+        0, 8, 16, 24, 32, 41, 49, 57, 65, 74, 82, 90, 98, 106, 115, 123,
+        131, 139, 148, 156, 164, 172, 180, 189, 197, 205, 213, 222, 230, 238, 246, 255};
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake;
+    gpu.attach_gpu3d(&fake);
+    set_power(gpu, 0x8207U);
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
+    write16(gpu, kA + 0x50U, 1U << 13U);
+    for (unsigned alpha = 0; alpha < 32; ++alpha) {
+        for (unsigned target = 0; target < 32; ++target) {
+            const std::array<unsigned, 3> dst{target, (target + 9U) % 32U, 31U - target};
+            set_bg_palette(gpu, 0U, dst[0] | (dst[1] << 5U) | (dst[2] << 10U));
+            for (unsigned x = 0; x < 256; ++x) {
+                const unsigned s = x % 64U;
+                const std::array<unsigned, 3> src{s, (s + 17U) % 64U, 63U - s};
+                fake_3d_line[x] = (alpha << 24U) | src[0] | (src[1] << 6U) | (src[2] << 12U);
+            }
+            gpu.render_line(0);
+            for (unsigned x = 0; x < 64; ++x) {
+                const std::array<unsigned, 3> src{x, (x + 17U) % 64U, 63U - x};
+                std::array<unsigned, 3> out{};
+                for (unsigned c = 0; c < 3; ++c) {
+                    out[c] = alpha == 0 ? dst[c] :
+                        (src[c] * (alpha + 1U) + 2U * dst[c] * (31U - alpha)) / 64U;
+                }
+                const auto expected = 0xFF000000U | (expand[out[0]] << 16U) |
+                    (expand[out[1]] << 8U) | expand[out[2]];
+                assert(pixel(gpu.screen_top(), x) == expected);
+            }
+        }
+    }
+}
+
+void test_3d_blend_selection_matrix() {
+    constexpr std::array<unsigned, 32> expand{
+        0, 8, 16, 24, 32, 41, 49, 57, 65, 74, 82, 90, 98, 106, 115, 123,
+        131, 139, 148, 156, 164, 172, 180, 189, 197, 205, 213, 222, 230, 238, 246, 255};
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake;
+    gpu.attach_gpu3d(&fake);
+    set_power(gpu, 0x8207U);
+    set_bg_palette(gpu, 0U, 0x7C00U);
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U) | (1U << 13U), 32);
+    write16(gpu, kA + 0x40U, 0x00FFU);
+    write16(gpu, kA + 0x44U, 0x00C0U);
+    write16(gpu, kA + 0x54U, 0U);
+    for (unsigned alpha : {0U, 1U, 16U, 31U}) {
+        fake_3d_line.fill((alpha << 24U) | 63U);
+        for (unsigned effect = 0; effect < 4; ++effect) {
+            for (unsigned first = 0; first < 2; ++first) {
+                for (unsigned second = 0; second < 2; ++second) {
+                    for (unsigned window = 0; window < 4; ++window) {
+                        write16(gpu, kA + 0x48U, (window & 1U) | ((window & 2U) << 4U));
+                        write16(gpu, kA + 0x50U, first | (effect << 6U) | (second << 13U));
+                        gpu.render_line(0);
+                        unsigned red = 0, blue = 31;
+                        if (alpha != 0 && (window & 1U) != 0) {
+                            if (second != 0) {
+                                red = 63U * (alpha + 1U) / 64U;
+                                blue = 62U * (31U - alpha) / 64U;
+                            } else {
+                                red = 31;
+                                blue = 0;
+                            }
+                        }
+                        assert(pixel(gpu.screen_top(), 0) ==
+                               (0xFF000000U | (expand[red] << 16U) | expand[blue]));
+                    }
+                }
+            }
+        }
+    }
+}
+
 void disable_objects(dsr::Gpu2D& gpu, bool is_a = true) {
     for (unsigned object = 0; object < 128U; ++object) {
         gpu.arm9_write(kOam + (is_a ? 0U : 0x400U) + object * 8U, 0x0200U, 16);
@@ -1112,11 +1216,6 @@ void test_pack_line_reference() {
             assert(output[x] == reference_argb(raw, master));
         }
     };
-    // Exhaustively prove the reciprocal for all legal component inputs,
-    // including the values for which bit replication is not floor(c*255/31).
-    for (unsigned c = 0; c < 32U; ++c) {
-        assert(((c * 255U * 16913U) >> 19U) == c * 255U / 31U);
-    }
     for (unsigned mode = 0; mode < 4U; ++mode) {
         for (unsigned factor = 0; factor < 32U; ++factor) {
             const auto master_a = static_cast<std::uint16_t>((mode << 14U) | factor);
@@ -1566,6 +1665,9 @@ int main(int argc, char** argv) {
         {"color_arithmetic", test_blend_and_brightness_use_five_bit_channels},
         {"color_expansion", test_five_bit_output_expansion},
         {"bg_modes", test_bg_mode_matrix},
+        {"rgb555_exhaustive", test_rgb555_output_exhaustive},
+        {"3d_blend_selection_matrix", test_3d_blend_selection_matrix},
+        {"3d_over_backdrop_exhaustive", test_3d_over_backdrop_exhaustive},
         {"text_sizes_flips", test_text_screen_blocks_and_flips},
         {"palette_pages_slots", test_text_extended_palette_pages_and_slots},
         {"bitmap_dimensions", test_bitmap_dimensions_bases_and_palette},

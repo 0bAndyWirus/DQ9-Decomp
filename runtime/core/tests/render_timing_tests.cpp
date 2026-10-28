@@ -26,6 +26,45 @@ void triangle(dsr::Machine& machine) {
     command(machine, 0x23, 0x10000000); command(machine, 0x23, 0);
     command(machine, 0x41, 0); command(machine, 0x50, 0);
 }
+void test_render_boundary_and_recurrence() {
+    dsr::Machine machine({});
+    unsigned captures = 0;
+    machine.write16(arm9, 0x04000004, (214U << 8) | (1U << 5));
+    machine.gpu3d().on_render_complete = [&] {
+        ++captures;
+        const auto status = machine.read16(arm9, 0x04000004);
+        expect(machine.read16(arm9, 0x04000006) == 214,
+               "render completion observes line 214");
+        expect((status & 7U) == 5U,
+               "line compare and VBlank are set and HBlank cleared before render");
+        expect((machine.read32(arm9, 0x04000214) & (1U << 2)) != 0,
+               "line compare IRQ is raised before render completion");
+    };
+    expect(machine.read16(arm9, 0x04000006) == 0, "reset starts at line 0");
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        machine.run_ticks(213 * line_ticks);
+        expect(captures == frame, "no render through start of line 213");
+        expect(machine.read16(arm9, 0x04000006) == 213, "reaches line 213");
+        machine.run_ticks(1605);
+        expect((machine.read16(arm9, 0x04000004) & 2U) == 0,
+               "line 213 HBlank is clear one tick before boundary");
+        machine.run_ticks(1);
+        expect((machine.read16(arm9, 0x04000004) & 2U) != 0,
+               "line 213 HBlank starts at tick 1606");
+        expect(captures == frame, "HBlank does not trigger the 3D render");
+        machine.run_ticks(line_ticks - 1606 - 1);
+        expect(captures == frame, "render not completed one tick before line 214");
+        machine.run_ticks(1);
+        expect(captures == frame + 1, "one render completes at line 214");
+        machine.write32(arm9, 0x04000214, 1U << 2);
+        machine.run_ticks(1);
+        expect(captures == frame + 1, "render does not repeat after the boundary");
+        machine.run_ticks(49 * line_ticks - 1);
+        expect(machine.read16(arm9, 0x04000006) == 0, "frame wraps to line 0");
+        expect(captures == frame + 1, "no extra render before the next frame");
+    }
+}
+
 void test_texture_upload_after_swap() {
     dsr::Machine machine({});
     machine.write8(arm9, 0x04000240, 0x80);
@@ -134,6 +173,7 @@ void test_lcd_uses_previous_render_epoch() {
 }
 }
 int main() {
+    test_render_boundary_and_recurrence();
     test_texture_upload_after_swap(); test_clear_image_upload_after_swap();
     test_lcd_uses_previous_render_epoch();
     std::cout << "3D render timing failures: " << failures << '\n';

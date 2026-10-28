@@ -1003,8 +1003,8 @@ struct Gpu3D::Impl {
         direction = {transformed[0], transformed[1], transformed[2]};
         auto& half = light_half_vector[index];
         half = {direction[0], direction[1], direction[2] - kOne};
-        // Reference gfx3d.cpp:999-1009 shifts sqrt(dot) left by 6 then right by 6 again,
-        // so the divisor is plain sqrt(dot) while each component is scaled by 64.
+        // Normalize the half-vector with 64-scaled components. Project
+        // compatibility target: a reference emulator's observable output.
         const auto half_length = static_cast<std::int32_t>(
             std::sqrt(static_cast<double>(std::max(0, fixed_dot(half, half)))));
         if (half_length == 0) return;

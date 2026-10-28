@@ -241,8 +241,8 @@ std::uint32_t isqrt(std::uint32_t value) {
     return result;
 }
 
-// Match the reference's post-header range check for timing only. Preserve
-// native decode/callback behavior without an extra source read.
+// Check the decoded range for timing without an extra source read.
+// Project compatibility target: a reference emulator's observable output.
 bool oracle_stream_range_valid(std::uint32_t source, std::uint32_t header) {
     return (source & 0x0e000000u) != 0 &&
            ((source + ((header >> 8) & 0x1fffffu)) & 0x0e000000u) != 0;
@@ -380,7 +380,7 @@ std::uint32_t lz77_decode(Cpu* c, std::uint32_t source, std::uint32_t destinatio
     std::uint32_t header = 0;
     if (!open_stream(c, input, source, destination, callback_arg, header)) return 0;
     const std::uint32_t output_size = header >> 8;
-    // Nonempty completions return zero from the reference's inner loop.
+    // Nonempty completions have zero modeled cycles.
     const std::uint32_t cycles =
         output_size == 0 && oracle_stream_range_valid(input.position, header) ? 1u : 0u;
     OutputStream output{c, destination, vram_output};

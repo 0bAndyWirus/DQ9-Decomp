@@ -351,7 +351,8 @@ void Machine::Impl::cp15_write(Cpu* cpu, unsigned cp, unsigned op1, unsigned crn
 void Machine::Impl::swi(Cpu* cpu, std::uint32_t imm, std::uint32_t pc, bool thumb) {
     const std::uint32_t number = raw_swi_number(imm, thumb);
     if (const auto handler_cycles = detail::handle_data_swi(cpu, number)) {
-        // Reference SWI timing is handler()+3; generated code charges base 1.
+        // SWI timing is handler cycles plus 3; generated code charges base 1.
+        // Project compatibility target: a reference emulator's observable output.
         cpu->budget -= 2 + static_cast<std::int64_t>(*handler_cycles);
         return;
     }

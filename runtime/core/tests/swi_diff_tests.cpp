@@ -799,8 +799,8 @@ void test_swi_timing(dsr::Machine& machine) {
                 machine.write8(id,kSource+5,'A');
             }
             check(id,swi,{kSource,kDestination,0,0},0,"Compressed decode");
-            // Unmapped reads supply a zero header without changing native
-            // decoder behavior solely for the reference's range check.
+            // Unmapped reads supply a zero header for the timing range check.
+            // Project compatibility target: a reference emulator's observable output.
             check(id,swi,{0x10000000u,kDestination,0,0},0,"Invalid decode range");
         }
         for(unsigned width : {4u,8u}) {
