@@ -241,6 +241,63 @@ void test_alpha_blending() {
     assert(pixel(gpu.screen_top(), 0U) == 0xFF7B007BU); // (31 * 8) / 16 = 15 of 31 per channel.
 }
 
+void test_ordinary_effect_composition() {
+    dsr::Gpu2D gpu;
+    gpu.io_write(kVramA, 0x81U, 8);
+    set_power(gpu);
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 9U), 32);
+    write16(gpu, kA + 0x08U, 0x0004U);
+    write16(gpu, kA + 0x0AU, 0x0108U);
+    set_bg_palette(gpu, 0, 0x03E0U);
+    set_bg_palette(gpu, 1, 0x001FU);
+    set_bg_palette(gpu, 2, 0x7C00U);
+    gpu.arm9_write(kVram + 0x4000U, 0x1111U, 16);
+    gpu.arm9_write(kVram + 0x8000U, 0x2222U, 16);
+    write16(gpu, kA + 0x52U, 0x0808U);
+    write16(gpu, kA + 0x50U, 0x2041U); // Backdrop target blocked by opaque BG1.
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFFFF0000U);
+    write16(gpu, kA + 0x50U, 0x0241U);
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFF7B007BU);
+    gpu.io_write(kA, (1U << 16U) | (1U << 13U) | (1U << 8U) | (1U << 9U), 32);
+    write16(gpu, kA + 0x40U, 0x0001U);
+    write16(gpu, kA + 0x44U, 0x0001U);
+    write16(gpu, kA + 0x48U, 0x0003U); // Both layers, effects disabled.
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFFFF0000U);
+    write16(gpu, kA + 0x48U, 0x0000U); // Only backdrop; effects still disabled.
+    write16(gpu, kA + 0x50U, 0x00A0U); // Backdrop first target, brighten.
+    write16(gpu, kA + 0x54U, 31U); // Clamp to 16.
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFFFFFFFFU);
+}
+
+void test_semitransparent_obj_forces_ordinary_blend() {
+    dsr::Gpu2D gpu;
+    setup_text_bg0(gpu, 0x001FU);
+    gpu.io_write(kVramB, 0x82U, 8);
+    for (std::uint32_t offset = 0; offset < 32U; offset += 2U)
+        gpu.arm9_write(0x06400000U + offset, 0x1111U, 16);
+    for (std::uint32_t object = 1; object < 128U; ++object)
+        gpu.arm9_write(kOam + object * 8U, 0x0200U, 16);
+    gpu.arm9_write(kOam, 0x0400U, 16); // Semi-transparent OBJ.
+    gpu.arm9_write(kOam + 2U, 0U, 16);
+    gpu.arm9_write(kOam + 4U, 0U, 16);
+    gpu.arm9_write(kPalette + 0x202U, 0x7C00U, 16);
+    gpu.io_write(kA, (1U << 16U) | (1U << 13U) | (1U << 12U) | (1U << 8U), 32);
+    write16(gpu, kA + 0x40U, 0x0001U);
+    write16(gpu, kA + 0x44U, 0x0001U);
+    write16(gpu, kA + 0x48U, 0x0011U); // OBJ and BG0 visible; effects disabled.
+    write16(gpu, kA + 0x50U, 0x0100U); // BG0 second target; no effect/first target.
+    write16(gpu, kA + 0x52U, 0x0808U);
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFF7B007BU);
+    write16(gpu, kA + 0x50U, 0U);
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0) == 0xFF0000FFU);
+}
+
 void test_master_brightness_and_screen_swap() {
     dsr::Gpu2D gpu;
     setup_text_bg0(gpu, 0x0010U);
@@ -1655,6 +1712,8 @@ int main(int argc, char** argv) {
         {"windows", test_window_masking},
         {"obj_window", test_obj_window_masking},
         {"alpha", test_alpha_blending},
+        {"ordinary_composition", test_ordinary_effect_composition},
+        {"ordinary_semi_obj", test_semitransparent_obj_forces_ordinary_blend},
         {"brightness_swap", test_master_brightness_and_screen_swap},
         {"display_modes", test_display_modes_and_fifo},
         {"capture", test_capture_to_lcdc_bank},

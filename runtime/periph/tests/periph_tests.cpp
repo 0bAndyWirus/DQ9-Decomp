@@ -1,4 +1,5 @@
 #include "dsr/periph.h"
+#include "../src/cartridge_b7_redirect.h"
 
 #include <algorithm>
 #include <array>
@@ -456,6 +457,74 @@ void test_card_low_address_alias(const std::filesystem::path& rom,
         const std::uint32_t expected = static_cast<std::uint32_t>(markers[i]) * 0x01010101u;
         assert(card.io_read(kCardData, 32) == expected);
     }
+}
+
+void test_b7_redirect_contract(const std::filesystem::path& directory) {
+    constexpr std::uint32_t size = 0x20000;
+    auto pattern = [](std::uint32_t address) -> std::uint8_t {
+        return static_cast<std::uint8_t>((address * 13u + (address >> 8) * 29u +
+                                          (address >> 12) * 71u + 7u) & 0xffu);
+    };
+    std::vector<std::uint8_t> bytes(size);
+    for (std::uint32_t i = 0; i < size; ++i) bytes[i] = pattern(i);
+    const auto rom = directory / "b7-contract.nds";
+    {
+        std::ofstream out(rom, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        assert(out.good());
+    }
+    dsr::GameCard card(rom, directory / "b7-contract.sav", dsr::BackupType::Flash512K);
+    auto expected_word = [&](std::uint32_t address) {
+        std::uint32_t value = 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            const std::uint32_t a = address + i;
+            value |= static_cast<std::uint32_t>(a < size ? pattern(a) : 0xffu) << (i * 8);
+        }
+        return value;
+    };
+    auto start = [&](std::uint8_t command, std::uint32_t address, unsigned code) {
+        write_card_command(card, command, address);
+        card.io_write(kRomCtrl, 0x80000000u | (code << 24), 32);
+        card.run(44);
+        assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0x80800000u);
+    };
+
+    // Every protected command address, including unaligned and boundary values.
+    for (std::uint32_t address = 0; address < 0x8000; ++address) {
+        const std::uint32_t effective = 0x8000u + address % 0x200u;
+        assert(dsr::detail::cartridge_b7_redirect(address) == effective);
+        start(0xb7, address, 7);
+        assert(card.io_read(kCardData, 32) == expected_word(effective));
+    }
+    // Every bit above the protected range remains significant.
+    for (unsigned bit = 15; bit < 32; ++bit) {
+        const std::uint32_t address = (std::uint32_t{1} << bit) | 0x1234u;
+        assert(dsr::detail::cartridge_b7_redirect(address) == address);
+        start(0xb7, address, 7);
+        assert(card.io_read(kCardData, 32) == expected_word(address));
+    }
+    for (const std::uint32_t address : {0x8000u, 0x8001u, 0x81ffu, 0x8200u,
+                                         0x1ffffu, 0x20000u, 0xffffffffu}) {
+        assert(dsr::detail::cartridge_b7_redirect(address) == address);
+        start(0xb7, address, 7);
+        assert(card.io_read(kCardData, 32) == expected_word(address));
+    }
+    // Redirect once, not once per byte or once per 512-byte/4-KiB region.
+    for (const std::uint32_t address : {0x1ffu, 0x7fffu, 0x8ffcu, 0xfffffffcu}) {
+        const std::uint32_t effective = address < 0x8000u
+            ? 0x8000u + address % 0x200u : address;
+        start(0xb7, address, 5); // 8192 bytes, crosses 512-byte and 4-KiB boundaries.
+        for (std::uint32_t offset = 0; offset < 8192; offset += 4)
+            assert(card.io_read(kCardData, 32) == expected_word(effective + offset));
+        assert((card.io_read(kRomCtrl, 32) & 0x80800000u) == 0);
+    }
+    // Raw boot-loader reads and command 00 must not use the B7 mapping.
+    std::array<std::uint8_t, 4> raw{};
+    card.read_rom(0x123, raw.data(), static_cast<std::uint32_t>(raw.size()));
+    for (unsigned i = 0; i < raw.size(); ++i) assert(raw[i] == pattern(0x123u + i));
+    start(0x00, 0x123, 7);
+    assert(card.io_read(kCardData, 32) == expected_word(0));
 }
 
 void test_backup_eeprom(const std::filesystem::path& rom,
@@ -1455,6 +1524,7 @@ int main() {
     test_card_rom_and_chip_id(rom, temp.path / "card.sav");
     test_card_first_word_timing(rom, temp.path / "card-timing.sav");
     test_card_low_address_alias(card_alias_rom, temp.path / "card-alias.sav");
+    test_b7_redirect_contract(temp.path);
     test_backup_eeprom(rom, temp.path / "eeprom.sav");
     test_chip_mismatch_hint(rom, temp.path);
     test_unwritable_save_does_not_throw(rom, temp.path);

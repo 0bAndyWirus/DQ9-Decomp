@@ -4,6 +4,10 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## Unreleased
+
+- **Clean-room rewrites (output-identical):** ordinary 2D blending/brightness and target selection, the cartridge B7 low-address redirect, and the SPU IMA-ADPCM step/index and PSG duty tables were rewritten blind from GBATEK-based contracts in [docs/cleanroom/](docs/cleanroom/) with exhaustive ROM-free tests. Eight scripted runs (164,534 frames, saves, audio) are unchanged.
+
 ## v0.5.0
 
 - **Godot single-screen layout:** display configurable bottom-screen regions over the top screen, with colour-key transparency and touch mapping. The scene detector is a stub; regions do not change automatically by scene. SDL remains unchanged.

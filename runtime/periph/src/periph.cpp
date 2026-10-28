@@ -1,5 +1,6 @@
 #include "dsr/periph.h"
 #include "cartridge_first_word.h"
+#include "cartridge_b7_redirect.h"
 
 #include <algorithm>
 #include <array>
@@ -348,9 +349,7 @@ struct GameCard::Impl {
         switch (command) {
         case 0xb7: {
             transfer_kind_ = TransferKind::Rom;
-            // Low B7 reads repeat the first protected 0x200-byte block.
-            if (transfer_rom_address_ < 0x8000u)
-                transfer_rom_address_ = 0x8000u + (transfer_rom_address_ & 0x1ffu);
+            transfer_rom_address_ = detail::cartridge_b7_redirect(transfer_rom_address_);
             break;
         }
         case 0xb8:

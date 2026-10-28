@@ -20,6 +20,7 @@
 #endif
 
 #include "blend_3d.h"
+#include "ordinary_2d.h"
 #include "rgb555_expansion.h"
 
 namespace dsr {
@@ -1191,32 +1192,6 @@ struct Gpu2D::Impl {
         }
     }
 
-    // 5-bit colour arithmetic. Brightness and blend truncate (no rounding terms).
-    static Color blend(Color source, Color target, std::uint32_t eva, std::uint32_t evb) {
-        const std::uint32_t a = clamp_factor(eva);
-        const std::uint32_t b = clamp_factor(evb);
-        const auto channel = [a, b](std::uint8_t first, std::uint8_t second) {
-            return static_cast<std::uint8_t>(std::min((static_cast<std::uint32_t>(first) * a +
-                static_cast<std::uint32_t>(second) * b) / 16U, 31U));
-        };
-        return {channel(source.r, target.r), channel(source.g, target.g),
-                channel(source.b, target.b), 31U};
-    }
-
-
-    static Color brighten(Color color, std::uint32_t factor) {
-        const auto channel = [factor](std::uint8_t value) {
-            return static_cast<std::uint8_t>(value + ((31U - value) * factor) / 16U);
-        };
-        return {channel(color.r), channel(color.g), channel(color.b), 31U};
-    }
-
-    static Color darken(Color color, std::uint32_t factor) {
-        const auto channel = [factor](std::uint8_t value) {
-            return static_cast<std::uint8_t>(value - (value * factor) / 16U);
-        };
-        return {channel(color.r), channel(color.g), channel(color.b), 31U};
-    }
 
     Color render_engine_line(Engine& engine, bool is_a, int y,
                              std::array<Color, kScreenWidth>& output) {
@@ -1330,12 +1305,10 @@ struct Gpu2D::Impl {
         // A brightness effect on the backdrop applies to the backdrop colour itself, which
         // is then also what blending sees underneath.
         Color backdrop = palette_colors[is_a ? 0U : 0x200U];
-        if ((target1 & (1U << 5U)) != 0U) {
-            if (effect == 2U) {
-                backdrop = brighten(backdrop, evy);
-            } else if (effect == 3U) {
-                backdrop = darken(backdrop, evy);
-            }
+        switch (cleanroom::ordinary_backdrop_effect(effect, target1)) {
+        case 2U: backdrop = cleanroom::ordinary_brighten(backdrop, evy); break;
+        case 3U: backdrop = cleanroom::ordinary_darken(backdrop, evy); break;
+        default: break;
         }
         // Layer ids in the compositing order below: 0-3 backgrounds, 4 objects, 5 backdrop.
         constexpr std::uint8_t kObjLayer = 4U;
@@ -1343,7 +1316,7 @@ struct Gpu2D::Impl {
         // No second targets means even semi-transparent OBJ and 3D cannot
         // force blending. Select the first opaque layer, rather than painting
         // all the occluded layers beneath it.
-        const bool copy_only = target2 == 0U && (effect == 0U || target1 == 0U);
+        const bool copy_only = cleanroom::ordinary_copy_only(effect, target1, target2);
         std::array<std::uint8_t, 4> front_order{};
         unsigned front_count = 0U;
         for (unsigned priority = 0; priority < 4; ++priority) {
@@ -1411,37 +1384,28 @@ struct Gpu2D::Impl {
             // Layers are painted from the lowest priority up; each pixel is composited over
             // whatever the painted layers below left in `dst`.
             const auto composite = [&](const Pixel& source, std::uint8_t layer) {
-                const std::uint32_t layer_bit = 1U << layer;
                 const bool dst_is_target = dst_layer != layer && (target2 & (1U << dst_layer)) != 0U;
-                bool blends = false;
-                std::uint32_t brightness = 0U; // 2: brighten, 3: darken
-                if (source.three_d) {
-                    // A 3D pixel over a blend target always blends, ahead of window effect flags.
-                    blends = dst_is_target;
-                } else if (layer == kObjLayer && source.semi && dst_is_target) {
-                    blends = true;
-                }
-                if (!blends && effects_allowed && (target1 & layer_bit) != 0U) {
-                    if (effect == 1U) {
-                        blends = dst_is_target;
-                    } else if (effect == 2U || effect == 3U) {
-                        brightness = effect;
-                    }
-                }
+                // The 3D forced-blend rule remains separate from ordinary 2D selection.
+                const bool forced_3d = source.three_d && dst_is_target;
+                const unsigned selected = forced_3d ? 1U : cleanroom::ordinary_effect(
+                    layer, dst_layer, !source.three_d && source.semi, effects_allowed,
+                    effect, target1, target2);
+                const bool blends = selected == 1U;
+                const unsigned brightness = selected >= 2U ? selected : 0U;
                 if (blends) {
                     if (source.three_d) {
                         const auto blended = cleanroom::blend_3d(
                             source.rgb6, source.color.alpha, {dst.r, dst.g, dst.b});
                         dst = {blended[0], blended[1], blended[2], 31U};
                     } else if (source.semi && source.color.alpha != 31U) {
-                        dst = blend(source.color, dst, source.color.alpha, 16U - source.color.alpha);
+                        dst = cleanroom::ordinary_blend(source.color, dst, source.color.alpha, 16U - source.color.alpha);
                     } else {
-                        dst = blend(source.color, dst, eva, evb);
+                        dst = cleanroom::ordinary_blend(source.color, dst, eva, evb);
                     }
                 } else if (brightness == 2U) {
-                    dst = brighten(source.color, evy);
+                    dst = cleanroom::ordinary_brighten(source.color, evy);
                 } else if (brightness == 3U) {
-                    dst = darken(source.color, evy);
+                    dst = cleanroom::ordinary_darken(source.color, evy);
                 } else {
                     dst = source.color;
                 }
@@ -1536,9 +1500,9 @@ struct Gpu2D::Impl {
             for (unsigned i = 0; i < 32; ++i) {
                 Color color{static_cast<std::uint8_t>(i), 0U, 0U, 31U};
                 if (mode == 1U) {
-                    color = brighten(color, factor);
+                    color = cleanroom::ordinary_brighten(color, factor);
                 } else if (mode == 2U) {
-                    color = darken(color, factor);
+                    color = cleanroom::ordinary_darken(color, factor);
                 }
                 const auto expanded = cleanroom::color5_to_8(color.r);
                 engine.output_r[i] = 0xFF000000U | (expanded << 16U);

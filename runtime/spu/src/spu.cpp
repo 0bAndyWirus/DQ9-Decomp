@@ -1,4 +1,5 @@
 #include "dsr/spu.h"
+#include "sound_tables.h"
 
 #include <algorithm>
 #include <array>
@@ -10,20 +11,6 @@ namespace dsr {
 namespace {
 constexpr std::size_t kRingSamples=65536;
 
-constexpr std::array<int, 89> kStepTable = {
-    7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767
-};
-constexpr std::array<int, 8> kIndexAdjust = {-1,-1,-1,-1,2,4,6,8};
-constexpr std::array<std::array<int, 8>, 8> kDuty = {{
-    {{0,0,0,0,0,0,0,1}},
-    {{0,0,0,0,0,0,1,1}},
-    {{0,0,0,0,0,1,1,1}},
-    {{0,0,0,0,1,1,1,1}},
-    {{0,0,0,1,1,1,1,1}},
-    {{0,0,1,1,1,1,1,1}},
-    {{0,1,1,1,1,1,1,1}},
-    {{0,0,0,0,0,0,0,0}},
-}};
 }
 
 struct Spu::Impl {
@@ -139,10 +126,10 @@ struct Spu::Impl {
         }
         const std::uint32_t raw=rd(c.sad+nibble/2U)&255U;
         const int code=static_cast<int>((nibble&1U)?(raw>>4U):(raw&15U));
-        const int step=kStepTable[static_cast<std::size_t>(c.adpcm_index)];
+        const int step=sound_tables::adpcm_step(static_cast<unsigned>(c.adpcm_index));
         const int diff=((code&7)*2+1)*step>>3;
         c.predictor=std::clamp(c.predictor+((code&8)!=0?-diff:diff),-32768,32767);
-        c.adpcm_index=std::clamp(c.adpcm_index+kIndexAdjust[static_cast<std::size_t>(code&7)],0,88);
+        c.adpcm_index=std::clamp(c.adpcm_index+sound_tables::adpcm_index_adjust(static_cast<unsigned>(code&7)),0,88);
         c.current=c.predictor; ++c.pos;
     }
     // Busy channels' elapsed phase is now - origin; consume it at the same step ends.
@@ -173,7 +160,7 @@ struct Spu::Impl {
             } else if(n<14U) {
                 ++c.duty_pos; c.duty_pos&=7U;
                 const unsigned duty=(c.cnt>>24U)&7U;
-                c.current=kDuty[duty][c.duty_pos]!=0?32767:-32768;
+                c.current=sound_tables::psg_high(duty,c.duty_pos)?32767:-32768;
             } else {
                 c.current=(c.lfsr&1U)!=0U?-32768:32767;
                 if((c.lfsr&1U)!=0U) c.lfsr=(c.lfsr>>1U)^0x6000U;
