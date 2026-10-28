@@ -177,20 +177,27 @@ struct WifiState {
     std::uint16_t rf_control = 0;
 
     void reset_rf() {
-        // RF2958 reset values cross-checked against a reference emulator.
+        // RF9008 power-on values: https://problemkaputt.de/gbatek-ds-wifi-rf9008-registers.htm
         rf_registers.fill(0);
         rf_registers[0] = 0x0007; // CFG1
-        rf_registers[1] = 0x5003; // IFPLL1
+        rf_registers[1] = 0x9003; // IFPLL1
         rf_registers[2] = 0x0022; // IFPLL2
         rf_registers[3] = 0x1ff78; // IFPLL3
-        rf_registers[4] = 0x5003; // RFPLL1
+        rf_registers[4] = 0x9003; // RFPLL1
         rf_registers[5] = 0x01780; // RFPLL2
         rf_registers[7] = 0x14578; // RFPLL4
         rf_registers[8] = 0x1e742; // CAL1
         rf_registers[9] = 0x00120; // TXRX1
+        rf_registers[0x1b] = 0x0000f; // TEST
+        rf_registers[0x1f] = 0x00001; // Reset register
     }
 
     void reset() {
+        // GBATEK BB values: 00=6d (chip ID), 5d=01 (original DS; DS-Lite reads
+        // 00), 64=ff (one of its documented states ff/3f). Other BB reset
+        // values are unspecified there and initialized to zero. BB_POWER uses
+        // GBATEK's usual "disabled" setting 0x800d (not a documented power-on
+        // default).
         baseband.fill(0);
         baseband[0] = 0x6d;
         baseband[0x5d] = 0x01;

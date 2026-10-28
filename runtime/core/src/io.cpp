@@ -130,15 +130,16 @@ void write_register64(std::uint64_t& reg, std::uint32_t base,
         reg = (reg & 0xffffffff00000000ull) | word;
 }
 
-constexpr std::array<bool, 0x69> kBasebandWritable = {
-    false, true, true, true, true, true, true, true, true, true, true, true, true, false, false, false,
-    false, false, false, true, true, true, false, false, false, false, false, true, true, true, true, true,
-    true, true, true, true, true, true, true, false, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, false, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, true, true, false, false, false,
-    false, false, true, true, false, true, false, true, true
-};
+// GBATEK MM3155 read/write-ability: https://problemkaputt.de/gbatek-ds-wifi-baseband-chip-bb.htm
+constexpr bool baseband_writable(unsigned index) {
+    return (index >= 0x01 && index <= 0x0c) ||
+           (index >= 0x13 && index <= 0x15) ||
+           (index >= 0x1b && index <= 0x26) ||
+           (index >= 0x28 && index <= 0x4c) ||
+           (index >= 0x4e && index <= 0x5c) ||
+           (index >= 0x62 && index <= 0x63) ||
+           index == 0x65 || (index >= 0x67 && index <= 0x68);
+}
 
 bool wifi_register_mapped(std::uint32_t offset) {
     switch (offset & 0x1ffeu) {
@@ -174,7 +175,7 @@ void wifi_write_register(WifiState& wifi, std::uint32_t offset,
         const unsigned index = wifi.bb_control & 0xffu;
         const unsigned direction = (wifi.bb_control >> 12) & 0xfu;
         if (direction == 5 && index < wifi.baseband.size() &&
-            kBasebandWritable[index])
+            baseband_writable(index))
             wifi.baseband[index] = static_cast<std::uint8_t>(wifi.bb_write);
         else if (direction == 6)
             wifi.bb_read = index < wifi.baseband.size() ? wifi.baseband[index] : 0;
