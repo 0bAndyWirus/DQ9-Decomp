@@ -60,6 +60,33 @@ The extension bundles no title-specific layout or values.
   hashes, even if presentation skips frames; `get_replay_hashes()` returns native
   hash-file rows. Normal replay does not calculate/store these hashes.
 
+## Read-only RAM snapshots
+
+`register_snapshot_range(address: int, size: int) -> String` registers a
+nonempty range wholly within canonical main RAM (`0x02000000` through
+`0x023fffff`) or one potential ITCM/DTCM window (`0x00000000` through
+`0x00007fff`, `0x00800000` through `0x00803fff`, or `0x01ff8000` through
+`0x01ffffff`). Each TCM window may match either live ITCM or DTCM.
+At most 16 ranges totalling 65,536 bytes may be registered. It returns an
+empty string on success or an error for an invalid range or limit violation.
+Register ranges after a successful `load_game()`; a subsequent load clears
+them. `clear_snapshot_ranges()` removes all registrations.
+`get_ram_snapshot() -> Dictionary` returns a consumed frame's snapshot as
+`{"frame": int, "ranges": Array}`; each range contains `address: int` and
+`bytes: PackedByteArray`. It is empty until a frame with the current
+registration has been consumed. Copies follow ARM9 effective RAM/TCM mapping,
+including enabled TCM overlays of main RAM and physical TCM mirroring. DTCM
+page mappings take precedence; non-page-mapped TCM uses ITCM-first slow-path
+precedence. A range may span mappings, but any invalid byte makes the entire
+frame snapshot unavailable, not zero-filled. The session owner copies bytes
+directly without bus reads; snapshots are read-only copies, not guest memory
+references.
+
+The copy is taken at the end of the emulated frame step. It is not necessarily
+the guest state that produced the displayed scanout: 2D scanlines 0–191 and
+the GPU scene are rendered earlier. Use the frame tag for correlation, not as
+a guarantee of pixel-exact temporal correspondence.
+
 
 The Godot project caps its host frame loop at 60 Hz so renderers without effective vertical sync do not busy-spin and starve the emulation thread. Input is copied under the worker mailbox mutex. The worker converts completed session frames into three preallocated RGBA screen slots and publishes only slot indices under that mutex. It replaces stale unconsumed frames; if no slot is available, it skips that presentation update rather than waiting. The main thread claims a published slot under the mutex, copies pixels into reusable byte buffers outside the lock, then releases the slot before updating the stable `Image`/`ImageTexture` resources. Godot APIs, signals and AudioStreamGenerator access run only on the main thread.
 
@@ -269,6 +296,14 @@ explicitly synthetic; screenshots, input and save data from local sessions stay 
 set `DQ9_NATIVE=/path/to/dq9` for a worktree build and optionally
 `DQ9_REVIEW_OUTPUT=/local/output` to retain reviewer captures.
 
+## Single-screen presentation
+
+Layout index 7 composites configurable bottom-screen regions over the top
+screen, without changing guest rendering or memory. Regions are painted in
+order over the top display, including its GPU 3D layer; touch hits are mapped
+back into the bottom-screen source. See [Building and running](../docs/BUILDING.md#run-with-an-existing-local-image)
+for `single_screen_shapes` configuration and defaults.
+
 
 ## Optional GPU 3D host compositor
 
@@ -282,8 +317,8 @@ native 256×192 R8 mask from the same frame. Null inputs remove the layer for a
 software fallback. `gpu3d_screen_is_top` defaults to true; a producer must supply
 the physical engine-A screen after POWCNT1 swapping. The mask is sampled nearest:
 zero pixels discard, preserving the software composition; nonzero pixels show
-GPU colour. The overlay is a child of that physical screen's texture, so all
-seven layouts, merged-overlay occlusion and touch routing are preserved.
+GPU colour. The overlay is a child of that physical screen's texture, so layout
+placement and occlusion follow that screen.
 
 The launcher reads `get_gpu3d_texture()`, `get_gpu3d_mask_texture()` and
 `get_gpu3d_screen_is_top()` on `frame_ready`, and sends renderer settings through

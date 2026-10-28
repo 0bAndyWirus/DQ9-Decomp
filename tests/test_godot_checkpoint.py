@@ -162,6 +162,89 @@ class GodotCheckpointTests(unittest.TestCase):
         self.assertIn("unchanged", output)
         self.assertEqual(len(self.calls), 1)
 
+    def test_concat_inputs_offsets_and_clips_boundaries(self):
+        first = self.root / "first.txt"
+        second = self.root / "second.txt"
+        output = self.root / "combined.txt"
+        first.write_text("0 1 -1 -1\n3 2 10 20\n4 4 -1 -1\n")
+        second.write_text("0 8 -1 -1\n2 16 30 40\n3 32 -1 -1\n")
+        godot_checkpoint.concat_inputs(first, second, 4, 3, output)
+        self.assertEqual(output.read_text().splitlines(), [
+            "0 1 -1 -1", "3 2 10 20", "4 8 -1 -1", "6 16 30 40"])
+        self.assertEqual(first.read_text(), "0 1 -1 -1\n3 2 10 20\n4 4 -1 -1\n")
+        self.assertEqual(second.read_text(), "0 8 -1 -1\n2 16 30 40\n3 32 -1 -1\n")
+
+    def test_alignment_offsets_and_short_or_static_matches(self):
+        def series(values):
+            return {i: (str(value), str(value + 100)) for i, value in enumerate(values)}
+
+        self.assertEqual(godot_checkpoint.alignment(
+            series([90, 91, 1, 2, 3, 4]), series([1, 2, 3, 4]), min_frames=4),
+            (2, 0, 4))
+        self.assertEqual(godot_checkpoint.alignment(
+            series([1, 2, 3, 4]), series([90, 1, 2, 3, 4]), min_frames=4),
+            (0, 1, 4))
+        self.assertIsNone(godot_checkpoint.alignment(
+            series([1, 2, 3]), series([1, 2, 3]), min_frames=4))
+        self.assertIsNone(godot_checkpoint.alignment(
+            series([1, 1, 1, 1]), series([1, 1, 1, 1]), min_frames=4))
+        self.assertIsNone(godot_checkpoint.alignment(
+            series([0, 1, 2, 9]), series([8, 1, 2, 7]), min_frames=2))
+
+    def test_chain_uninterrupted_control(self):
+        self.make_segment("beta")
+        beta_meta_path = self.ladder / "beta/segment.json"
+        beta_meta = json.loads(beta_meta_path.read_text())
+        beta_meta["frames"] = 35
+        beta_meta_path.write_text(json.dumps(beta_meta))
+        (self.ladder / "alpha/input.txt").write_text("0 1 -1 -1\n3 2 -1 -1\n")
+        (self.ladder / "beta/input.txt").write_text("0 4 -1 -1\n34 8 1 2\n")
+        drift = {"hash": False, "save": False, "prefix": False}
+        calls = []
+
+        def run_control(command, *, env):
+            def option(flag):
+                return command[command.index(flag) + 1]
+            native = "--hash-file" in command
+            save = Path(option("--save"))
+            frames = int(option("--frames"))
+            input_path = Path(option("--input-script" if native else "--input"))
+            calls.append((command, save.read_bytes(), input_path.read_text()))
+            is_control = len(calls) % 4 == 0
+            self.assertEqual(save.read_bytes(), b"start" if len(calls) % 4 in (1, 0) else b"end")
+            save.write_bytes(b"control-drift" if is_control and drift["save"] else b"end")
+            rows = []
+            for frame in range(frames):
+                if not native and len(calls) % 4 == 1 or is_control and frame < 4:
+                    top, bottom = "0123456789abcdef", "fedcba9876543210"
+                    if is_control and drift["prefix"] and frame == 0:
+                        bottom = "0000000000000000"
+                else:
+                    relative = frame - 4 if is_control else frame
+                    top = f"{relative + (1000 if is_control and drift['hash'] else 0):016x}"
+                    bottom = f"{relative + 100:016x}"
+                rows.append(f"{frame} {top} {bottom}\n")
+            Path(option("--hash-file" if native else "--hashes")).write_text("".join(rows))
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(godot_checkpoint.subprocess, "run", side_effect=run_control):
+            status, output = self.invoke("chain", "alpha", "beta", "--control")
+            self.assertEqual(status, 0, output)
+            self.assertIn("PASS", output)
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(calls[3][2].splitlines(),
+                             ["0 1 -1 -1", "3 2 -1 -1", "4 4 -1 -1", "38 8 1 2"])
+            self.assertEqual(calls[3][0][calls[3][0].index("--frames") + 1], "39")
+            for kind in ("hash", "save", "prefix"):
+                calls.clear()
+                drift[kind] = True
+                status, output = self.invoke("chain", "alpha", "beta", "--control")
+                self.assertEqual(status, 1, output)
+                self.assertIn("FAIL", output)
+                drift[kind] = False
+        self.assertEqual((self.ladder / "alpha/start.sav").read_bytes(), b"start")
+        self.assertEqual((self.ladder / "beta/start.sav").read_bytes(), b"start")
+
     def test_rom_resolution(self):
         options = ["--ladder", str(self.ladder), "--godot", str(self.godot)]
         with patch.dict(os.environ, {"DQ9_ROM": str(self.rom)}):

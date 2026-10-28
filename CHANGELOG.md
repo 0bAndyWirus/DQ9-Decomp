@@ -4,6 +4,13 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
+## v0.5.0
+
+- **Godot single-screen layout:** display configurable bottom-screen regions over the top screen, with colour-key transparency and touch mapping. The scene detector is a stub; regions do not change automatically by scene. SDL remains unchanged.
+- **Read-only snapshots:** registered guest-memory ranges can be captured with a completed frame for host-side inspection. This does not provide save states or a validated scene classifier.
+- **Godot checkpoint runner:** select the Start button by node name instead of a hardcoded button width (unmodified runs exited 2 on the current host), and `chain --control` compares a reload chain against an uninterrupted control run where the segment languages match.
+- **Clean-room rewrites (output-identical):** RGB555 host expansion, 3D-over-2D blending, cartridge first-word timing and the scanline-214 render boundary were rewritten from behavioural contracts in [docs/cleanroom/](docs/cleanroom/) with exhaustive or dense ROM-free tests. Eight scripted runs (164,534 frames, saves, audio) are unchanged. Not a hardware-accuracy claim.
+
 ## v0.4.5
 
 - **GPU3D edge walker rewrite:** the scanline edge walker (polygon edge setup and per-row span stepping) was rewritten from the hardware description in [docs/GPU3D_EDGE_WALKER.md](docs/GPU3D_EDGE_WALKER.md). Output is byte-identical to v0.4.4: 3,000-frame boot hash streams in en/fr/de/es/it, the English WAV and saves, plus four scripted runs totalling 113,811 frames (screens, save and audio) with an explicit ABI configuration and EEPROM64K. Not a parity or provenance claim beyond this component.

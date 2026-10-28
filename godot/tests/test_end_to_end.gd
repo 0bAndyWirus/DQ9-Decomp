@@ -122,6 +122,11 @@ func _run() -> void:
 		# already have completed one frame before the test can stop it.
 		check(app.machine.load_game(app.settings.rom_path,app.settings.save_path,Logic.firmware_language(lang)).is_empty(),"Deterministic language replay load")
 		check(app.machine.get_session_start_save()==FileAccess.get_file_as_bytes(app.settings.save_path),"Restart loads flushed save")
+		check(app.machine.get_ram_snapshot().is_empty(),"No snapshot before registration")
+		check(not app.machine.register_snapshot_range(0x01000000,1).is_empty(),"Reject non-allowlisted memory")
+		check(not app.machine.register_snapshot_range(0x023fffff,2).is_empty(),"Reject crossing RAM boundary")
+		check(app.machine.register_snapshot_range(0x02000000,16).is_empty(),"Register RAM snapshot")
+		check(app.machine.get_ram_snapshot().is_empty(),"Snapshot waits for consumed frame")
 		var inputs := {}
 		var file:=FileAccess.open(input_path,FileAccess.READ)
 		while not file.eof_reached():
@@ -131,8 +136,20 @@ func _run() -> void:
 		for frame in replay_frames:
 			app.machine.step_frames(1,inputs.get(frame,0),0,0,false)
 			await app.machine.frame_ready
+			if frame == 0:
+				var snapshot: Dictionary = app.machine.get_ram_snapshot()
+				check(snapshot.get("frame",-1)==1,"Snapshot frame matches consumed frame")
+				check(snapshot.get("ranges",[]).size()==1,"Snapshot contains registered range")
+				if snapshot.get("ranges",[]).size()==1:
+					check(snapshot.ranges[0].address==0x02000000 and snapshot.ranges[0].bytes.size()==16,"Snapshot address and size")
+					snapshot.ranges[0].address=0
+					check(app.machine.get_ram_snapshot().ranges[0].address==0x02000000,"Snapshot result is independent")
 			if frame in replay_checkpoints: await capture("replay_%s_%d"%[lang,frame])
 		await capture("replay_"+lang)
+		app.machine.clear_snapshot_ranges()
+		check(app.machine.register_snapshot_range(0x01ffd348,4).is_empty(),"Register relocated ITCM range")
+		app.machine.clear_snapshot_ranges()
+		check(app.machine.get_ram_snapshot().is_empty(),"Clearing registrations invalidates snapshot")
 	check(FileAccess.file_exists(app.settings.save_path),"Restart flushed save")
 	root.size = Vector2i(3072,1920)
 	await create_timer(0.2).timeout

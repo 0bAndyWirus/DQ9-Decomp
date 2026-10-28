@@ -68,9 +68,13 @@ build/game-ui/game/dq9 --launcher
 
 The source wrappers `tools/run_sdl.sh --menu` and `tools/run_godot.sh --menu` also open the host panels. A missing image or unavailable native extension is an error, not a substitute game.
 
-Godot keyboard defaults are A/B = Z/X, X/Y = A/S, Start/Select = Enter/Backspace, D-pad = arrows, and L/R = E/Q. Click the displayed bottom screen for touch. In Merged Overlay, Alt + left drag moves the bottom screen and Alt + right drag resizes it. F11 toggles fullscreen; F10 or Escape opens pause/debug. Settings/rebinding remain host-only and do not alter simulation.
+Godot keyboard defaults are A/B = Z/X, X/Y = A/S, Start/Select = Enter/Backspace, D-pad = arrows, and L/R = E/Q. Click the displayed bottom screen or an interactive bottom-screen region for touch. In Merged Overlay, Alt + left drag moves the bottom screen and Alt + right drag resizes it. F11 toggles fullscreen; F10 or Escape opens pause/debug. Settings/rebinding remain host-only and do not alter simulation.
 
-Layouts preserve each screen's native 4:3 aspect ratio. Nearest filtering is the default; smooth filtering is an explicit choice. Language/settings changes are applied on start/restart. Use distinct writable save paths for diagnostic runs to preserve normal saves.
+Godot's **Single screen** layout (index 7) displays the top screen with configured bottom-screen regions composited over it. In the `[settings]` section of `user://settings.cfg`, `single_screen_shapes` is an array of dictionaries. Each has `source` (a `Rect2` in bottom-screen pixels), `destination` (a `Rect2` normalized relative to the displayed top screen), optional `opacity` (default `1.0`), and optional `color_key` (`Color`, exact RGB). Shapes draw in array order; touch hit-testing proceeds in reverse order, skips keyed pixels, and maps hits back to the bottom-screen source. Key matching uses the nearest source sample even with smooth filtering; GPU-rendered regions use the nearest high-resolution GPU sample. The default shows the full bottom screen (`Rect2(0, 0, 256, 192)`) at `Rect2(0.65, 0.65, 0.35, 0.35)`.
+
+This layout is presentation only and is not offered by the SDL host. Scene detection is a stub: shapes do not automatically change with the scene. See [single-screen scene research](SINGLE_SCREEN_SCENES.md) for limitations.
+
+The base screens preserve their native 4:3 aspect ratio. Nearest filtering is the default; smooth filtering is an explicit choice. Language/settings changes are applied on start/restart. Use distinct writable save paths for diagnostic runs to preserve normal saves.
 
 ## Host and rendering tests
 

@@ -3,11 +3,14 @@
 #include "dsr/gpu2d.h"
 #include "dsr/gpu3d.h"
 
+#include <array>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -155,10 +158,92 @@ static void test_save_restore() {
     assert(refused);
 }
 
+static void test_snapshot_ram() {
+    dsr::MachineConfig config;
+    config.direct_boot = false;
+    dsr::Session session(config);
+    dsr::Session control(config);
+    auto& machine = session.machine();
+    machine.write32(dsr::CpuId::Arm9, 0x02000100, 0x78563412);
+    control.machine().write32(dsr::CpuId::Arm9, 0x02000100, 0x78563412);
+    std::array<std::uint8_t, 4> snapshot{};
+    assert(machine.copy_snapshot_ram(0x02000100, snapshot.data(), snapshot.size()));
+    assert((snapshot == std::array<std::uint8_t, 4>{0x12, 0x34, 0x56, 0x78}));
+    machine.write8(dsr::CpuId::Arm9, 0x023fffff, 0xab);
+    control.machine().write8(dsr::CpuId::Arm9, 0x023fffff, 0xab);
+    assert(machine.copy_snapshot_ram(0x023fffff, snapshot.data(), 1) && snapshot[0] == 0xab);
+    assert(!machine.copy_snapshot_ram(0x01000000, snapshot.data(), 1));
+    assert(!machine.copy_snapshot_ram(0x023fffff, snapshot.data(), 2));
+    assert(!machine.copy_snapshot_ram(0x02400000, snapshot.data(), 1));
+    assert(!machine.copy_snapshot_ram(0x02000000, snapshot.data(), std::numeric_limits<std::size_t>::max()));
+    assert(!machine.copy_snapshot_ram(0x02000000, nullptr, 1));
+    assert(!machine.copy_snapshot_ram(0x02000000, snapshot.data(), 0));
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x01ff800c, 0);
+    dsr_mcr(&control.machine().cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x01ff800c, 0);
+    machine.write32(dsr::CpuId::Arm9, 0x01ffd348, 0x44332211);
+    control.machine().write32(dsr::CpuId::Arm9, 0x01ffd348, 0x44332211);
+    assert(machine.copy_snapshot_ram(0x01ffd348, snapshot.data(), snapshot.size()));
+    assert((snapshot == std::array<std::uint8_t, 4>{0x11, 0x22, 0x33, 0x44}));
+    assert(!machine.copy_snapshot_ram(0, snapshot.data(), 1));
+    machine.write32(dsr::CpuId::Arm9, 0x00800004, 0xaabbccdd);
+    control.machine().write32(dsr::CpuId::Arm9, 0x00800004, 0xaabbccdd);
+    assert(machine.copy_snapshot_ram(0x00800004, snapshot.data(), snapshot.size()));
+    assert((snapshot == std::array<std::uint8_t, 4>{0xdd, 0xcc, 0xbb, 0xaa}));
+    assert(!machine.copy_snapshot_ram(0x00803fff, snapshot.data(), 2));
+    session.step({});
+    control.step({});
+    assert(machine.copy_snapshot_ram(0x01ffd348, snapshot.data(), snapshot.size()));
+    assert(std::memcmp(session.screen_top(), control.screen_top(), 256 * 192 * sizeof(std::uint32_t)) == 0);
+    assert(std::memcmp(session.screen_bottom(), control.screen_bottom(), 256 * 192 * sizeof(std::uint32_t)) == 0);
+    assert(session.ticks() == control.ticks());
+    // ITCM overlays main RAM; DTCM overlays ITCM and mirrors its backing.
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x0200000c, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x02003fff, 0x51);
+    machine.write8(dsr::CpuId::Arm9, 0x02004000, 0x52);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x0200400c, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x02004000, 0x61);
+    assert(machine.copy_snapshot_ram(0x02003fff, snapshot.data(), 2));
+    assert(snapshot[0] == 0x51 && snapshot[1] == 0x61);
+    machine.write8(dsr::CpuId::Arm9, 0x02007fff, 0x71);
+    machine.write8(dsr::CpuId::Arm9, 0x02008000, 0x72);
+    assert(machine.copy_snapshot_ram(0x02007fff, snapshot.data(), 2));
+    assert(snapshot[0] == 0x71 && snapshot[1] == 0x72);
+    assert(machine.copy_snapshot_ram(0x02004000, snapshot.data(), 1) && snapshot[0] == 0x72);
+    // A sub-page TCM over RAM does not replace an existing bus page mapping.
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x02004000, 0);
+    assert(machine.copy_snapshot_ram(0x02004000, snapshot.data(), 1) && snapshot[0] == 0x52);
+    // A 4 KiB-aligned TCM base can map a page across its physical backing boundary.
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x0200000c, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x02003fff, 0xa5);
+    machine.write8(dsr::CpuId::Arm9, 0x02000000, 0x5a);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x0200100c, 0);
+    assert(machine.copy_snapshot_ram(0x02000fff, snapshot.data(), 2));
+    assert(snapshot[0] == 0xa5 && snapshot[1] == 0x5a);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x0080000a, 0);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x0200000c, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x02007fff, 0xc3);
+    machine.write8(dsr::CpuId::Arm9, 0x02000000, 0x3c);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x0200100c, 0);
+    assert(machine.copy_snapshot_ram(0x02000fff, snapshot.data(), 2));
+    assert(snapshot[0] == 0xc3 && snapshot[1] == 0x3c);
+    // On the slow path, ITCM takes priority partway through a DTCM region.
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 0, 0x00800008, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x00800fff, 0x93);
+    machine.write8(dsr::CpuId::Arm9, 0x00801000, 0x94);
+    dsr_mcr(&machine.cpu(dsr::CpuId::Arm9), 15, 0, 9, 1, 1, 0x00801000, 0);
+    machine.write8(dsr::CpuId::Arm9, 0x00801000, 0xa4);
+    assert(machine.read8(dsr::CpuId::Arm9, 0x00800fff) == 0x93);
+    assert(machine.read8(dsr::CpuId::Arm9, 0x00801000) == 0xa4);
+    assert(machine.copy_snapshot_ram(0x00800fff, snapshot.data(), 2));
+    assert(snapshot[0] == machine.read8(dsr::CpuId::Arm9, 0x00800fff));
+    assert(snapshot[1] == machine.read8(dsr::CpuId::Arm9, 0x00801000));
+}
+
 int main() {
     test_compose_hires(2, 0x8207U, true);
     test_compose_hires(3, 0x0207U, false); // engine A on the bottom screen
     test_save_restore();
+    test_snapshot_ram();
     dsr::MachineConfig config;
     config.direct_boot = false;
     dsr::Session session(config);

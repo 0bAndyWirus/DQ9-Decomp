@@ -44,10 +44,9 @@ func _run() -> void:
     Logic.save_settings("user://settings.cfg", initial)
     var app = load("res://scenes/main.tscn").instantiate()
     root.add_child(app)
-    for button in app.find_children("*", "Button", true, false):
-        if button.text == "Start" and button.custom_minimum_size.x == 180:
-            button.pressed.emit()
-            break
+    var start_button := app.find_child("StartGame", true, false) as Button
+    if start_button:
+        start_button.pressed.emit()
     if app.machine == null:
         print("FAIL: start machine")
         quit(2)
@@ -78,9 +77,12 @@ func _run() -> void:
             if frame == 3 * frames / 6:
                 app.settings.window_scale = 2
                 app.get_window().size = Vector2i(1280, 800) * 2
+                app._set_layout(7)
             if args.has("--gpu3d") and frame == 4 * frames / 6:
                 app.settings.renderer_gpu3d = 1
                 app._apply_gpu3d_settings()
+            if frame == 5 * frames / 6:
+                app._set_layout(0)
             if args.has("--gpu3d") and frame == 5 * frames / 6:
                 app.settings.renderer_gpu3d = 0
                 app._apply_gpu3d_settings()

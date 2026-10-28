@@ -6,8 +6,8 @@ func _initialize() -> void:
 
 func _run() -> void:
 	var layouts: Array = []
-	for i in 7: layouts.append(Logic.layout_rects(Vector2(1280,800), i))
-	assert(layouts.size()==7)
+	for i in 8: layouts.append(Logic.layout_rects(Vector2(1280,800), i))
+	assert(layouts.size()==8)
 	assert(layouts[0][0].size.x>0 and layouts[0][1].size.y>0)
 	assert(layouts[1][1].position.x>layouts[1][0].position.x)
 	assert(layouts[2][0].size.x>layouts[2][1].size.x)
@@ -15,6 +15,15 @@ func _run() -> void:
 	assert(layouts[4][0].size.x>0 and layouts[4][1].size==Vector2.ZERO)
 	assert(layouts[5][0].size==Vector2.ZERO and layouts[5][1].size.x>0)
 	assert(layouts[6][0].size.x>0 and layouts[6][1].size.x>0)
+	assert(layouts[7][0].size.x>0 and layouts[7][1].size == Vector2.ZERO)
+	var shape := {"source": Rect2(20, 30, 80, 40), "destination": Rect2(0.25, 0.5, 0.5, 0.25)}
+	var destination := Logic.single_shape_rect(Rect2(100, 50, 800, 600), shape)
+	assert(destination == Rect2(300, 350, 400, 150))
+	assert(Logic.single_shape_touch(destination.position, destination, shape.source) == Vector2i(20, 30))
+	assert(Logic.single_shape_touch(destination.end, destination, shape.source) == Vector2i(99, 69))
+	assert(Logic.single_shape_touch(destination.position + Vector2(4.99, 0), destination, shape.source).x == 20)
+	assert(Logic.single_shape_touch(destination.position + Vector2(5.01, 0), destination, shape.source).x == 21)
+	assert(Logic.detect_single_screen_shapes({}, [shape]) == [shape])
 	var abi_root := OS.get_temp_dir().path_join("dq9-abi-find-%d" % Time.get_ticks_usec())
 	DirAccess.make_dir_recursive_absolute(abi_root.path_join("build/gen"))
 	DirAccess.make_dir_recursive_absolute(abi_root.path_join("godot/bin"))
@@ -74,6 +83,9 @@ func _run() -> void:
 	Logic.save_settings(path,{"language":"de","layout":3,"nearest":false,"renderer_gpu3d":1,"gpu3d_scale":6})
 	var settings:=Logic.load_settings(path); assert(settings.language=="de" and settings.layout==3 and not settings.nearest)
 	assert(settings.renderer_gpu3d == 1 and settings.gpu3d_scale == 6)
+	Logic.save_settings(path, {"layout":7, "single_screen_shapes":[shape]})
+	settings = Logic.load_settings(path)
+	assert(settings.layout == 7 and settings.single_screen_shapes == [shape])
 	# Existing settings files without GPU keys retain the exact software default.
 	Logic.save_settings(path, {"language":"en"})
 	settings = Logic.load_settings(path)

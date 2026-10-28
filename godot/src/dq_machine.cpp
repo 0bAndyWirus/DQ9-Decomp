@@ -54,9 +54,19 @@ constexpr double kGeneratorBufferSeconds = 0.1;
 constexpr double kAudioPrimeSeconds = 0.040;
 constexpr double kFrameRate = 59.8261;
 constexpr double kAudioRate = 33513982.0 / 1024.0;
+struct SnapshotRange {
+    std::uint32_t address;
+    std::vector<std::uint8_t> bytes;
+};
+struct SnapshotRequest {
+    std::uint32_t address;
+    std::size_t size;
+};
 struct FrameSlot {
     std::array<std::uint8_t, kPixels * 4> screens[2]{};
     std::uint64_t number = 0;
+    std::vector<SnapshotRange> ram;
+    std::uint64_t ram_generation = 0;
     std::unique_ptr<dq9::GpuSceneFrame> gpu;
 };
 struct RecordedInput {
@@ -141,6 +151,8 @@ public:
                 audio_frames_pushed_ = 0; resample_phase_ = 0.0; audio_priming_ = true;
             }
             published_slot_ = 0; consuming_slot_ = -1;
+            snapshot_requests_.clear(); snapshot_bytes_ = 0; ++snapshot_generation_;
+            consumed_snapshot_.clear();
             ++gpu_epoch_;
             installed_texture_keys_.clear();
             input_history_.clear();
@@ -208,6 +220,32 @@ public:
                   y < 0 ? -1 : std::clamp(y, 0, 191), static_cast<std::uint8_t>(down), 0};
         sync_frames_ = n; sync_done_ = false; cv_.notify_all();
         cv_.wait(lock, [&] { return sync_done_ || shutdown_; });
+    }
+    godot::String register_snapshot_range(std::int64_t address, std::int64_t size) {
+        std::lock_guard lock(mutex_);
+        if (!loaded_) return "snapshot registration requires a loaded session";
+        const auto within = [address, size](std::int64_t first, std::int64_t end) {
+            return size > 0 && address >= first && address < end && size <= end - address;
+        };
+        if (!within(0, 0x8000) && !within(0x00800000, 0x00804000) &&
+            !within(0x01ff8000, 0x02000000) && !within(0x02000000, 0x02400000))
+            return "snapshot range must be within allowlisted RAM or TCM";
+        if (snapshot_requests_.size() >= 16 || size > 65536 - snapshot_bytes_)
+            return "snapshot range limit exceeded";
+        snapshot_requests_.push_back({static_cast<std::uint32_t>(address), static_cast<std::size_t>(size)});
+        snapshot_bytes_ += static_cast<std::size_t>(size);
+        ++snapshot_generation_;
+        consumed_snapshot_.clear();
+        return "";
+    }
+    void clear_snapshot_ranges() {
+        std::lock_guard lock(mutex_);
+        snapshot_requests_.clear(); snapshot_bytes_ = 0; ++snapshot_generation_;
+        consumed_snapshot_.clear();
+    }
+    godot::Dictionary get_ram_snapshot() const {
+        std::lock_guard lock(mutex_);
+        return consumed_snapshot_.duplicate(true);
     }
     void set_speed(float value) {
         std::lock_guard lock(mutex_);
@@ -545,6 +583,25 @@ public:
             }
             {
                 std::lock_guard lock(mutex_);
+                const auto& slot = frames_[read_slot];
+                consumed_snapshot_.clear();
+                if (!slot.ram.empty() && slot.ram_generation == snapshot_generation_) {
+                    godot::Array ranges;
+                    for (const auto& range : slot.ram) {
+                        godot::PackedByteArray data;
+                        data.resize(static_cast<int64_t>(range.bytes.size()));
+                        std::memcpy(data.ptrw(), range.bytes.data(), range.bytes.size());
+                        godot::Dictionary item;
+                        item["address"] = static_cast<std::int64_t>(range.address);
+                        item["bytes"] = data;
+                        ranges.push_back(item);
+                    }
+                    consumed_snapshot_["frame"] = static_cast<std::int64_t>(slot.number);
+                    consumed_snapshot_["ranges"] = ranges;
+                }
+            }
+            {
+                std::lock_guard lock(mutex_);
                 consuming_slot_ = -1;
             }
             top_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, bytes[0]);
@@ -571,6 +628,9 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("is_paused"), &DqMachine::is_paused);
         godot::ClassDB::bind_method(godot::D_METHOD("step_once"), &DqMachine::step_once);
         godot::ClassDB::bind_method(godot::D_METHOD("step_frames", "n", "mask", "x", "y", "down"), &DqMachine::step_frames);
+        godot::ClassDB::bind_method(godot::D_METHOD("register_snapshot_range", "address", "size"), &DqMachine::register_snapshot_range);
+        godot::ClassDB::bind_method(godot::D_METHOD("clear_snapshot_ranges"), &DqMachine::clear_snapshot_ranges);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_ram_snapshot"), &DqMachine::get_ram_snapshot);
         godot::ClassDB::bind_method(godot::D_METHOD("set_speed", "speed"), &DqMachine::set_speed);
         godot::ClassDB::bind_method(godot::D_METHOD("set_input_script", "rows"), &DqMachine::set_input_script);
         godot::ClassDB::bind_method(godot::D_METHOD("start_replay", "target_frame", "record_hashes"),
@@ -1007,6 +1067,22 @@ private:
                 if (output_slot >= 0) {
                     copy_screen(session_, 0, frames_[output_slot].screens[0].data());
                     copy_screen(session_, 1, frames_[output_slot].screens[1].data());
+                    {
+                        std::lock_guard lock(mutex_);
+                        auto& slot = frames_[output_slot];
+                        slot.ram.resize(snapshot_requests_.size());
+                        slot.ram_generation = snapshot_generation_;
+                        for (std::size_t i = 0; i < snapshot_requests_.size(); ++i) {
+                            const auto& request = snapshot_requests_[i];
+                            auto& range = slot.ram[i];
+                            range.address = request.address;
+                            range.bytes.resize(request.size);
+                            if (dsr_session_copy_snapshot_ram(session_, request.address, range.bytes.data(), request.size)) {
+                                slot.ram.clear();
+                                break;
+                            }
+                        }
+                    }
                     frames_[output_slot].number = dsr_session_frame_count(session_);
                     if (gpu_enabled) {
                         dsr::RenderFrame displayed{};
@@ -1159,6 +1235,10 @@ private:
     std::int32_t rtc_timezone_offset_minutes_ = 0;
     std::thread owner_thread_;
     FrameSlot frames_[3];
+    std::vector<SnapshotRequest> snapshot_requests_;
+    std::size_t snapshot_bytes_ = 0;
+    std::uint64_t snapshot_generation_ = 1;
+    godot::Dictionary consumed_snapshot_;
     int published_slot_ = -1, consuming_slot_ = -1;
     bool gpu_enabled_ = false;
     int gpu_scale_ = 3;

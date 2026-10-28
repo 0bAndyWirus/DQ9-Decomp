@@ -47,6 +47,9 @@ var _overlay_start := Vector2.ZERO
 var _overlay_origin := Vector2.ZERO
 var _overlay_size_origin := Vector2.ZERO
 var _overlay_rect := Rect2(0.58, 0.56, 0.35, 0.35)
+var _single_shapes: Array = []
+var _single_nodes: Array[TextureRect] = []
+var _single_active := -1
 var _ui: Dictionary = {}
 var _fps := 0.0
 var _fps_frame := 0
@@ -109,6 +112,7 @@ func _build_ui() -> void:
 	top_rect = top_frame.find_child("Texture", true, false) as TextureRect
 	bottom_rect = bottom_frame.find_child("Texture", true, false) as TextureRect
 	bottom_rect.gui_input.connect(_on_touch_input)
+	top_rect.gui_input.connect(_on_single_screen_input)
 	status_label = Label.new(); status_label.position = Vector2(10, 10); status_label.add_theme_font_size_override("font_size", 16)
 	status_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9)); status_label.add_theme_constant_override("outline_size", 5) # readable over bright scenes
 	game_panel.add_child(status_label)
@@ -272,7 +276,7 @@ func _make_settings() -> PanelContainer:
 	var reset:=Button.new(); reset.text="Reset bindings"; reset.pressed.connect(func():Logic.reset_bindings(); _persist(); _refresh_binding_buttons()); col.add_child(reset)
 	var error_label := Label.new(); error_label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; error_label.add_theme_color_override("font_color",Color(1,0.45,0.4)); outer.add_child(error_label); _ui.error=error_label
 	var buttons:=HBoxContainer.new(); buttons.add_theme_constant_override("separation",8); outer.add_child(buttons)
-	var start:=Button.new(); start.text="Start"; start.custom_minimum_size=Vector2(220,52); start.size_flags_horizontal=Control.SIZE_EXPAND_FILL;
+	var start:=Button.new(); start.name="StartGame"; start.text="Start"; start.custom_minimum_size=Vector2(220,52); start.size_flags_horizontal=Control.SIZE_EXPAND_FILL;
 	var start_style:=StyleBoxFlat.new(); start_style.bg_color=Color(0.13,0.42,0.3); start_style.set_corner_radius_all(6); start_style.set_content_margin_all(8)
 	start.add_theme_stylebox_override("normal",start_style)
 	var start_hover:=start_style.duplicate() as StyleBoxFlat; start_hover.bg_color=Color(0.17,0.52,0.37); start.add_theme_stylebox_override("hover",start_hover)
@@ -647,6 +651,14 @@ func _on_machine_frame(_frame: int) -> void:
 	if machine == null or not is_instance_valid(machine): return
 	top_rect.texture=machine.get_top_texture()
 	bottom_rect.texture=machine.get_bottom_texture()
+	if layout == 7:
+		var snapshot: Dictionary = machine.get_ram_snapshot() if machine.has_method("get_ram_snapshot") else {}
+		var shapes: Array = Logic.detect_single_screen_shapes(snapshot, settings.single_screen_shapes)
+		if shapes != _single_shapes:
+			_single_shapes = shapes.duplicate(true)
+			_layout_screens()
+		for node in _single_nodes:
+			node.texture = bottom_rect.texture
 	if int(settings.renderer_gpu3d) != 0 and machine.has_method("get_gpu3d_texture") and machine.has_method("get_gpu3d_mask_texture"):
 		var screen_is_top := gpu3d_screen_is_top
 		if machine.has_method("get_gpu3d_screen_is_top"):
@@ -682,6 +694,7 @@ func _apply_gpu3d_settings() -> void:
 	_update_gpu3d_composite()
 
 func _update_gpu3d_composite() -> void:
+	_update_single_gpu()
 	if int(settings.renderer_gpu3d) == 0 or _gpu3d_texture == null or _gpu3d_mask == null:
 		if is_instance_valid(gpu3d_rect):
 			gpu3d_rect.free()
@@ -1052,10 +1065,18 @@ func _show_settings() -> void:
 	_fit_panels(); settings_panel.show()
 	_queue_save_backup_refresh()
 func _hide_settings() -> void: settings_panel.hide(); _persist()
-func _set_layout(index: int) -> void: layout=index; settings.layout=index; _layout_screens()
+func _set_layout(index: int) -> void:
+	if index != layout and _touching:
+		if machine: machine.set_touch(0, 0, false)
+		_touching = false
+		_single_active = -1
+	layout=index; settings.layout=index; _layout_screens()
 func _apply_filter() -> void:
 	var mode:=CanvasItem.TEXTURE_FILTER_NEAREST if settings.nearest else CanvasItem.TEXTURE_FILTER_LINEAR
 	top_rect.texture_filter=mode; bottom_rect.texture_filter=mode
+	for node in _single_nodes:
+		node.texture_filter = mode
+		(node.material as ShaderMaterial).set_shader_parameter("linear_filter", not settings.nearest)
 # Centers the modal panels and keeps them inside the window (they scroll instead of overflowing).
 func _fit_panels() -> void:
 	var view := get_viewport_rect().size
@@ -1075,6 +1096,92 @@ func _layout_screens() -> void:
 		var r:Rect2=rects[i]
 		frame.position=r.position; frame.size=r.size; frame.visible=r.size.x>0 and r.size.y>0
 	_apply_filter()
+	_update_single_screen()
+
+func _update_single_screen() -> void:
+	for node in _single_nodes: node.free()
+	_single_nodes.clear()
+	if layout != 7: return
+	var snapshot: Dictionary = machine.get_ram_snapshot() if machine and machine.has_method("get_ram_snapshot") else {}
+	_single_shapes = Logic.detect_single_screen_shapes(snapshot, settings.single_screen_shapes).duplicate(true)
+	var top := Rect2(top_frame.position, top_frame.size)
+	for shape in _single_shapes:
+		if not shape is Dictionary: continue
+		var source: Rect2 = shape.get("source", Rect2())
+		var dest := Logic.single_shape_rect(top, shape)
+		if source.size.x <= 0 or source.size.y <= 0 or dest.size.x <= 0 or dest.size.y <= 0: continue
+		var node := TextureRect.new()
+		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		node.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		node.stretch_mode = TextureRect.STRETCH_SCALE
+		node.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST if settings.nearest else CanvasItem.TEXTURE_FILTER_LINEAR
+		node.texture = bottom_rect.texture
+		var material := ShaderMaterial.new()
+		material.shader = load("res://shaders/single_screen.gdshader")
+		material.set_shader_parameter("source_rect", Vector4(source.position.x / 256.0, source.position.y / 192.0, source.size.x / 256.0, source.size.y / 192.0))
+		material.set_shader_parameter("linear_filter", not settings.nearest)
+		material.set_shader_parameter("use_color_key", shape.has("color_key"))
+		if shape.has("color_key"): material.set_shader_parameter("color_key", shape.color_key)
+		node.material = material
+		node.modulate.a = clampf(float(shape.get("opacity", 1.0)), 0.0, 1.0)
+		game_panel.add_child(node)
+		node.position = dest.position
+		node.size = dest.size
+		_single_nodes.append(node)
+	_update_single_gpu()
+
+func _update_single_gpu() -> void:
+	var enabled := int(settings.renderer_gpu3d) != 0 and not gpu3d_screen_is_top and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null
+	for node in _single_nodes:
+		var material := node.material as ShaderMaterial
+		material.set_shader_parameter("use_gpu", enabled)
+		if enabled:
+			material.set_shader_parameter("gpu_texture", _gpu3d_texture)
+			material.set_shader_parameter("gpu_mask", _gpu3d_mask)
+
+func _single_shape_at(point: Vector2) -> int:
+	var top := Rect2(Vector2.ZERO, top_rect.size)
+	for i in range(_single_shapes.size() - 1, -1, -1):
+		var shape = _single_shapes[i]
+		if not shape is Dictionary or float(shape.get("opacity", 1.0)) <= 0.0: continue
+		var source: Rect2 = shape.get("source", Rect2())
+		var dest := Logic.single_shape_rect(top, shape)
+		if source.size.x <= 0 or source.size.y <= 0 or not dest.has_point(point): continue
+		if shape.has("color_key") and bottom_rect.texture:
+			var uv := (source.position + (point - dest.position) / dest.size * source.size) / Vector2(256, 192)
+			uv = uv.clamp(Vector2.ZERO, Vector2.ONE)
+			var image := bottom_rect.texture.get_image()
+			if image:
+				var pixel := Vector2i(mini(int(uv.x * image.get_width()), image.get_width() - 1), mini(int(uv.y * image.get_height()), image.get_height() - 1))
+				var color := image.get_pixelv(pixel)
+				if int(settings.renderer_gpu3d) != 0 and not gpu3d_screen_is_top and not _gpu3d_compare_software and _gpu3d_texture and _gpu3d_mask:
+					var mask := _gpu3d_mask.get_image()
+					if mask:
+						var mask_pixel := Vector2i(mini(int(uv.x * mask.get_width()), mask.get_width() - 1), mini(int(uv.y * mask.get_height()), mask.get_height() - 1))
+						if mask.get_pixelv(mask_pixel).r > 0.0:
+							var gpu_image := _gpu3d_texture.get_image()
+							if gpu_image:
+								var gpu_pixel := Vector2i(mini(int(uv.x * gpu_image.get_width()), gpu_image.get_width() - 1), mini(int(uv.y * gpu_image.get_height()), gpu_image.get_height() - 1))
+								color = color.blend(gpu_image.get_pixelv(gpu_pixel))
+				var key: Color = shape.color_key
+				if absf(color.r - key.r) < 0.5 / 255.0 and absf(color.g - key.g) < 0.5 / 255.0 and absf(color.b - key.b) < 0.5 / 255.0: continue
+		return i
+	return -1
+
+func _on_single_screen_input(event: InputEvent) -> void:
+	if layout != 7: return
+	var pressed := _touching
+	if event is InputEventScreenTouch: pressed = event.pressed
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT: pressed = event.pressed
+	elif not (event is InputEventScreenDrag or event is InputEventMouseMotion): return
+	if pressed and not _touching: _single_active = _single_shape_at(event.position)
+	if _single_active >= 0 and _single_active < _single_shapes.size():
+		var shape: Dictionary = _single_shapes[_single_active]
+		var dest := Logic.single_shape_rect(Rect2(Vector2.ZERO, top_rect.size), shape)
+		var point := Logic.single_shape_touch(event.position, dest, shape.source)
+		if machine: machine.set_touch(point.x, point.y, pressed)
+	_touching = pressed and _single_active >= 0
+	if not pressed: _single_active = -1
 func _on_touch_input(event: InputEvent) -> void:
 		var pressed := false
 		if layout == 6 and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.alt_pressed:

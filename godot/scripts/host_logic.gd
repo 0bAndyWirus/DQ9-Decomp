@@ -4,8 +4,8 @@ class_name HostLogic
 const BUTTON_ACTIONS := ["ds_a", "ds_b", "ds_x", "ds_y", "ds_start", "ds_select", "ds_up", "ds_down", "ds_left", "ds_right", "ds_l", "ds_r"]
 const BUTTON_BITS := [0, 1, 10, 11, 3, 2, 6, 7, 5, 4, 9, 8]
 const BUTTONS := BUTTON_ACTIONS
-const LAYOUTS := ["Vertical", "Horizontal", "Top Focus", "Bottom Focus", "Single Top", "Single Bottom", "Merged Overlay"]
-const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "renderer_gpu3d":0, "gpu3d_scale":3, "issue_show_auto":false}
+const LAYOUTS := ["Vertical", "Horizontal", "Top Focus", "Bottom Focus", "Single Top", "Single Bottom", "Merged Overlay", "Single screen"]
+const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "single_screen_shapes":[{"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "opacity":1.0}], "renderer_gpu3d":0, "gpu3d_scale":3, "issue_show_auto":false}
 
 static func button_mask(pressed_actions: Array) -> int:
 	var mask := 0
@@ -45,10 +45,10 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 			var secondary := Rect2(Vector2((safe.x - secondary_size.x) * 0.5, origin_y + 192.0 * big + gap), secondary_size)
 			if layout == 2: result[0] = primary; result[1] = secondary
 			else: result[1] = primary; result[0] = secondary
-		4, 5:
+		4, 5, 7:
 			var factor := minf(safe.x / 256.0, safe.y / 192.0)
 			if integer_scale: factor = maxf(1.0, floorf(factor))
-			result[0 if layout == 4 else 1] = Rect2((safe - top_size * factor) * 0.5, top_size * factor)
+			result[0 if layout != 5 else 1] = Rect2((safe - top_size * factor) * 0.5, top_size * factor)
 		6:
 			var factor := minf(safe.x / 256.0, safe.y / 192.0)
 			if integer_scale: factor = maxf(1.0, floorf(factor))
@@ -123,6 +123,24 @@ static func touch_coords(point: Vector2, rect: Rect2) -> Vector2i:
 	var p := (point - rect.position) / rect.size
 	return Vector2i(clampi(roundi(clampf(p.x, 0, 1) * 255), 0, 255), clampi(roundi(clampf(p.y, 0, 1) * 191), 0, 191))
 
+# Shape coordinates: source in bottom-screen pixels, destination normalized to
+# the displayed top screen. Array order is paint order, last shape on top.
+static func single_shape_rect(top: Rect2, shape: Dictionary) -> Rect2:
+	var destination: Rect2 = shape.get("destination", Rect2())
+	return Rect2(top.position + destination.position * top.size, destination.size * top.size)
+
+static func single_shape_touch(point: Vector2, destination: Rect2, source: Rect2) -> Vector2i:
+	if destination.size.x <= 0 or destination.size.y <= 0: return Vector2i.ZERO
+	var p := ((point - destination.position) / destination.size).clamp(Vector2.ZERO, Vector2.ONE)
+	var pixel := (source.position + p * source.size).floor()
+	var last := (source.end - Vector2(0.0001, 0.0001)).floor()
+	pixel = Vector2(minf(pixel.x, last.x), minf(pixel.y, last.y))
+	return Vector2i(clampi(int(pixel.x), 0, 255), clampi(int(pixel.y), 0, 191))
+
+# No game-specific addresses are assumed until a verified detector is provided.
+static func detect_single_screen_shapes(_snapshot: Dictionary, configured: Array) -> Array:
+	return configured
+
 static func save_settings(path: String, values: Dictionary) -> void:
 	var cfg := ConfigFile.new()
 	for key in DEFAULTS: cfg.set_value("settings", key, values.get(key, DEFAULTS[key]))
@@ -141,7 +159,8 @@ static func load_settings(path: String) -> Dictionary:
 	for key in DEFAULTS: values[key] = cfg.get_value("settings", key, DEFAULTS[key])
 	values["language"] = values["language"] if values["language"] in ["en", "fr", "de", "es", "it"] else "en"
 	values["backup_type"] = values["backup_type"] if values["backup_type"] in BACKUP_TYPES else "auto"
-	values["layout"] = clampi(int(values["layout"]), 0, 6)
+	values["layout"] = clampi(int(values["layout"]), 0, 7)
+	if not values["single_screen_shapes"] is Array: values["single_screen_shapes"] = []
 	values["renderer_gpu3d"] = clampi(int(values["renderer_gpu3d"]), 0, 1)
 	values["gpu3d_scale"] = clampi(int(values["gpu3d_scale"]), 2, 6)
 	return values
