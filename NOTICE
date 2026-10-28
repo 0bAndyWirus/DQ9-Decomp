@@ -8,6 +8,11 @@ compiled build of the game.
 "Nintendo DS" are trademarks of Nintendo. This project is unofficial and is not
 affiliated with, endorsed by or sponsored by either company.
 
+Included third-party material:
+  Spleen 5x8 2.2.0 glyphs (BSD-2-Clause, Frederic Cambus), embedded in
+  runtime/frontend/src/ui_toolkit.cpp; licence in third_party/spleen-LICENSE.txt.
+See THIRD_PARTY_NOTICES.md for the full list of included and external components.
+
 Third-party software (not included in this repository; used under its own
 license when you obtain it):
   SDL2        zlib license          https://libsdl.org
