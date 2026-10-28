@@ -10,6 +10,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 - **Read-only snapshots:** registered guest-memory ranges can be captured with a completed frame for host-side inspection. This does not provide save states or a validated scene classifier.
 - **Godot checkpoint runner:** select the Start button by node name instead of a hardcoded button width (unmodified runs exited 2 on the current host), and `chain --control` compares a reload chain against an uninterrupted control run where the segment languages match.
 - **Clean-room rewrites (output-identical):** RGB555 host expansion, 3D-over-2D blending, cartridge first-word timing and the scanline-214 render boundary were rewritten from behavioural contracts in [docs/cleanroom/](docs/cleanroom/) with exhaustive or dense ROM-free tests. Eight scripted runs (164,534 frames, saves, audio) are unchanged. Not a hardware-accuracy claim.
+- **Wi-Fi baseband/RF model from GBATEK (changes output):** writable baseband registers follow GBATEK's MM3155 table (0x47 becomes writable, 0x4D read-only) and RF power-on values follow its RF9008 table, with a 256-register transaction test. Of the eight scripted runs, two change one frame each: bottom-screen scanline 73 at frame 1516 (256 pixels); saves and audio are unchanged.
 
 ## v0.4.5
 

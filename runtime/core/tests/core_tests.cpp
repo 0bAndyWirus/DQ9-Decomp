@@ -1930,6 +1930,33 @@ void test_wifi_baseband_and_rf_transactions() {
     check(machine.read16(CpuId::Arm7, 0x0480817e) == 0x0007,
           "Wi-Fi RF reset command restores RF2958 defaults");
 }
+
+void test_wifi_baseband_writable_indices() {
+    // GBATEK MM3155 register access: https://problemkaputt.de/gbatek-ds-wifi-baseband-chip-bb.htm
+    constexpr std::array<std::array<unsigned, 2>, 8> writable_ranges{{
+        {{0x01, 0x0c}}, {{0x13, 0x15}}, {{0x1b, 0x26}}, {{0x28, 0x4c}},
+        {{0x4e, 0x5c}}, {{0x62, 0x63}}, {{0x65, 0x65}}, {{0x67, 0x68}},
+    }};
+    MachineConfig config;
+    config.direct_boot = false;
+    Machine machine(config);
+    machine.write16(CpuId::Arm7, 0x04000304, 3);
+    for (unsigned index = 0; index < 256; ++index) {
+        bool writable = false;
+        for (const auto& range : writable_ranges)
+            writable |= index >= range[0] && index <= range[1];
+        machine.write16(CpuId::Arm7, 0x04808158, 0x6000 | index);
+        const auto initial = machine.read16(CpuId::Arm7, 0x0480815c);
+        const auto complement = static_cast<std::uint16_t>(initial ^ 0xffu);
+        machine.write16(CpuId::Arm7, 0x0480815a, complement);
+        machine.write16(CpuId::Arm7, 0x04808158, 0x5000 | index);
+        machine.write16(CpuId::Arm7, 0x04808158, 0x6000 | index);
+        const auto actual = machine.read16(CpuId::Arm7, 0x0480815c);
+        char message[96];
+        std::snprintf(message, sizeof(message), "Wi-Fi baseband register %02x write/read contract", index);
+        check(actual == (writable ? complement : initial), message);
+    }
+}
 } // namespace
 
 int run_core_tests() {
@@ -1958,6 +1985,7 @@ int run_core_tests() {
     test_bios_memory_swis();
     test_powcnt2_roundtrip_preserves_headphone_audio();
     test_wifi_baseband_and_rf_transactions();
+    test_wifi_baseband_writable_indices();
     run_thread_tests();
     run_abi_config_tests();
     return failures == 0 ? 0 : 1;
