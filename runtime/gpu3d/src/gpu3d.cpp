@@ -2193,47 +2193,52 @@ struct Gpu3D::Impl {
         edge.y = ceil_fixed(top.y);
         edge.height = ceil_fixed(bottom.y) - edge.y;
         edge.x = ceil_fixed(top.x);
-        const std::int64_t width = ceil_fixed(bottom.x) - edge.x;
-        if (edge.height != 0 || width != 0) {
-            std::int64_t delta_y = static_cast<std::int64_t>(bottom.y) - top.y;
-            const std::int64_t delta_x = static_cast<std::int64_t>(bottom.x) - top.x;
-            if (delta_y != 0) {
-                const std::int64_t initial = delta_x * 16 * edge.y - delta_x * top.y +
-                                             delta_y * top.x - 1 + delta_y * 16;
-                if (!floor_div_mod(initial, delta_y * 16, edge.x, edge.error)) return false;
-                if (!floor_div_mod(delta_x * 16, delta_y * 16, edge.x_step, edge.numerator)) return false;
-                edge.denominator = delta_y * 16;
-            } else {
-                edge.x_step = width;
-                edge.numerator = 0;
-                edge.error = 0;
-                edge.denominator = 1;
-                delta_y = 1;
-            }
-            const float y_prestep = static_cast<float>(static_cast<std::int64_t>(edge.y) * 16 - top.y) / 16.0F;
-            const float per_line = 1.0F / (static_cast<float>(delta_y) / 16.0F);
-            for (std::size_t i = 0; i < edge.value.size(); ++i) {
-                const float slope = per_line * (bottom.attribute[i] - top.attribute[i]);
-                edge.value[i] = top.attribute[i] + y_prestep * slope;
-                edge.step[i] = slope;
-            }
-        } else {
+        const auto end_x = ceil_fixed(bottom.x);
+        if (edge.height == 0 && end_x == edge.x) {
             edge.x_step = 1;
             edge.value = top.attribute;
+            return true;
+        }
+
+        const std::int64_t dy = static_cast<std::int64_t>(bottom.y) - top.y;
+        const std::int64_t dx = static_cast<std::int64_t>(bottom.x) - top.x;
+        if (dy != 0) {
+            // At each integer row, represent the exact intersection as q + r/D
+            // pixels, with 0 <= r < D. Coverage starts at its ceiling.
+            const std::int64_t denominator = 16 * dy;
+            const std::int64_t intersection = static_cast<std::int64_t>(top.x) * dy +
+                dx * (16 * static_cast<std::int64_t>(edge.y) - top.y);
+            std::int64_t quotient = 0;
+            std::int64_t fraction = 0;
+            if (!floor_div_mod(intersection, denominator, quotient, edge.error) ||
+                !floor_div_mod(dx, dy, edge.x_step, fraction)) return false;
+            edge.denominator = denominator;
+            edge.numerator = 16 * fraction;
+            edge.x = quotient + (edge.error != 0);
+        } else {
+            edge.x_step = end_x - edge.x;
+        }
+
+        const float y_prestep = static_cast<float>(static_cast<std::int64_t>(edge.y) * 16 - top.y) / 16.0F;
+        const float per_line = 1.0F / (static_cast<float>(dy != 0 ? dy : 1) / 16.0F);
+        for (std::size_t i = 0; i < edge.value.size(); ++i) {
+            const float slope = per_line * (bottom.attribute[i] - top.attribute[i]);
+            edge.value[i] = top.attribute[i] + y_prestep * slope;
+            edge.step[i] = slope;
         }
         return true;
     }
 
     static void step_edge(RasterEdge& edge) {
-        edge.x += edge.x_step;
+        const bool was_fractional = edge.error != 0;
+        edge.error += edge.numerator;
+        const bool carry = edge.error >= edge.denominator;
+        if (carry) edge.error -= edge.denominator;
+        edge.x += edge.x_step + static_cast<int>(carry) +
+                  static_cast<int>(edge.error != 0) - static_cast<int>(was_fractional);
         ++edge.y;
         --edge.height;
         for (std::size_t i = 0; i < edge.value.size(); ++i) edge.value[i] += edge.step[i];
-        edge.error += edge.numerator;
-        if (edge.error >= edge.denominator) {
-            ++edge.x;
-            edge.error -= edge.denominator;
-        }
     }
 
     // Diagnose raw causes, then permit only a single partial fragment over
@@ -2519,36 +2524,29 @@ struct Gpu3D::Impl {
                         int y_begin, int y_end) {
         const auto& verts = prepared.raster;
         const auto count = prepared.count;
-        const bool back_facing = !prepared.front_facing;
         std::size_t left_vertex = count;
         std::size_t right_vertex = 0;
         RasterEdge left;
         RasterEdge right;
-        bool step_left = true;
-        bool step_right = true;
-        for (std::size_t guard = 0; guard < 2U * count; ++guard) {
-            if (step_left && !make_edge(verts[left_vertex == count ? 0 : left_vertex],
-                                        verts[left_vertex - 1U], left)) return;
-            if (step_right && !make_edge(verts[right_vertex], verts[right_vertex + 1U], right)) return;
-            step_left = step_right = false;
-            for (int rows = std::min(left.height, right.height); rows > 0; --rows) {
-                // Walk all preceding rows by the original additions: multiplying
-                // the DDA step by skipped rows changes floating-point rounding.
+        if (!make_edge(verts[0], verts[count - 1U], left) ||
+            !make_edge(verts[0], verts[1], right)) return;
+        for (std::size_t edges = 0; edges < 2U * count; ++edges) {
+            int remaining = std::min(left.height, right.height);
+            while (remaining-- > 0) {
+                // Advance even outside the band to preserve sequential float rounding.
                 if (left.y >= y_begin && left.y < y_end)
-                    draw_span<Capture>(polygon, shading, is_translucent_polygon, !back_facing,
-                              left, right, y_begin, y_end);
+                    draw_span<Capture>(polygon, shading, is_translucent_polygon,
+                                       prepared.front_facing, left, right, y_begin, y_end);
                 step_edge(left);
                 step_edge(right);
             }
-            if (right.height == 0) {
-                step_right = true;
-                ++right_vertex;
-            }
-            if (left.height == 0) {
-                step_left = true;
-                --left_vertex;
-            }
+            const bool finished_left = left.height == 0;
+            const bool finished_right = right.height == 0;
+            if (finished_left) --left_vertex;
+            if (finished_right) ++right_vertex;
             if (left_vertex <= right_vertex + 1U) break;
+            if (finished_left && !make_edge(verts[left_vertex], verts[left_vertex - 1U], left)) return;
+            if (finished_right && !make_edge(verts[right_vertex], verts[right_vertex + 1U], right)) return;
         }
     }
     template<bool Capture>
