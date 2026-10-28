@@ -118,6 +118,11 @@ extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
 extern "C" int dsr_session_save(dsr_session_handle* session) {
     return session && session->session.flush_save() ? 0 : 1;
 }
+
+extern "C" int dsr_session_copy_snapshot_ram(const dsr_session_handle* session,
+                                               uint32_t address, void* destination, size_t size) {
+    return session && session->session.machine().copy_snapshot_ram(address, destination, size) ? 0 : 1;
+}
 extern "C" uint64_t dsr_session_get_save_capacity(dsr_session_handle* session) {
     return session ? static_cast<uint64_t>(session->session.save_capacity()) : 0;
 }

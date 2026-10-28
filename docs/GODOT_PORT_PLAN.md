@@ -34,4 +34,19 @@ Both link the same libraries: `dsr_core`, `dsr_gpu2d`, `dsr_gpu3d`, `dsr_spu`, `
 | G3 hosting features | layouts, settings/rebinding, fullscreen/scaling filters, debug menu + bundles |
 | G4 rendering stage 1 | `RenderFrame` capture to Godot (see `REMASTER_STAGE1.md`), 1x parity mode first |
 
+For persistence, the proposed cross-host reload-parity gate is: after Godot
+gameplay changes a save, restart Godot and native independently from copies of
+that flushed save, replay the same reload input, and require every screen hash
+and final save byte to match. `tools/godot_checkpoint.py chain A B` exercises
+this comparison; it does not establish uninterrupted gameplay continuity.
+
+The optional `chain A B --control` also runs A and B's frame-offset inputs in
+one uninterrupted native process. It requires A's recorded hashes, a
+non-static overlap of at least 30 consecutive paired screen hashes reaching
+the end of either B run, and identical final saves. The control retains A's
+RTC while restarted B uses B's RTC. A boot/reload input applied to an already
+running game need not reach the reloaded state; a stronger continuity gate
+requires a matched in-game save/load scenario with inputs that demonstrably
+converge on the same state.
+
 Godot and godot-cpp are external development dependencies, not bundled. Configure their paths for the local installation; see [Building DQ9-Decomp](BUILDING.md). Packages and generated game builds remain local-only and must never be uploaded.

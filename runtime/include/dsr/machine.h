@@ -63,6 +63,8 @@ public:
     std::uint8_t read8(CpuId id, std::uint32_t addr);
     std::uint16_t read16(CpuId id, std::uint32_t addr);
     std::uint32_t read32(CpuId id, std::uint32_t addr);
+    // Owner-thread-only direct copy from allowlisted RAM/TCM backing.
+    bool copy_snapshot_ram(std::uint32_t address, void* destination, std::size_t size) const noexcept;
     void write8(CpuId id, std::uint32_t addr, std::uint8_t value);
     void write16(CpuId id, std::uint32_t addr, std::uint16_t value);
     void write32(CpuId id, std::uint32_t addr, std::uint32_t value);

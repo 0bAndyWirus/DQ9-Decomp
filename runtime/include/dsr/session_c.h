@@ -62,6 +62,11 @@ DSR_SESSION_API uint64_t dsr_session_ticks(const dsr_session_handle* session);
  * nonzero on write failure or a NULL session. Failed writes remain pending for retry.
  * Call on the session's owner thread, like step/destroy. */
 DSR_SESSION_API int dsr_session_save(dsr_session_handle* session);
+/* Owner-thread only. Copies canonical main RAM or allowlisted ARM9 TCM backing,
+ * without bus side effects. TCM must be enabled and mapped at the address.
+ * Returns 0 on success, nonzero on failure. */
+DSR_SESSION_API int dsr_session_copy_snapshot_ram(const dsr_session_handle* session,
+                                                   uint32_t address, void* destination, size_t size);
 /* Save inspection and restore are owner-thread-only. Capacity is the effective chip's raw
  * byte count, or zero for NULL/no cartridge. Listing visits managed regular, non-symlink
  * backups newest filename first, regardless of mtime or capacity. path is UTF-8, borrowed

@@ -82,8 +82,61 @@ def run(ladder: Path, selected: list[str], godot: Path, rom: Path,
     return 1 if failed else 0
 
 
+def concat_inputs(path_a: Path, path_b: Path, frames_a: int, frames_b: int,
+                  output: Path) -> None:
+    """Make one native input stream; each sparse script is reset at its boundary."""
+    rows = []
+    for path, count, offset in ((path_a, frames_a, 0), (path_b, frames_b, frames_a)):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if len(fields) != 4:
+                raise ValueError(f"{path}: invalid input row")
+            try:
+                frame, mask, x, y = map(int, fields)
+            except ValueError as exc:
+                raise ValueError(f"{path}: invalid input row") from exc
+            if 0 <= frame < count:
+                rows.append(f"{frame + offset} {mask} {x} {y}\n")
+    output.write_text("".join(rows), encoding="utf-8")
+
+
+def alignment(control: dict, restarted: dict, min_frames: int = 30):
+    """Find a non-static identical suffix overlap, avoiding black-screen matches."""
+    if min_frames < 2:
+        raise ValueError("min_frames must be at least 2")
+    left = [control[i] for i in range(len(control))]
+    right = [restarted[i] for i in range(len(restarted))]
+    windows = {}
+    for j in range(len(right) - min_frames + 1):
+        window = tuple(right[j:j + min_frames])
+        if len(set(window)) > 1:
+            windows.setdefault(window, []).append(j)
+    best = None
+    checked = {}
+    for i in range(len(left) - min_frames + 1):
+        window = tuple(left[i:i + min_frames])
+        for j in windows.get(window, ()):
+            diagonal = i - j
+            if i < checked.get(diagonal, -1):
+                continue
+            start_i, start_j = i, j
+            while start_i and start_j and left[start_i - 1] == right[start_j - 1]:
+                start_i -= 1
+                start_j -= 1
+            end_i, end_j = i + min_frames, j + min_frames
+            while end_i < len(left) and end_j < len(right) and left[end_i] == right[end_j]:
+                end_i += 1
+                end_j += 1
+            checked[diagonal] = end_i
+            length = end_i - start_i
+            if (end_i == len(left) or end_j == len(right)) and (best is None or length > best[2]):
+                best = (start_i, start_j, length)
+    return best
+
 def chain(ladder: Path, a: str, b: str, frames_b: int | None,
-          godot: Path, rom: Path, binary: Path) -> int:
+          godot: Path, rom: Path, binary: Path, control: bool = False) -> int:
     seg_a, seg_b = segment(ladder, a), segment(ladder, b)
     meta_a, meta_b = load_meta(seg_a), load_meta(seg_b)
     if meta_a["extra_args"] or meta_b["extra_args"]:
@@ -91,6 +144,8 @@ def chain(ladder: Path, a: str, b: str, frames_b: int | None,
     frames = meta_b["frames"] if frames_b is None else frames_b
     if frames <= 0:
         raise ValueError("--frames-b must be positive")
+    if control and meta_a["language"] != meta_b["language"]:
+        raise ValueError("control requires matching segment languages")
     if not binary.is_file():
         raise ValueError(f"missing required file: {binary}")
     expected = hashes(seg_a / "expected.hashes", meta_a["frames"])
@@ -139,6 +194,40 @@ def chain(ladder: Path, a: str, b: str, frames_b: int | None,
             print(f"FAIL chain {a}->{b}: " + " | ".join(errors))
             return 1
         print(f"PASS chain {a}->{b}: {frames} frames, save identical")
+        if control:
+            inputs = work / "control-input.txt"
+            concat_inputs(seg_a / "input.txt", seg_b / "input.txt",
+                          meta_a["frames"], frames, inputs)
+            control_save = work / "control.sav"
+            shutil.copyfile(seg_a / "start.sav", control_save)
+            control_hashes = work / "control.hashes"
+            total = meta_a["frames"] + frames
+            command = [str(binary.resolve()), "--headless", "--rom", str(rom.resolve()),
+                       "--save", str(control_save), "--frames", str(total),
+                       "--input-script", str(inputs), "--language", meta_a["language"],
+                       "--rtc-epoch", str(meta_a["rtc_epoch"]), "--rtc-timezone-offset",
+                       str(meta_a["rtc_timezone_offset_minutes"]), "--hash-file", str(control_hashes)]
+            result = subprocess.run(command, env=os.environ.copy())
+            if result.returncode:
+                raise ValueError(f"uninterrupted control: dq9 exited {result.returncode}")
+            uninterrupted = hashes(control_hashes, total)
+            if any(uninterrupted[f] != expected[f] for f in range(meta_a["frames"])):
+                print("FAIL control: uninterrupted A differs from recorded A")
+                return 1
+            post_a = {f: uninterrupted[meta_a["frames"] + f] for f in range(frames)}
+            match = alignment(post_a, reference)
+            save_equal = sha(control_save) == sha(native_save)
+            print("NOTE: uninterrupted control retains A's RTC; restarted B uses B's RTC")
+            if match is None:
+                print(f"FAIL control {a}->{b}: no non-static aligned suffix; "
+                      f"end saves {'identical' if save_equal else 'differ'}")
+                return 1
+            print(f"CONTROL alignment: uninterrupted B frame {match[0]}, "
+                  f"restarted B frame {match[1]}, {match[2]} identical frames")
+            if not save_equal:
+                print(f"FAIL control {a}->{b}: end saves differ")
+                return 1
+            print(f"PASS control {a}->{b}: aligned hashes and end saves identical")
         return 0
 
 
@@ -158,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     chaining.add_argument("a")
     chaining.add_argument("b")
     chaining.add_argument("--frames-b", type=int)
+    chaining.add_argument("--control", action="store_true",
+                          help="also compare against one uninterrupted native A+B process")
     args = parser.parse_args(argv)
     try:
         if args.rom is None:
@@ -173,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"missing required file: {path}")
         if args.command == "chain":
             return chain(args.ladder, args.a, args.b, args.frames_b,
-                         args.godot, args.rom, args.dq9)
+                         args.godot, args.rom, args.dq9, args.control)
         return run(args.ladder, args.names or names(args.ladder), args.godot, args.rom,
                    args.toggles, args.gpu3d)
     except (OSError, ValueError, KeyError, TypeError) as exc:

@@ -22,6 +22,71 @@ void put32(std::uint8_t* p, std::uint32_t value) {
 }
 } // namespace
 
+bool Machine::copy_snapshot_ram(std::uint32_t address, void* destination, std::size_t size) const noexcept {
+    if (!destination || size == 0) return false;
+    const auto within = [address, size](std::uint32_t first, std::uint32_t end) {
+        return address >= first && address < end && size <= end - address;
+    };
+    if (!within(0, 0x8000) && !within(0x00800000, 0x00804000) &&
+        !within(0x01ff8000, 0x02000000) && !within(0x02000000, 0x02400000))
+        return false;
+    const auto& arm9 = impl_->cpus[static_cast<unsigned>(CpuId::Arm9)];
+    const auto region_size = [](std::uint32_t reg) -> std::uint64_t {
+        const unsigned code = (reg >> 1) & 31u;
+        return code > 23 ? 0x80000000u : 512u << code;
+    };
+    const auto in_region = [&](std::uint32_t pos, std::uint32_t reg, unsigned bit) {
+        const auto base = reg & 0xfffff000u;
+        return (arm9.cp15_control & (1u << bit)) &&
+               static_cast<std::uint32_t>(pos - base) < region_size(reg);
+    };
+    // Match the bus page mapping, then its ITCM-before-DTCM slow path.
+    // Validate first so a failed request does not partially modify destination.
+    for (int pass = 0; pass < 2; ++pass) {
+        std::size_t done = 0;
+        while (done < size) {
+            const auto pos = address + static_cast<std::uint32_t>(done);
+            auto count = std::min(size - done, std::size_t(kPageSize - (pos & kPageMask)));
+            const std::uint8_t* source = nullptr;
+            if (arm9.page_read[pos >> kPageShift]) {
+                const auto* page = arm9.page_read[pos >> kPageShift];
+                const auto map_tcm = [&](const auto& backing) {
+                    const auto page_address = reinterpret_cast<std::uintptr_t>(page);
+                    const auto base_address = reinterpret_cast<std::uintptr_t>(backing.data());
+                    if (page_address < base_address || page_address - base_address >= backing.size())
+                        return false;
+                    const auto offset = (page_address - base_address + (pos & kPageMask)) % backing.size();
+                    source = backing.data() + offset;
+                    count = std::min(count, backing.size() - offset);
+                    return true;
+                };
+                if (!map_tcm(impl_->itcm) && !map_tcm(impl_->dtcm))
+                    source = page + (pos & kPageMask);
+            } else if (in_region(pos, arm9.itcm_region, 16)) {
+                const auto offset = (pos - (arm9.itcm_region & 0xfffff000u)) % impl_->itcm.size();
+                source = impl_->itcm.data() + offset;
+                count = std::min(count, impl_->itcm.size() - offset);
+                count = std::min(count, static_cast<std::size_t>(region_size(arm9.itcm_region) -
+                    static_cast<std::uint32_t>(pos - (arm9.itcm_region & 0xfffff000u))));
+            } else if (in_region(pos, arm9.dtcm_region, 18)) {
+                const auto offset = (pos - (arm9.dtcm_region & 0xfffff000u)) % impl_->dtcm.size();
+                source = impl_->dtcm.data() + offset;
+                count = std::min(count, impl_->dtcm.size() - offset);
+                count = std::min(count, static_cast<std::size_t>(region_size(arm9.dtcm_region) -
+                    static_cast<std::uint32_t>(pos - (arm9.dtcm_region & 0xfffff000u))));
+                const auto itcm_base = arm9.itcm_region & 0xfffff000u;
+                if ((arm9.cp15_control & (1u << 16)) && itcm_base > pos)
+                    count = std::min(count, static_cast<std::size_t>(itcm_base - pos));
+            } else {
+                return false;
+            }
+            if (pass) std::memcpy(static_cast<std::uint8_t*>(destination) + done, source, count);
+            done += count;
+        }
+    }
+    return true;
+}
+
 Machine::Impl::Impl(const MachineConfig& cfg) : config(cfg), spi(cfg.firmware) {
     if (!cfg.rom_path.empty()) {
         auto save = cfg.save_path;
