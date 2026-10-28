@@ -103,6 +103,13 @@ DqMachine* live_machines = nullptr;
 class DqMachine final : public godot::Node {
     GDCLASS(DqMachine, godot::Node)
 public:
+    enum Scene {
+        SCENE_OTHER = DSR_SCENE_OTHER,
+        SCENE_BATTLE = DSR_SCENE_BATTLE,
+        SCENE_CHARACTER_CREATION = DSR_SCENE_CHARACTER_CREATION,
+        SCENE_INTRO = DSR_SCENE_INTRO,
+        SCENE_TITLE = DSR_SCENE_TITLE,
+    };
     DqMachine() : next_instance_(live_machines) {
         if (next_instance_) next_instance_->previous_instance_ = this;
         live_machines = this;
@@ -124,10 +131,16 @@ public:
     }
 
     godot::String load_game(const godot::String& rom_path, const godot::String& save_path, int language) {
+        ++session_generation_;
         stop();
         shutdown_worker();
         if (gpu_scene_) { memdelete(gpu_scene_); gpu_scene_ = nullptr; }
         for (auto& slot : frames_) slot.gpu.reset();
+        {
+            std::lock_guard lock(mutex_);
+            scene_ = DSR_SCENE_OTHER;
+            pending_scene_changes_.clear();
+        }
         if (language < 0 || language > 5) return "language must be in range 0..5";
         const godot::CharString rom = rom_path.utf8();
         const godot::CharString save = save_path.utf8();
@@ -205,6 +218,7 @@ public:
         if (audio_player_) audio_player_->set_stream_paused(value || audio_priming_);
     }
     bool is_paused() const { std::lock_guard lock(mutex_); return paused_; }
+    int get_scene() const { std::lock_guard lock(mutex_); return scene_; }
     void step_once() {
         std::lock_guard lock(mutex_);
         if (loaded_ && (paused_ || !running_)) {
@@ -529,8 +543,11 @@ public:
         std::uint64_t number = 0;
         bool notify_replay = false;
         std::uint64_t replay_frame = 0;
+        const auto generation = session_generation_;
+        scene_changes_scratch_.clear();
         {
             std::lock_guard lock(mutex_);
+            scene_changes_scratch_.swap(pending_scene_changes_);
             if (published_slot_ >= 0) {
                 consuming_slot_ = published_slot_;
                 published_slot_ = -1;
@@ -609,10 +626,16 @@ public:
             top_texture_->update(top_image_);
             bottom_texture_->update(bottom_image_);
             emit_signal("frame_ready", static_cast<std::int64_t>(number));
+            if (generation != session_generation_) return;
             if (notify_replay) {
                 if (audio_player_) audio_player_->set_stream_paused(true);
                 emit_signal("replay_finished", static_cast<std::int64_t>(replay_frame));
+                if (generation != session_generation_) return;
             }
+        }
+        for (int scene : scene_changes_scratch_) {
+            emit_signal("scene_changed", scene);
+            if (generation != session_generation_) return;
         }
         std::string err;
         { std::lock_guard lock(mutex_); err.swap(error_); }
@@ -626,6 +649,7 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("stop"), &DqMachine::stop);
         godot::ClassDB::bind_method(godot::D_METHOD("set_paused", "paused"), &DqMachine::set_paused);
         godot::ClassDB::bind_method(godot::D_METHOD("is_paused"), &DqMachine::is_paused);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_scene"), &DqMachine::get_scene);
         godot::ClassDB::bind_method(godot::D_METHOD("step_once"), &DqMachine::step_once);
         godot::ClassDB::bind_method(godot::D_METHOD("step_frames", "n", "mask", "x", "y", "down"), &DqMachine::step_frames);
         godot::ClassDB::bind_method(godot::D_METHOD("register_snapshot_range", "address", "size"), &DqMachine::register_snapshot_range);
@@ -667,6 +691,12 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("get_input_history"), &DqMachine::get_input_history);
         godot::ClassDB::bind_method(godot::D_METHOD("get_rtc_epoch"), &DqMachine::get_rtc_epoch);
         godot::ClassDB::bind_method(godot::D_METHOD("get_rtc_timezone_offset_minutes"), &DqMachine::get_rtc_timezone_offset_minutes);
+        BIND_CONSTANT(SCENE_OTHER);
+        BIND_CONSTANT(SCENE_BATTLE);
+        BIND_CONSTANT(SCENE_CHARACTER_CREATION);
+        BIND_CONSTANT(SCENE_INTRO);
+        BIND_CONSTANT(SCENE_TITLE);
+        ADD_SIGNAL(godot::MethodInfo("scene_changed", godot::PropertyInfo(godot::Variant::INT, "scene")));
         ADD_SIGNAL(godot::MethodInfo("frame_ready", godot::PropertyInfo(godot::Variant::INT, "frame")));
         ADD_SIGNAL(godot::MethodInfo("replay_finished", godot::PropertyInfo(godot::Variant::INT, "frame")));
         ADD_SIGNAL(godot::MethodInfo("error", godot::PropertyInfo(godot::Variant::STRING, "message")));
@@ -1090,8 +1120,13 @@ private:
                         gpu_delay.publish(frames_[output_slot].gpu, displayed, gpu_epoch);
                     }
                 }
+                const int scene = dsr_session_scene(session_);
                 {
                     std::lock_guard lock(mutex_);
+                    if (scene != scene_) {
+                        scene_ = scene;
+                        pending_scene_changes_.push_back(scene);
+                    }
                     frame_count_ = dsr_session_frame_count(session_);
                     if (!chip_mismatch_) chip_mismatch_ = dsr_session_chip_mismatch_suspected(session_) != 0;
                     if (output_slot >= 0) published_slot_ = output_slot;
@@ -1207,6 +1242,11 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     dsr_session_handle* session_ = nullptr;
+    int scene_ = DSR_SCENE_OTHER;
+    std::vector<int> pending_scene_changes_;
+    // Main-thread dispatch buffer retains capacity across frame batches.
+    std::vector<int> scene_changes_scratch_;
+    std::uint64_t session_generation_ = 0;
     dsr_input_state input_{};
     bool loaded_ = false, running_ = false, paused_ = false;
     bool audio_priming_ = true;

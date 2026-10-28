@@ -21,6 +21,14 @@ extern "C" {
 
 typedef struct dsr_session_handle dsr_session_handle;
 
+typedef enum dsr_scene {
+    DSR_SCENE_OTHER = 0,
+    DSR_SCENE_BATTLE = 1,
+    DSR_SCENE_CHARACTER_CREATION = 2,
+    DSR_SCENE_INTRO = 3,
+    DSR_SCENE_TITLE = 4
+} dsr_scene;
+
 typedef struct dsr_input_state {
     uint16_t buttons;
     int32_t pen_x;
@@ -58,6 +66,8 @@ DSR_SESSION_API const int16_t* dsr_session_get_audio(const dsr_session_handle* s
                                      size_t* frame_count, double* sample_rate);
 DSR_SESSION_API uint64_t dsr_session_frame_count(const dsr_session_handle* session);
 DSR_SESSION_API uint64_t dsr_session_ticks(const dsr_session_handle* session);
+/* Classifies current guest state; invalid or unknown states are OTHER. */
+DSR_SESSION_API dsr_scene dsr_session_scene(const dsr_session_handle* session);
 /* Flushes pending save data. Returns 0 on success (including no pending writes),
  * nonzero on write failure or a NULL session. Failed writes remain pending for retry.
  * Call on the session's owner thread, like step/destroy. */

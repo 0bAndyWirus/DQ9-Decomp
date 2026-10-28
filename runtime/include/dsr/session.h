@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <vector>
 #include "dsr/machine.h"
+#include "dsr/session_c.h"
 #include "dsr/spu.h"
 
 namespace dsr {
@@ -21,6 +22,9 @@ struct SessionConfig {
     std::filesystem::path abi_config_path; // empty: use DQ9_ABI_CONFIG, if set
     std::string backup_type;               // cartridge save chip name (--backup-type); empty or "auto": from the ABI config / save size
 };
+
+// Reads only the ARM9 tracker and main RAM; does not change guest state.
+dsr_scene classify_scene(Machine& machine);
 
 class Session {
 public:

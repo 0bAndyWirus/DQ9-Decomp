@@ -5,6 +5,52 @@
 #include <stdexcept>
 namespace dsr {
 
+namespace {
+constexpr std::uint32_t kRamStart = 0x02000000;
+constexpr std::uint32_t kRamEnd = 0x02400000;
+
+bool ram_word(std::uint32_t base, std::uint32_t offset) {
+    return (base & 3u) == 0 && base >= kRamStart &&
+           base <= kRamEnd - 4 - offset;
+}
+}
+
+dsr_scene classify_scene(Machine& machine) {
+    constexpr auto cpu = CpuId::Arm9;
+    const bool busy = machine.read8(cpu, 0x01ffd340) != 0;
+    const auto row = machine.read32(cpu, 0x01ffd348);
+    if (row >= 8) return DSR_SCENE_OTHER;
+    bool ov17 = false, ov21 = false;
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        const auto id = machine.read8(cpu, 0x01ffd364 + row * 6 + i);
+        if (id == 0xff) continue;
+        if (id & 0x40) return DSR_SCENE_OTHER;
+        ov17 |= id == 17;
+        ov21 |= id == 21;
+    }
+    if (ov21) return busy ? DSR_SCENE_OTHER : DSR_SCENE_CHARACTER_CREATION;
+    // The guest marks an unloading slot before setting the global load lock.
+    // Busy can therefore describe another slot; residency is still a heuristic,
+    // not a proof of allocation lifetime or of a visually exact scene boundary.
+    if (ov17) {
+        const auto world = machine.read32(cpu, 0x021d82e4);
+        if (world != 0) {
+            if (!ram_word(world, 0x3718)) return DSR_SCENE_OTHER;
+            const auto owner = machine.read32(cpu, world + 0x3718);
+            if (owner != 0) {
+                if (!ram_word(owner, 0x6ac)) return DSR_SCENE_OTHER;
+                const auto dispatcher = machine.read32(cpu, owner + 0x6ac);
+                if (dispatcher != 0) {
+                    if (!ram_word(dispatcher, 0xea8)) return DSR_SCENE_OTHER;
+                    if (machine.read32(cpu, dispatcher + 0xea8) != 0)
+                        return DSR_SCENE_BATTLE;
+                }
+            }
+        }
+    }
+    return DSR_SCENE_OTHER;
+}
+
 
 Session::Session(const MachineConfig& config) : machine_(config) {}
 

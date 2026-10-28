@@ -9,11 +9,112 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+static void test_scene_classifier() {
+    dsr::MachineConfig config;
+    config.direct_boot = false;
+    dsr::Session session(config);
+    auto& machine = session.machine();
+    constexpr auto cpu = dsr::CpuId::Arm9;
+    dsr_mcr(&machine.cpu(cpu), 15, 0, 9, 1, 0, 0x01ffc00a, 0);
+    auto write8 = [&](std::uint32_t address, std::uint8_t value) {
+        machine.write8(cpu, address, value);
+    };
+    auto write32 = [&](std::uint32_t address, std::uint32_t value) {
+        machine.write32(cpu, address, value);
+    };
+    constexpr std::uint32_t row = 0x01ffd364;
+    for (unsigned i = 0; i < 6; ++i) write8(row + i, 0xff);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(row, 16);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(row + 1, 21);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_CHARACTER_CREATION);
+    write8(0x01ffd340, 1);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(0x01ffd340, 0);
+    write32(0x01ffd348, 8);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write32(0x01ffd348, 0);
+    write8(row + 2, 0x40 | 17);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(row, 17);
+    write8(row + 1, 0xff);
+    write8(row + 2, 0xff);
+    constexpr std::uint32_t world = 0x02010000;
+    constexpr std::uint32_t owner = 0x02020000;
+    constexpr std::uint32_t dispatcher = 0x02030000;
+    write32(0x021d82e4, world);
+    write32(world + 0x3718, owner);
+    write32(owner + 0x6ac, dispatcher);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write32(dispatcher + 0xea8, 1);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_BATTLE);
+    write8(0x01ffd340, 1);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_BATTLE);
+    write8(row + 1, 0x40 | 4);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(row + 1, 0xff);
+    write8(row, 0x40 | 17);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write8(row, 17);
+    write32(dispatcher + 0xea8, 0);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write32(dispatcher + 0xea8, 1);
+    write8(0x01ffd340, 0);
+    write32(owner + 0x6ac, 0x023ffffc);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write32(owner + 0x6ac, dispatcher + 1);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    write32(owner + 0x6ac, dispatcher);
+    write32(world + 0x3718, 0);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    // Exercise both ends of the allowed RAM range at every pointer hop.
+    // Seed the last valid word so an off-by-one rejection cannot pass unnoticed.
+    write32(world + 0x3718, owner);
+    constexpr std::uint32_t ram_start = 0x02000000;
+    constexpr std::uint32_t ram_end = 0x02400000;
+    const std::uint32_t slots[] = {0x021d82e4, world + 0x3718, owner + 0x6ac};
+    const std::uint32_t offsets[] = {0x3718, 0x6ac, 0xea8};
+    const std::uint32_t next[] = {owner, dispatcher, 1};
+    const std::uint32_t normal[] = {world, owner, dispatcher};
+    for (unsigned hop = 0; hop < 3; ++hop) {
+        const auto last = ram_end - 4 - offsets[hop];
+        for (const auto base : {ram_start, last}) {
+            write32(base + offsets[hop], next[hop]);
+            write32(slots[hop], base);
+            assert(dsr::classify_scene(machine) == DSR_SCENE_BATTLE);
+        }
+        for (const auto base : {0u, ram_start - 4, last + 4, normal[hop] + 1, 0xfffffffcu}) {
+            write32(slots[hop], base);
+            assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+        }
+        write32(slots[hop], normal[hop]);
+    }
+
+    // The current tracker row, not row zero, determines the scene.
+    for (unsigned selected = 1; selected < 8; ++selected) {
+        const auto selected_row = row + selected * 6;
+        for (unsigned i = 0; i < 6; ++i) write8(selected_row + i, 0xff);
+        write32(0x01ffd348, selected);
+        assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+        write8(selected_row + 5, 21);
+        assert(dsr::classify_scene(machine) == DSR_SCENE_CHARACTER_CREATION);
+        write8(selected_row + 5, 17);
+        assert(dsr::classify_scene(machine) == DSR_SCENE_BATTLE);
+        write8(selected_row + 4, 0x40 | 4);
+        assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+    }
+    write32(0x01ffd348, 0);
+    write8(row, 0xff);
+    assert(dsr::classify_scene(machine) == DSR_SCENE_OTHER);
+}
 
 // A full-screen opaque red 3D clear plane on BG0 at scale N: the hi-res overlay must be
 // all-red at 256N x 192N, and it must follow POWCNT1 bit 15 (the screen engine A drives).
@@ -240,6 +341,7 @@ static void test_snapshot_ram() {
 }
 
 int main() {
+    test_scene_classifier();
     test_compose_hires(2, 0x8207U, true);
     test_compose_hires(3, 0x0207U, false); // engine A on the bottom screen
     test_save_restore();

@@ -55,6 +55,10 @@ def main() -> int:
     lib.dsr_session_get_screen.restype = ctypes.POINTER(ctypes.c_uint32)
     lib.dsr_session_frame_count.argtypes = [ctypes.c_void_p]
     lib.dsr_session_frame_count.restype = ctypes.c_uint64
+    lib.dsr_session_scene.argtypes = [ctypes.c_void_p]
+    lib.dsr_session_scene.restype = ctypes.c_int
+    if lib.dsr_session_scene(None) != 0:
+        raise RuntimeError("null session scene must be OTHER")
 
     with tempfile.TemporaryDirectory(prefix="dsr-session-ctypes-") as temp:
         tmp = Path(temp)
@@ -78,6 +82,8 @@ def main() -> int:
         if not handle:
             raise RuntimeError(error.value.decode(errors="replace"))
         try:
+            if lib.dsr_session_scene(handle) != 0:
+                raise RuntimeError("new session scene must be OTHER")
             script = {}
             for line in args.script.read_text().splitlines():
                 parts = line.split()
@@ -90,6 +96,11 @@ def main() -> int:
                 state = Input(mask, x, y, int(x >= 0 and y >= 0), 0)
                 if lib.dsr_session_step(handle, ctypes.byref(state), error, len(error)):
                     raise RuntimeError(error.value.decode(errors="replace"))
+                scene = lib.dsr_session_scene(handle)
+                if scene not in (0, 1, 2, 3, 4):
+                    raise RuntimeError(f"invalid scene {scene} at frame {frame}")
+                if lib.dsr_session_scene(handle) != scene:
+                    raise RuntimeError(f"scene getter changed state at frame {frame}")
                 observed.append((fnv_screen(lib.dsr_session_get_screen(handle, 0)),
                                  fnv_screen(lib.dsr_session_get_screen(handle, 1))))
             if lib.dsr_session_frame_count(handle) != args.frames:
