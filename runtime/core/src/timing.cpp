@@ -1,4 +1,5 @@
 #include "core_internal.h"
+#include "render_boundary.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -258,9 +259,7 @@ void Machine::Impl::process_line_start() {
             trigger_dma(ci, 1);
         }
     }
-    // 3D VBlank ends at214, after the swap/flush at192 and guest texture
-    // uploads. DeSmuME's rigorous timing uses this same render-start boundary.
-    if (scanline == 214) gpu3d.render_start();
+    detail::process_render_boundary(scanline, gpu3d);
     if (scanline < 192) {
         trigger_dma(0, 3);
         trigger_dma(1, 3);

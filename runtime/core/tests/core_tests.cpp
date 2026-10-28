@@ -1165,17 +1165,15 @@ void test_slot1_read_ready_latency() {
         const std::uint32_t rom_control = 0x81000000u | clock_select | scenario.gap;
         machine.write32(CpuId::Arm7, 0x040001a4, rom_control); // 512-byte block
 
-        // NDS_RescheduleReadSlot1 doubles the 33-MHz transfer clocks because
-        // DeSmuME's nds_timer is 66 MHz. Machine ticks use the same 33-MHz
-        // unit as GameCard::run, so the equivalent delay is (8+gap)*clocks+4.
+        // First-word timing uses the cartridge bus clock and programmed gap.
         const std::uint64_t native_delay =
             (8u + scenario.gap) * clocks + 4u;
         machine.run_ticks(native_delay - 1);
         check((machine.read32(CpuId::Arm7, 0x040001a4) & kDataReady) == 0,
-              "slot-1 data-ready remains clear before the Oracle ROMCTRL delay");
+              "slot-1 data-ready remains clear before the ROMCTRL delay");
         machine.run_ticks(1);
         check((machine.read32(CpuId::Arm7, 0x040001a4) & kDataReady) != 0,
-              "slot-1 data-ready asserts at the Oracle ROMCTRL delay");
+              "slot-1 data-ready asserts at the ROMCTRL delay");
         for (unsigned word = 0; word < 128; ++word) {
             check((machine.read32(CpuId::Arm7, 0x040001a4) & 0x80800000u) == 0x80800000u,
                   "polled card holds READY and BUSY until its last word");

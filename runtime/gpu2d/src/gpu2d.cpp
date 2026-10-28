@@ -19,6 +19,9 @@
 #define DSR_X86_PACK_LINE 1
 #endif
 
+#include "blend_3d.h"
+#include "rgb555_expansion.h"
+
 namespace dsr {
 namespace {
 
@@ -63,13 +66,6 @@ constexpr void store_le(std::uint8_t* p, std::uint32_t value, int width) {
     }
 }
 
-// The 2D compositor works on 5-bit channels (RGB555), like the reference emulator's
-// native-size path: layer colours are the raw palette/bitmap values, 3D pixels are
-// truncated from the 3D engine's 6 bits, and all blending / brightness arithmetic is
-// done on 5-bit values. Display output expands 5 bits to 8 with (c * 255) / 31.
-constexpr std::uint32_t color5_to_8(std::uint32_t value) {
-    return (value * 255U) / 31U;
-}
 
 constexpr std::uint8_t clamp_factor(std::uint32_t value) {
     return static_cast<std::uint8_t>(std::min(value, 16U));
@@ -1207,16 +1203,6 @@ struct Gpu2D::Impl {
                 channel(source.b, target.b), 31U};
     }
 
-    // A 3D pixel over a 2D pixel: the polygon alpha weighs the 3D engine's 6-bit colour
-    // against the 5-bit pixel below (widened to 6 bits), then drops back to 5 bits.
-    static Color blend_3d(const Pixel& source, Color target) {
-        const std::uint32_t a = static_cast<std::uint32_t>(source.color.alpha) + 1U;
-        const auto channel = [a](std::uint32_t first6, std::uint32_t second5) {
-            return static_cast<std::uint8_t>((first6 * a + (second5 << 1U) * (32U - a)) >> 6U);
-        };
-        return {channel(source.rgb6[0], target.r), channel(source.rgb6[1], target.g),
-                channel(source.rgb6[2], target.b), 31U};
-    }
 
     static Color brighten(Color color, std::uint32_t factor) {
         const auto channel = [factor](std::uint8_t value) {
@@ -1444,7 +1430,9 @@ struct Gpu2D::Impl {
                 }
                 if (blends) {
                     if (source.three_d) {
-                        dst = blend_3d(source, dst);
+                        const auto blended = cleanroom::blend_3d(
+                            source.rgb6, source.color.alpha, {dst.r, dst.g, dst.b});
+                        dst = {blended[0], blended[1], blended[2], 31U};
                     } else if (source.semi && source.color.alpha != 31U) {
                         dst = blend(source.color, dst, source.color.alpha, 16U - source.color.alpha);
                     } else {
@@ -1504,20 +1492,6 @@ struct Gpu2D::Impl {
     }
 
 #if defined(DSR_X86_PACK_LINE)
-    template<unsigned Mode>
-    static __m128i expand_output_channels(__m128i channels, __m128i factor) {
-        if constexpr (Mode == 1U) {
-            channels = _mm_add_epi16(channels, _mm_srli_epi16(_mm_mullo_epi16(
-                _mm_sub_epi16(_mm_set1_epi16(31), channels), factor), 4));
-        } else if constexpr (Mode == 2U) {
-            channels = _mm_sub_epi16(channels,
-                _mm_srli_epi16(_mm_mullo_epi16(channels, factor), 4));
-        }
-        // For c in [0,31], x = c*255 <= 7905. This unsigned reciprocal
-        // computes floor(x/31) exactly, unlike 5-to-8-bit replication.
-        const auto scaled = _mm_sub_epi16(_mm_slli_epi16(channels, 8), channels);
-        return _mm_srli_epi16(_mm_mulhi_epu16(scaled, _mm_set1_epi16(16913)), 3);
-    }
 
     template<unsigned Mode>
     static void pack_line_x86(const std::array<Color, kScreenWidth>& line,
@@ -1530,8 +1504,8 @@ struct Gpu2D::Impl {
         const auto alpha = _mm_set1_epi32(-16777216);
         for (std::size_t x = 0; x < kScreenWidth; x += 4U) {
             const auto colors = _mm_loadu_si128(reinterpret_cast<const __m128i*>(line.data() + x));
-            const auto lo = expand_output_channels<Mode>(_mm_unpacklo_epi8(colors, zero), factor);
-            const auto hi = expand_output_channels<Mode>(_mm_unpackhi_epi8(colors, zero), factor);
+            const auto lo = cleanroom::expand_output_channels<Mode>(_mm_unpacklo_epi8(colors, zero), factor);
+            const auto hi = cleanroom::expand_output_channels<Mode>(_mm_unpackhi_epi8(colors, zero), factor);
             const auto bytes = _mm_packus_epi16(lo, hi);
             // Color bytes are RGBA; little-endian host ARGB needs BGRA.
             const auto rb = _mm_and_si128(_mm_or_si128(
@@ -1566,7 +1540,7 @@ struct Gpu2D::Impl {
                 } else if (mode == 2U) {
                     color = darken(color, factor);
                 }
-                const auto expanded = color5_to_8(color.r);
+                const auto expanded = cleanroom::color5_to_8(color.r);
                 engine.output_r[i] = 0xFF000000U | (expanded << 16U);
                 engine.output_g[i] = expanded << 8U;
                 engine.output_b[i] = expanded;
@@ -2065,7 +2039,7 @@ const std::uint8_t* Gpu2D::three_d_mask() const {
 }
 
 std::uint8_t Gpu2D::expand_color5(std::uint32_t value) {
-    return static_cast<std::uint8_t>(color5_to_8(value & 31U));
+    return static_cast<std::uint8_t>(cleanroom::color5_to_8(value & 31U));
 }
 
 const std::uint32_t* Gpu2D::screen_top() const {

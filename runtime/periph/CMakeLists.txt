@@ -1,4 +1,4 @@
-add_library(dsr_periph STATIC src/periph.cpp)
+add_library(dsr_periph STATIC src/periph.cpp src/cartridge_first_word.cpp)
 target_link_libraries(dsr_periph PUBLIC dsr_headers)
 dsr_target_compile_options(dsr_periph -Wall -Wextra -Wpedantic)
 if(WIN32)

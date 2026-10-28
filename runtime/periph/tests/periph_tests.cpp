@@ -352,6 +352,87 @@ void test_card_rom_and_chip_id(const std::filesystem::path& rom,
     assert(done == 8);
 }
 
+void test_card_first_word_timing(const std::filesystem::path& rom,
+                                 const std::filesystem::path& save) {
+    constexpr std::array<std::uint32_t, 8> gaps{
+        0, 1, 2, 7, 31, 255, 4096, 8191
+    };
+    constexpr std::uint32_t busy = 1u << 31;
+    constexpr std::uint32_t ready_bit = 1u << 23;
+    for (const bool clock_bit : {false, true}) {
+        for (const std::uint32_t gap : gaps) {
+            for (unsigned block = 1; block <= 7; ++block) {
+                dsr::GameCard card(rom, save, dsr::BackupType::Flash512K);
+                unsigned ready = 0;
+                unsigned done = 0;
+                card.on_data_ready = [&] { ++ready; };
+                card.on_transfer_done_irq = [&] { ++done; };
+                card.io_write(kAuxCnt, 0xc000, 16);
+                write_card_command(card, 0xb7, 0x8000);
+                // Exercise the second gap field independently of the first.
+                const std::uint32_t gap2 = (block & 1u) ? 0x003f0000u : 0;
+                card.io_write(kRomCtrl, busy | (block << 24) |
+                              (clock_bit ? 1u << 27 : 0) | gap2 | gap, 32);
+                const std::uint32_t delay = (8u + gap) * (clock_bit ? 8u : 5u) + 4u;
+                assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == busy);
+                assert(card.io_read(kCardData, 32) == 0);
+                assert(ready == 0 && done == 0);
+                card.run(delay / 2);
+                card.run(delay - delay / 2 - 1);
+                assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == busy);
+                assert(ready == 0 && done == 0);
+                card.run(1);
+                assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == (busy | ready_bit));
+                assert(ready == 1 && done == 0);
+                card.run(3);
+                assert(ready == 1 && done == 0);
+                assert(card.io_read(kCardData, 32) == 0x2e211407u);
+                if (block == 7) {
+                    assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == 0);
+                    assert(done == 1);
+                } else {
+                    assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == (busy | ready_bit));
+                    assert(done == 0);
+                    assert(card.io_read(kCardData, 32) == 0x6255483bu);
+                }
+            }
+        }
+    }
+
+    for (const std::uint8_t command : {std::uint8_t{0xb7}, std::uint8_t{0x3c}}) {
+        dsr::GameCard card(rom, save, dsr::BackupType::Flash512K);
+        unsigned ready = 0, done = 0;
+        card.on_data_ready = [&] { ++ready; };
+        card.on_transfer_done_irq = [&] { ++done; };
+        card.io_write(kAuxCnt, 0xc000, 16);
+        write_card_command(card, command, 0x8000);
+        // Block zero is empty; command 3c is empty even with a nonzero block.
+        card.io_write(kRomCtrl, busy | (command == 0x3c ? 1u << 24 : 0) | 8191u, 32);
+        assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == 0);
+        assert(ready == 0 && done == 1);
+        card.run(70000);
+        assert(ready == 0 && done == 1);
+    }
+
+    for (const std::uint8_t command : {std::uint8_t{0x90}, std::uint8_t{0xb8}}) {
+        dsr::GameCard card(rom, save, dsr::BackupType::Flash512K);
+        unsigned ready = 0, done = 0;
+        card.on_data_ready = [&] { ++ready; };
+        card.on_transfer_done_irq = [&] { ++done; };
+        card.io_write(kAuxCnt, 0x8000, 16); // Interrupt disabled.
+        write_card_command(card, command, 0);
+        card.io_write(kRomCtrl, busy | (1u << 27), 32); // Block code zero.
+        card.run(67);
+        assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == busy);
+        card.run(10); // Crossing the boundary in a single advance.
+        assert(ready == 1 && done == 0);
+        assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == (busy | ready_bit));
+        assert(card.io_read(kCardData, 32) == 0x00001fc2u);
+        assert((card.io_read(kRomCtrl, 32) & (busy | ready_bit)) == 0);
+        assert(done == 0);
+    }
+}
+
 void test_card_low_address_alias(const std::filesystem::path& rom,
                                  const std::filesystem::path& save) {
     constexpr std::array<std::uint32_t, 3> low_addresses{0x1000, 0x1200, 0x1400};
@@ -1372,6 +1453,7 @@ int main() {
     const auto rom = make_rom(temp.path / "synthetic.nds");
     const auto card_alias_rom = make_rom(temp.path / "card-alias.nds", true);
     test_card_rom_and_chip_id(rom, temp.path / "card.sav");
+    test_card_first_word_timing(rom, temp.path / "card-timing.sav");
     test_card_low_address_alias(card_alias_rom, temp.path / "card-alias.sav");
     test_backup_eeprom(rom, temp.path / "eeprom.sav");
     test_chip_mismatch_hint(rom, temp.path);
