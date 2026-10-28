@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Scene classifier (read-only):** the session API and Godot `DqMachine.get_scene()` / `scene_changed` report BATTLE and CHARACTER_CREATION from completed-frame guest memory; everything else, including intro and title, reports OTHER. Not validated for automatic presentation switching; the ladder is unchanged.
 - **Clean-room rewrites (output-identical):** ordinary 2D blending/brightness and target selection, the cartridge B7 low-address redirect, and the SPU IMA-ADPCM step/index and PSG duty tables were rewritten blind from GBATEK-based contracts in [docs/cleanroom/](docs/cleanroom/) with exhaustive ROM-free tests. Eight scripted runs (164,534 frames, saves, audio) are unchanged.
 
 ## v0.5.0

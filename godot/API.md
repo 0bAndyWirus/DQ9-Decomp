@@ -163,6 +163,25 @@ emulated PCM stream or the existing adaptive resampling policy.
 
 Signals: `frame_ready(frame: int)` is emitted when a new frame is uploaded; `error(message: String)` reports worker-step errors.
 
+`get_scene() -> int` returns the latest owner-thread sample after a completed
+guest frame, or `DqMachine.SCENE_OTHER` before loading and after a new load
+resets the state. Constants are `SCENE_OTHER = 0`, `SCENE_BATTLE = 1`,
+`SCENE_CHARACTER_CREATION = 2`, `SCENE_INTRO = 3`, and `SCENE_TITLE = 4`.
+INTRO and TITLE are reserved but not currently detected; absent another
+established class, they remain OTHER and are unvalidated for automatic
+presentation switching. Unrecognized or unavailable guest state is OTHER.
+`scene_changed(scene: int)` is emitted on the main thread for each sampled
+transition, in order, even when presentation skips frames. Delivery occurs in
+`_process`, after that process call's `frame_ready` if a frame was uploaded;
+synchronous `step_frames` queues signals until processing resumes. `get_scene()`
+can already reflect a later sample than the signal argument. Reload discards
+pending notifications and resets to OTHER without emitting a reset signal.
+These signals are presentation-timed, not guest-frame-boundary callbacks.
+A future guest-camera consumer must apply scene changes on the owner thread at
+a guest-frame boundary, not directly from a Godot signal. The classifier has
+not been validated for automatic layout switching; see
+[scene detection](../docs/SINGLE_SCREEN_SCENES.md) for its limitations.
+
 `get_stats()` returns `frame`, `ticks`, `fps`, `audio_queue_ms` (ring fill), `underruns` (AudioStreamGeneratorPlayback skips), `dropped_audio_ms`, `running`, and `paused`; `audio_frames_pushed` is an additional cumulative count of frames accepted by generator playback.
 `audio_ring_overflows` counts source frames overwritten only at physical ring
 capacity (separate from intentional latency drops); `audio_ring_max_ms` is the

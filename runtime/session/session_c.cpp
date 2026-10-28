@@ -115,6 +115,11 @@ extern "C" uint64_t dsr_session_frame_count(const dsr_session_handle* session) {
 extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
     return session ? session->session.ticks() : 0;
 }
+extern "C" dsr_scene dsr_session_scene(const dsr_session_handle* session) {
+    if (!session) return DSR_SCENE_OTHER;
+    // These bus reads target RAM only; Machine's bus interface is non-const.
+    return dsr::classify_scene(const_cast<dsr::Machine&>(session->session.machine()));
+}
 extern "C" int dsr_session_save(dsr_session_handle* session) {
     return session && session->session.flush_save() ? 0 : 1;
 }
