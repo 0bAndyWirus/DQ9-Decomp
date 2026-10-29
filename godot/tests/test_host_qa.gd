@@ -60,6 +60,21 @@ func _run() -> void:
 			for rect in Logic.layout_rects(size,layout,Logic.DEFAULTS.overlay_rect,true):
 				if rect.size == Vector2.ZERO: continue
 				check(is_equal_approx(rect.size.x/256.0, floorf(rect.size.x/256.0)), "Integer scale applies to every DS screen")
+	# The returned rectangles remain native 4:3 touch/2D surfaces, while
+	# the GPU child may extend equally to either side of engine A.
+	for size in [Vector2(640, 900), Vector2(1280, 600)]:
+		for layout in 8:
+			for wide_screen in 2:
+				for integer in [false, true]:
+					var rects := Logic.layout_rects(size, layout, Rect2(0, 0, 0.75, 0.75), integer, 4.0 / 3.0, wide_screen)
+					for screen in 2:
+						var rect: Rect2 = rects[screen]
+						if rect.size == Vector2.ZERO: continue
+						check(absf(rect.size.x / rect.size.y - 4.0 / 3.0) < 0.001, "Wide layout %d keeps native screen aspect" % layout)
+						var side := rect.size.x / 6.0 if screen == wide_screen else 0.0
+						check(rect.position.x - side >= -0.01 and rect.end.x + side <= size.x + 0.01, "Wide layout %d screen %d fits viewport" % [layout, screen])
+						if screen == 1:
+							check(Logic.touch_coords(rect.position, rect) == Vector2i.ZERO and Logic.touch_coords(rect.end, rect) == Vector2i(255, 191), "Wide layout %d preserves touch coordinates" % layout)
 	for layout in 7:
 		app._set_layout(layout)
 		await process_frame

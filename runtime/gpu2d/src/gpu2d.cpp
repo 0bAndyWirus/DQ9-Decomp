@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 
 #if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || \
     (defined(__x86_64__) && defined(__GNUC__) && !defined(__clang__) && defined(__ELF__))
@@ -204,6 +205,14 @@ struct Gpu2D::Impl {
     std::uint64_t vram_generation = 0;
     std::array<bool, 9> texture_bank{};
     std::array<std::uint8_t, kPixelsPerFrame> three_d_mask_buffer{};
+    struct Presentation {
+        std::array<std::uint8_t, kPixelsPerFrame> mask;
+        std::array<std::uint32_t, kPixelsPerFrame> top;
+        std::array<std::uint32_t, kPixelsPerFrame> bottom;
+        std::array<Color, kScreenWidth> a_line;
+        std::array<Pixel, kScreenWidth> bg0;
+    };
+    std::unique_ptr<Presentation> presentation;
     std::array<std::uint8_t, kScreenWidth> unused_mask_line{};
     std::array<ExtPaletteRegion, 16> ext_regions_a{};
     std::array<ExtPaletteRegion, 16> ext_regions_b{};
@@ -211,6 +220,7 @@ struct Gpu2D::Impl {
     std::size_t ext_regions_b_count = 0;
     std::array<std::uint32_t, kPixelsPerFrame> screen_top_buffer{};
     std::array<std::uint32_t, kPixelsPerFrame> screen_bottom_buffer{};
+    bool presentation_a_line_valid = false;
     std::array<Color, kScreenWidth> engine_a_line{};
     std::array<Color, kScreenWidth> engine_b_line{};
     std::array<Color, kScreenWidth> capture_display_line{};
@@ -1249,9 +1259,13 @@ struct Gpu2D::Impl {
         // Decode the window registers once for the line, not for every layer.
         auto& masks = window_line_buffer;
         const std::uint8_t visible_layers = window_line(engine, dispcnt, y);
+        auto* enhanced_bg0 = presentation ? &presentation->bg0 : nullptr;
+        const std::uint32_t* enhanced_line3d = nullptr;
         const std::uint32_t* line3d = nullptr;
         if (is_a && gpu3d != nullptr && (powcnt1 & (1U << 2U)) != 0U) {
             line3d = gpu3d->line(y);
+            if (normal_display && presentation && (dispcnt & (1U << 3U)) != 0U)
+                enhanced_line3d = gpu3d->enhanced_line(y);
         }
         for (int bg = 0; bg < 4; ++bg) {
             if ((dispcnt & (1U << (8U + static_cast<unsigned>(bg)))) == 0U) {
@@ -1283,6 +1297,11 @@ struct Gpu2D::Impl {
                     cached[x] = pixels[x];
                 }
             }
+        }
+        if (enhanced_line3d != nullptr) {
+            enhanced_bg0->fill(kTransparentPixel);
+            add_bg_pixel(*enhanced_bg0, engine, is_a, 0, y, dispcnt, enhanced_line3d);
+            presentation_a_line_valid = true;
         }
         std::array<std::array<std::uint8_t, 4>, 4> bg_order{};
         std::array<std::uint8_t, 4> bg_order_count{};
@@ -1324,11 +1343,16 @@ struct Gpu2D::Impl {
                 front_order[front_count++] = bg_order[priority][i - 1U];
             }
         }
+        const auto compose = [&](auto presentation) {
+        auto& composed_output = presentation ? this->presentation->a_line : output;
+        auto* composed_mask = presentation
+            ? this->presentation->mask.data() + y * kScreenWidth : mask_line;
         if (copy_only) {
             std::array<const Pixel*, 4> front_pixels{};
             std::array<std::uint8_t, 4> front_bits{};
             for (unsigned i = 0; i < front_count; ++i) {
-                front_pixels[i] = bg_pixels[front_order[i]].data();
+                front_pixels[i] = presentation && front_order[i] == 0
+                    ? enhanced_bg0->data() : bg_pixels[front_order[i]].data();
                 front_bits[i] = static_cast<std::uint8_t>(1U << front_order[i]);
             }
             const Pixel* const object_pixels = obj_pixels.data();
@@ -1347,8 +1371,8 @@ struct Gpu2D::Impl {
                             break;
                         }
                     }
-                    output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
-                    mask_line[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
+                    composed_output[xi] = chosen_source != nullptr ? chosen_source->color : backdrop;
+                    composed_mask[xi] = static_cast<std::uint8_t>(raw_three_d_display && chosen_source != nullptr &&
                         chosen_source->three_d && chosen_source->color.alpha == 31U);
                 }
             };
@@ -1418,14 +1442,18 @@ struct Gpu2D::Impl {
             const auto& order = composition_orders[object_visible ? object.priority : 4U];
             for (unsigned i = 0; i < order.count; ++i) {
                 const auto layer = order.layers[i];
-                const Pixel& pixel = layer == kObjLayer ? object : bg_pixels[layer][xi];
+                const Pixel& pixel = layer == kObjLayer ? object :
+                    (presentation && layer == 0 ? (*enhanced_bg0)[xi] : bg_pixels[layer][xi]);
                 if (pixel.opaque && (mask & (1U << layer)) != 0U) {
                     composite(pixel, layer);
                 }
             }
-            output[xi] = dst;
-            mask_line[xi] = static_cast<std::uint8_t>(dst_three_d && raw_three_d_display);
+            composed_output[xi] = dst;
+            composed_mask[xi] = static_cast<std::uint8_t>(dst_three_d && raw_three_d_display);
         }
+        };
+        compose(std::false_type{});
+        if (enhanced_line3d != nullptr) compose(std::true_type{});
         if (is_a) {
             capture_display_line = output;
         }
@@ -1630,7 +1658,13 @@ struct Gpu2D::Impl {
         }
         advance_affine(engine_a, y);
         advance_affine(engine_b, y);
+        if (presentation) presentation_a_line_valid = false;
         render_engine_line(engine_a, true, y, engine_a_line);
+        if (presentation && !presentation_a_line_valid) {
+            presentation->a_line = engine_a_line;
+            std::copy_n(three_d_mask_buffer.data() + y * kScreenWidth, kScreenWidth,
+                        presentation->mask.data() + y * kScreenWidth);
+        }
         render_engine_line(engine_b, false, y, engine_b_line);
         // Advance at the end of the rendered line. HBlank writes of PB/PD affect
         // subsequent increments; reference-point writes replace the next line's origin.
@@ -1657,6 +1691,12 @@ struct Gpu2D::Impl {
         const std::size_t row = static_cast<std::size_t>(y) * kScreenWidth;
         pack_line(engine_a, engine_a_line, a_screen.data() + row, master_a);
         pack_line(engine_b, engine_b_line, b_screen.data() + row, master_b);
+        if (presentation) {
+            auto& presentation_a = a_on_top ? presentation->top : presentation->bottom;
+            auto& presentation_b = a_on_top ? presentation->bottom : presentation->top;
+            pack_line(engine_a, presentation->a_line, presentation_a.data() + row, master_a);
+            std::copy_n(b_screen.data() + row, kScreenWidth, presentation_b.data() + row);
+        }
         capture_line(y);
     }
 
@@ -1793,6 +1833,11 @@ struct Gpu2D::Impl {
         capture_active = false;
         screen_top_buffer.fill(0xFFFFFFFFU);
         screen_bottom_buffer.fill(0xFFFFFFFFU);
+        if (presentation) {
+            presentation->top.fill(0xFFFFFFFFU);
+            presentation->bottom.fill(0xFFFFFFFFU);
+            presentation->mask.fill(0);
+        }
         engine_a_line.fill({31U, 31U, 31U, 31U});
         engine_b_line.fill({31U, 31U, 31U, 31U});
         rebuild_mappings();
@@ -1980,6 +2025,18 @@ void Gpu2D::attach_gpu3d(Gpu3D* gpu3d) {
     impl_->gpu3d = gpu3d;
 }
 
+void Gpu2D::set_enhanced_presentation(bool enabled) {
+    if (!enabled) {
+        impl_->presentation.reset();
+    } else if (!impl_->presentation) {
+        auto presentation = std::make_unique<Impl::Presentation>();
+        presentation->top = impl_->screen_top_buffer;
+        presentation->bottom = impl_->screen_bottom_buffer;
+        presentation->mask = impl_->three_d_mask_buffer;
+        impl_->presentation = std::move(presentation);
+    }
+}
+
 void Gpu2D::render_line(int y) {
     impl_->render_line(y);
 }
@@ -2002,6 +2059,10 @@ const std::uint8_t* Gpu2D::three_d_mask() const {
     return impl_->three_d_mask_buffer.data();
 }
 
+const std::uint8_t* Gpu2D::presentation_three_d_mask() const {
+    return impl_->presentation ? impl_->presentation->mask.data() : three_d_mask();
+}
+
 std::uint8_t Gpu2D::expand_color5(std::uint32_t value) {
     return static_cast<std::uint8_t>(cleanroom::color5_to_8(value & 31U));
 }
@@ -2012,6 +2073,14 @@ const std::uint32_t* Gpu2D::screen_top() const {
 
 const std::uint32_t* Gpu2D::screen_bottom() const {
     return impl_->screen_bottom_buffer.data();
+}
+
+const std::uint32_t* Gpu2D::presentation_top() const {
+    return impl_->presentation ? impl_->presentation->top.data() : screen_top();
+}
+
+const std::uint32_t* Gpu2D::presentation_bottom() const {
+    return impl_->presentation ? impl_->presentation->bottom.data() : screen_bottom();
 }
 
 Gpu2DFrameView Gpu2D::frame_view() const {

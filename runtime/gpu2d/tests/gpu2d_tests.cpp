@@ -22,6 +22,8 @@ constexpr std::uint32_t kPalette = 0x05000000U;
 constexpr std::uint32_t kOam = 0x07000000U;
 
 std::array<std::uint32_t, 256> fake_3d_line{};
+std::array<std::uint32_t, 256> fake_enhanced_3d_line{};
+bool fake_enhanced_enabled = false;
 
 void write16(dsr::Gpu2D& gpu, std::uint32_t address, std::uint16_t value) {
     gpu.io_write(address, value, 16);
@@ -392,6 +394,79 @@ void test_extended_palette_lookup() {
     gpu.arm9_write(kVram + 0x4000U, 0x0101U, 16);
     gpu.render_line(0);
     assert(pixel(gpu.screen_top(), 0U) == 0xFF00FF00U);
+}
+
+void test_presentation_buffers_follow_full_mode() {
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake_gpu3d;
+    gpu.attach_gpu3d(&fake_gpu3d);
+    set_power(gpu, 0x8207U);
+    fake_3d_line.fill(0U);
+    fake_enhanced_3d_line.fill((31U << 24U) | 63U);
+    fake_enhanced_enabled = true;
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
+    gpu.render_line(0);
+    assert(gpu.presentation_top() == gpu.screen_top());
+    assert(gpu.presentation_bottom() == gpu.screen_bottom());
+    assert(gpu.presentation_three_d_mask() == gpu.three_d_mask());
+
+    gpu.set_enhanced_presentation(true);
+    assert(gpu.presentation_top() != gpu.screen_top());
+    assert(gpu.presentation_bottom() != gpu.screen_bottom());
+    assert(gpu.presentation_three_d_mask() != gpu.three_d_mask());
+    assert(pixel(gpu.presentation_top(), 0U) == pixel(gpu.screen_top(), 0U));
+    gpu.render_line(0);
+    assert(gpu.presentation_three_d_mask()[0] == 1U);
+    assert(gpu.three_d_mask()[0] == 0U);
+    fake_enhanced_enabled = false;
+    gpu.render_line(1);
+    assert(gpu.presentation_three_d_mask()[256] == gpu.three_d_mask()[256]);
+    assert(pixel(gpu.presentation_top(), 256U) == pixel(gpu.screen_top(), 256U));
+    gpu.reset();
+    assert(gpu.presentation_top()[0] == gpu.screen_top()[0]);
+    assert(gpu.presentation_three_d_mask()[0] == 0U);
+    gpu.set_enhanced_presentation(false);
+    assert(gpu.presentation_top() == gpu.screen_top());
+    assert(gpu.presentation_bottom() == gpu.screen_bottom());
+    assert(gpu.presentation_three_d_mask() == gpu.three_d_mask());
+}
+
+void test_enhanced_presentation_mask_preserves_hardware_output() {
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake_gpu3d;
+    gpu.attach_gpu3d(&fake_gpu3d);
+    gpu.set_enhanced_presentation(true);
+    set_power(gpu, 0x8207U);
+    set_bg_palette(gpu, 0U, 0x7c00U);
+    fake_3d_line.fill(0U);
+    fake_enhanced_3d_line.fill((31U << 24U) | 63U);
+    fake_enhanced_3d_line[2] = (16U << 24U) | 63U;
+    fake_enhanced_enabled = true;
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
+    gpu.render_line(0);
+    assert(pixel(gpu.screen_top(), 0U) == 0xff0000ffU);
+    assert(gpu.three_d_mask()[0] == 0U);
+    assert(gpu.presentation_three_d_mask()[0] == 1U);
+    assert(gpu.presentation_three_d_mask()[2] == 0U);
+    assert(pixel(gpu.presentation_top(), 0U) == 0xffff0000U);
+    assert(pixel(gpu.presentation_bottom(), 0U) == pixel(gpu.screen_bottom(), 0U));
+    gpu.io_write(kA + 0x50U, 0x2000U, 16);
+    gpu.render_line(0);
+    assert(pixel(gpu.presentation_top(), 2U) == 0xff830073U);
+    assert(pixel(gpu.screen_top(), 2U) == 0xff0000ffU);
+    gpu.io_write(kA + 0x50U, 0U, 16);
+    gpu.io_write(kA, (1U << 16U) | (1U << 13U) | (1U << 8U) | (1U << 3U), 32);
+    write16(gpu, kA + 0x40U, 0x0001U);
+    write16(gpu, kA + 0x44U, 0x0001U);
+    write16(gpu, kA + 0x48U, 0x0000U);
+    write16(gpu, kA + 0x4AU, 0x0001U);
+    gpu.render_line(0);
+    assert(gpu.presentation_three_d_mask()[0] == 0U);
+    assert(gpu.presentation_three_d_mask()[1] == 1U);
+    assert(pixel(gpu.presentation_top(), 0U) == 0xff0000ffU);
+    assert(pixel(gpu.presentation_top(), 1U) == 0xffff0000U);
+    assert(pixel(gpu.screen_top(), 1U) == 0xff0000ffU);
+    fake_enhanced_enabled = false;
 }
 
 void test_mode_six_does_not_force_bg0_3d() {
@@ -778,16 +853,26 @@ void test_bitmap_obj_alpha_and_mapping() {
 
 void test_bg_mosaic_holds_rendered_scanline() {
     dsr::Gpu2D gpu;
+    dsr::Gpu3D fake_gpu3d;
+    gpu.attach_gpu3d(&fake_gpu3d);
+    gpu.set_enhanced_presentation(true);
+    fake_enhanced_3d_line.fill((31U << 24U) | 63U);
+    fake_enhanced_enabled = true;
     setup_text_bg0(gpu);
+    set_power(gpu, 0x8207U);
     write16(gpu, kA + 8U, 0x44U);
     write16(gpu, kA + 0x4CU, 0x11U); // 2 x 2.
     gpu.render_line(0);
     set_bg_palette(gpu, 1U, 0x03E0U);
     gpu.render_line(1);
     assert(pixel(gpu.screen_top(), 0, 1) == 0xFFFF0000U);
+    assert(pixel(gpu.presentation_top(), 0, 1) == pixel(gpu.screen_top(), 0, 1));
+    assert(pixel(gpu.presentation_top(), 1, 1) == pixel(gpu.screen_top(), 1, 1));
     gpu.arm9_write(kVram + 0x4008U, 0x1111U, 16); // Tile row 2.
     gpu.render_line(2);
     assert(pixel(gpu.screen_top(), 0, 2) == 0xFF00FF00U);
+    assert(pixel(gpu.presentation_top(), 0, 2) == pixel(gpu.screen_top(), 0, 2));
+    fake_enhanced_enabled = false;
 }
 
 void test_obj_mosaic_screen_grid() {
@@ -1692,6 +1777,9 @@ Gpu3D::~Gpu3D() = default;
 const std::uint32_t* Gpu3D::line(int y) const {
     return y >= 0 && y < 192 ? fake_3d_line.data() : nullptr;
 }
+const std::uint32_t* Gpu3D::enhanced_line(int y) const {
+    return fake_enhanced_enabled && y >= 0 && y < 192 ? fake_enhanced_3d_line.data() : nullptr;
+}
 } // namespace dsr
 
 int main(int argc, char** argv) {
@@ -1700,6 +1788,8 @@ int main(int argc, char** argv) {
         {"palette_cache_scalar", test_palette_cache_matches_scalar},
         {"palette_cache_bg_obj", test_regular_palette_bg_obj_matches_scalar},
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
+        {"presentation_buffers", test_presentation_buffers_follow_full_mode},
+        {"enhanced_mask", test_enhanced_presentation_mask_preserves_hardware_output},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},
         {"indexed_bitmap", test_extended_256_color_bitmap},

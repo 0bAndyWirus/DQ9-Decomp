@@ -23,6 +23,10 @@ public:
     static void shutdown_instances();
     void _notification(int what);
     void set_scale(int scale);
+    void set_widescreen_enabled(bool enabled);
+    bool get_widescreen_enabled() const { return widescreen_enabled_; }
+    void set_guest_widescreen(bool enabled) { guest_widescreen_ = enabled; }
+    bool get_guest_widescreen() const { return guest_widescreen_; }
     void apply_frame(const dq9::GpuSceneFrame& frame);
     godot::Ref<godot::Texture2D> get_texture() const;
     godot::Ref<godot::Texture2D> get_mask_texture() const;
@@ -43,7 +47,8 @@ private:
     bool initialize_viewport();
     godot::Ref<godot::ShaderMaterial> make_material(const dq9::GpuSceneFrame& frame,
                                                    const dsr::Gpu3DPolygon& polygon,
-                                                   bool translucent, bool metadata, int priority, bool span_mesh);
+                                                   bool translucent, bool metadata, int priority, bool span_mesh,
+                                                   bool coverage = false);
     bool same_run(const dsr::Gpu3DPolygon& a, const dsr::Gpu3DPolygon& b,
                   std::uint32_t disp3dcnt) const;
     void upload_texture(const dq9::DecodedTexture& texture);
@@ -58,11 +63,13 @@ private:
         godot::Ref<godot::ArrayMesh> mesh;
         godot::MeshInstance3D* color = nullptr;
         godot::MeshInstance3D* metadata = nullptr;
+        godot::MeshInstance3D* coverage = nullptr;
     };
     std::vector<MeshChunk> chunks_;
     std::vector<dq9::RasterMeshVertex> raster_vertices_;
     dq9::DsRasterMesh raster_mesh_;
     godot::SubViewport* effects_viewport_ = nullptr;
+    godot::SubViewport* coverage_viewport_ = nullptr;
     godot::MeshInstance3D* post_instance_ = nullptr;
     godot::Ref<godot::Shader> id_shader_;
     godot::Ref<godot::ShaderMaterial> post_material_;
@@ -106,8 +113,11 @@ private:
     std::unordered_map<dsr::gpu3d_detail::TextureKey, CachedTexture, dq9::TextureKeyHash> textures_;
     std::uint64_t generation_ = 0, epoch_ = 0, number_ = 0, source_frame_ = 0;
     bool have_generation_ = false, valid_ = false, color_valid_ = false, screen_is_top_ = true;
+    bool widescreen_enabled_ = false;
+    bool guest_widescreen_ = false;
     int scale_ = 3;
     std::size_t polygon_count_ = 0, captured_polygon_count_ = 0, vertex_count_ = 0;
+    std::size_t wide_crossing_left_ = 0, wide_crossing_right_ = 0;
     std::size_t mesh_polygon_count_ = 0, skipped_wireframe_ = 0;
     std::uint32_t three_d_pixels_ = 0, gpu_pixels_ = 0;
     std::size_t decoded_this_frame_ = 0;

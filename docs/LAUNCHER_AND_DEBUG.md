@@ -155,6 +155,9 @@ local-note-example/
   replay.sh
   vram.bin                 mainram.bin          # when snapshots are enabled
   texture_slot0.png ... texture_slot3.png       # when inspector is open
+  screenshot_window.png                         # Godot presented window, when captured
+  gpu3d_raw.png            gpu3d_output.png     # Godot GPU captures, when available
+  gpu3d_mask.png           presentation.json    # Godot presentation metadata
 ```
 
 `comment.txt` contains the exact plain-text note followed by timestamp, frame, emulated ticks, wall-clock metadata, and the recorded RTC epoch/timezone offset. `save_before.sav` is the launch-time save path/size/FNV-1a64 reference; `session_start.sav` is the immutable launch-time replay baseline. At capture, the GameCard save is flushed and copied as `save_at_note.sav`; its SHA-256 appears in `comment.txt`. `session_input.txt` is the full input stream in `frame buttons touch_x touch_y` grammar, with a `.frames` sidecar; `input_tail.txt` contains its last 600 frames. `replay.sh` runs the same executable headlessly through the noted frame, using a fresh copy of the baseline, recorded input, and fixed RTC base, and dumps the frame/audio plus RAM/VRAM for comparison.
@@ -162,6 +165,18 @@ local-note-example/
 Native captures also record the requested `backup_type` in `env.txt` and preserve explicit `--backup-type` overrides in both `replay.sh` and `replay.ps1`. An explicit native `auto` override is distinct from omitting the flag and inheriting the ABI configuration. Godot captures store their selected chip in the same metadata; in-app issue replay applies it before loading its copied launch save, independently of the normal-game setting. Missing metadata in older captures selects Auto. This matters for an empty launch save: early screen hashes can match even when a replay chose the wrong chip, so the replay regression also compares persisted save bytes and capacity.
 
 Both `comment.txt` and `state.txt` start with `audio_debug: solo=<channel or -1> muted=<channel list or none>` before the note/status, so a debug mixer filter cannot be missed when interpreting an audio report. Bundle readers preserve the exact user note separately from this header.
+
+Godot bundles retain native software screenshots for deterministic comparison.
+The optional window capture includes visible UI; raw and output GPU captures
+show the pre-effects viewport and post-effects compositor texture, and the mask
+captures the raw frame mask. Unavailable textures are omitted. GPU source and
+window frames can differ; consult `gpu_stats` frame/source-frame information.
+These images are not native comparison references, and older bundles remain
+readable. `presentation.json` records frame and session metadata, active and
+configured widescreen modes, GPU request/state/fallback and statistics, layout,
+scaling and window/viewport sizes, and a `captures` map. Paths and save metadata
+can be sensitive. Full captures must be replayed in Godot's issue reviewer,
+which restores the mode before loading; SDL cannot reproduce Full guest state.
 Direct `--record-input FILE` also writes `FILE.rtc`; replaying `--input-script FILE` auto-loads the recorded epoch and timezone unless explicit RTC options override them.
 
 `state.txt` records the machine status, ARM9/ARM7 registers, selected display/VRAM/GX/sound registers, and the SPU channel table. The runtime currently does not expose active overlay IDs or retained per-polygon texture command details, which are explicitly marked unavailable in `state.txt` / `texture_state.txt`. `audio_stats.txt` includes last-second RMS/peak/clipping, queue backlog, queue-drop and estimated starvation events, average measured emulation FPS, and the last 120 frame durations. The frame-rate estimate uses completed-frame time including presentation and pacing; headless replay remains unpaced. `audio_tail.wav` is a rolling five-second stereo PCM tail. `env.txt` stores build ID, SDL version, audio device/driver, output size, controller name/GUID, and ROM/save/language details. It does not record monitor refresh rate.

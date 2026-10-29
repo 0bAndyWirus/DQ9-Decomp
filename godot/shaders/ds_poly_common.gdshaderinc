@@ -20,6 +20,8 @@ uniform bool span_mesh = false;
 uniform float span_margin = 0.0;
 // The clear buffer fills the viewport, rather than passing through DS edges.
 uniform bool clear_plane = false;
+// Width of the wide target relative to the native 4:3 screen.
+uniform float side_native_width_ratio = 1.0;
 varying vec3 ds_vertex_color;
 
 vec4 ds_position(vec3 clip_xyz, float clip_w, int vertex_metadata, vec3 depth_plane) {

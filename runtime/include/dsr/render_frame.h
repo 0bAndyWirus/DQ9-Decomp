@@ -42,6 +42,9 @@ struct RenderFrame {
     const std::uint8_t* opaque_only_mask = nullptr;
     const std::uint32_t* screen_top = nullptr;
     const std::uint32_t* screen_bottom = nullptr;
+    // Presentation-only LCDs, with the same timing and screen mapping.
+    const std::uint32_t* presentation_top = nullptr;
+    const std::uint32_t* presentation_bottom = nullptr;
     std::size_t screen_pixel_count = 256U * 192U;
 };
 

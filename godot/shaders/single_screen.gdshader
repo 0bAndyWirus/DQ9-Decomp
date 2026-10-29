@@ -7,6 +7,7 @@ uniform vec4 color_key = vec4(0.0);
 uniform bool use_gpu = false;
 uniform sampler2D gpu_texture : filter_nearest, repeat_disable;
 uniform sampler2D gpu_mask : filter_nearest, repeat_disable;
+uniform float gpu_width_ratio = 1.0;
 varying vec4 vertex_color;
 
 void vertex() {
@@ -28,7 +29,7 @@ void fragment() {
 	ivec2 key_coord = clamp(ivec2(screen_uv * vec2(key_size)), ivec2(0), key_size - ivec2(1));
 	vec4 key_pixel = texelFetch(TEXTURE, key_coord, 0);
 	if (use_gpu && texture(gpu_mask, screen_uv).r != 0.0) {
-		vec4 gpu_pixel = texture(gpu_texture, screen_uv);
+		vec4 gpu_pixel = texture(gpu_texture, vec2(0.5 + (screen_uv.x - 0.5) / gpu_width_ratio, screen_uv.y));
 		float alpha = gpu_pixel.a + pixel.a * (1.0 - gpu_pixel.a);
 		float key_alpha = gpu_pixel.a + key_pixel.a * (1.0 - gpu_pixel.a);
 		pixel.rgb = alpha > 0.0 ? (gpu_pixel.rgb * gpu_pixel.a + pixel.rgb * pixel.a * (1.0 - gpu_pixel.a)) / alpha : vec3(0.0);

@@ -212,6 +212,14 @@ func _run() -> void:
 		_expect(app.machine != null and app.machine.get_backup_type() == "auto", "%s backup metadata defaults to Auto" % recorded)
 		_expect(app.settings.backup_type == "flash512k", "legacy replay does not change ordinary explicit setting")
 		app._release_machine(false)
+	# Full replay selects the recorded guest-widescreen mode before loading.
+	var full_issue := real_issue.duplicate(true)
+	full_issue.env.widescreen_mode = "2"
+	app._start_issue_replay(full_issue)
+	_expect(app.machine != null and app._active_widescreen_mode == 2, "Full issue replay selects recorded mode before load")
+	await _wait_replay(app)
+	_expect(app.replay_complete and app._current_frame() == target_frame, "Full issue replay reaches recorded frame")
+	app._release_machine(false)
 	_expect(FileAccess.get_file_as_bytes(fresh_save).is_empty(), "empty source save remains untouched")
 	_expect(originals == Fixture.snapshot_originals(roots), "bundle originals unchanged; only status.json written")
 	_expect(FileAccess.get_sha256(args[1]) == source_hash, "user's source launch save unchanged")

@@ -51,9 +51,12 @@ class DsRasterMesh {
         return v;
     }
     static std::size_t clip(const GpuSceneFrame& frame, const dsr::Gpu3DPolygon& polygon,
-                            std::array<dsr::Gpu3DVertex, 16>& vertices) {
+                            std::array<dsr::Gpu3DVertex, 16>& vertices, bool widescreen_enabled = false) {
         std::size_t count = polygon.count;
-        for (std::size_t i = 0; i < count; ++i) vertices[i] = frame.vertices[polygon.index[i]];
+        for (std::size_t i = 0; i < count; ++i) {
+            vertices[i] = frame.vertices[polygon.index[i]];
+            if (widescreen_enabled) vertices[i].clip[0] *= 0.75F;
+        }
         if ((polygon.attr & (1U << 12U)) == 0)
             for (std::size_t i = 0; i < count; ++i) if (distance(vertices[i], 5) < 0) return 0;
         const int planes = (polygon.attr & (1U << 12U)) != 0 ? 6 : 5;
@@ -213,10 +216,10 @@ public:
     }
 #endif
     bool append(const GpuSceneFrame& frame, const dsr::Gpu3DPolygon& polygon,
-                       bool translucent, std::vector<RasterMeshVertex>& out) {
+                bool translucent, std::vector<RasterMeshVertex>& out, bool widescreen_enabled = false) {
         if (polygon.count < 3 || polygon.count > 4 || ((polygon.attr >> 16U) & 31U) == 0) return false;
         std::array<dsr::Gpu3DVertex, 16> clipped{};
-        const auto count = clip(frame, polygon, clipped);
+        const auto count = clip(frame, polygon, clipped, widescreen_enabled);
         if (count < 3 || count > 10) return false;
         std::array<Vertex, 10> vertices{};
         for (std::size_t i = 0; i < count; ++i) vertices[i] = project(clipped[i], polygon.viewport);

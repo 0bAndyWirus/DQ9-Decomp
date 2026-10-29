@@ -1198,13 +1198,22 @@ class FunctionEmitter:
         fallback = self.module_entries.get((self.entry.module_id, address))
         return fallback if fallback is not None and fallback.thumb == target_thumb else None
 
+    @staticmethod
+    def _direct_slot_call(entry: Entry) -> str:
+        # The EU camera builder needs per-machine dispatch; its generated slot
+        # is shared by every machine and must not be replaced at runtime.
+        if entry._cpu == "arm9" and entry.module_id == -1 and entry.address == 0x020c28b0:
+            return f"::dsr::dsr_call(c, {_u32(entry.address | int(entry.thumb))});"
+        return f"(*::dsr::{entry.slot})(c);"
+
+
     def _call_direct(self, insn: DecodedInstruction, target: int, tail: bool = False) -> str | None:
         entry = self._slot_for(target, insn)
         if entry is None:
             return None
         if entry.thumb != self.thumb:
             return None
-        call = f"(*::dsr::{entry.slot})(c);"
+        call = self._direct_slot_call(entry)
         self.stats["direct_calls"] += 1
         if tail:
             self.stats["tail_calls"] += 1
@@ -1673,7 +1682,7 @@ class FunctionEmitter:
             body = [f"c->r[14] = {_u32(link)};"]
             entry = self._slot_for(target, insn)
             if entry is not None and entry.thumb == self.thumb and name != "blx":
-                body.append(f"(*::dsr::{entry.slot})(c);")
+                body.append(self._direct_slot_call(entry))
                 self.stats["direct_calls"] += 1
             else:
                 body.append(f"::dsr::dsr_call(c, {target_expr});")

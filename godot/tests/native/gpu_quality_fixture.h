@@ -80,7 +80,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
                  (flag("edges") ? 32U : 0U) | (flag("antialias") ? 16U : 0U) |
                  (flag("fog") ? 128U : 0U) | (flag("alpha_only") ? 64U : 0U) |
                  (integer("alpha_ref", 0) != 0 ? 4U : 0U), 32);
-    gpu.io_write(0x04000354U, 0x7fffU, 16);
+    gpu.io_write(0x04000354U, static_cast<std::uint32_t>(integer("clear_depth", 0x7fff)), 16);
     gpu.io_write(0x04000340U, static_cast<std::uint32_t>(integer("alpha_ref", 0)), 32);
     gpu.io_write(0x04000350U, 8U | (12U << 5U) | (20U << 10U) |
                  (static_cast<std::uint32_t>(integer("clear_alpha", 0)) << 16U) |
@@ -114,7 +114,8 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         const int v = i >= 2 ? (wrap ? 20 : 8) : (wrap ? -6 : 0);
         send(0x22, static_cast<std::uint16_t>(u * 16) |
              (static_cast<std::uint32_t>(static_cast<std::uint16_t>(v * 16)) << 16U));
-        send(0x23, static_cast<std::uint16_t>(positions[i][0]) |
+        const int x = flag("wide_quad") ? positions[i][0] * 4 / 3 : positions[i][0];
+        send(0x23, static_cast<std::uint16_t>(x) |
              (static_cast<std::uint32_t>(static_cast<std::uint16_t>(positions[i][1])) << 16U));
         send(0x23, flag("perspective") ? static_cast<std::uint16_t>(positions[i][2]) : 0U);
     }

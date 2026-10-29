@@ -64,6 +64,7 @@ struct SnapshotRequest {
 };
 struct FrameSlot {
     std::array<std::uint8_t, kPixels * 4> screens[2]{};
+    std::unique_ptr<std::array<std::uint8_t, kPixels * 4>> presentation[2];
     std::uint64_t number = 0;
     std::vector<SnapshotRange> ram;
     std::uint64_t ram_generation = 0;
@@ -219,6 +220,20 @@ public:
     }
     bool is_paused() const { std::lock_guard lock(mutex_); return paused_; }
     int get_scene() const { std::lock_guard lock(mutex_); return scene_; }
+    // Wait for the owner to finish any in-flight and already requested steps,
+    // then consume its last publication on the Godot thread.
+    void pause_at_frame_boundary() {
+        {
+            std::unique_lock lock(mutex_);
+            if (!loaded_) return;
+            paused_ = true;
+            if (audio_player_) audio_player_->set_stream_paused(true);
+            barrier_requested_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [&] { return !barrier_requested_ || shutdown_; });
+        }
+        _process(0.0);
+    }
     void step_once() {
         std::lock_guard lock(mutex_);
         if (loaded_ && (paused_ || !running_)) {
@@ -361,11 +376,53 @@ public:
         gpu_scale_ = std::clamp(scale, 1, 6);
         if (gpu_scene_) gpu_scene_->set_scale(gpu_scale_);
     }
+    void set_gpu3d_widescreen_enabled(bool enabled) {
+        if (gpu_widescreen_enabled_ == enabled) return;
+        gpu_widescreen_enabled_ = enabled;
+        if (gpu_scene_) {
+            gpu_scene_->set_widescreen_enabled(enabled);
+            refresh_gpu_scene();
+        }
+    }
+    void set_gpu3d_guest_widescreen(bool enabled) {
+        if (gpu_guest_widescreen_ == enabled) return;
+        gpu_guest_widescreen_ = enabled;
+        if (gpu_scene_) {
+            gpu_scene_->set_guest_widescreen(enabled);
+            refresh_gpu_scene();
+        }
+    }
+    void set_widescreen_camera(bool enabled) {
+        std::lock_guard lock(mutex_);
+        if (!loaded_) widescreen_camera_ = enabled;
+    }
+    void refresh_gpu_scene() {
+        int slot = -1;
+        {
+            std::lock_guard lock(mutex_);
+            if (gpu_enabled_ && consuming_slot_ >= 0 && frames_[consuming_slot_].gpu &&
+                frames_[consuming_slot_].gpu->epoch == gpu_epoch_)
+                slot = consuming_slot_;
+        }
+        // The worker cannot overwrite the consuming slot until the main thread
+        // consumes another frame.
+        if (slot >= 0) gpu_scene_->apply_frame(*frames_[slot].gpu);
+    }
     godot::Ref<godot::Texture2D> get_gpu3d_texture() const {
         return gpu_scene_ ? gpu_scene_->get_texture() : godot::Ref<godot::Texture2D>();
     }
     godot::Ref<godot::Texture2D> get_gpu3d_mask_texture() const {
         return gpu_scene_ ? gpu_scene_->get_mask_texture() : godot::Ref<godot::Texture2D>();
+    }
+    bool get_gpu3d_enabled() {
+        std::lock_guard lock(mutex_);
+        return gpu_enabled_;
+    }
+    godot::Ref<godot::Texture2D> get_gpu3d_raw_texture() const {
+        return gpu_scene_ ? gpu_scene_->get_raw_texture() : godot::Ref<godot::Texture2D>();
+    }
+    godot::Ref<godot::Texture2D> get_gpu3d_raw_mask_texture() const {
+        return gpu_scene_ ? gpu_scene_->get_raw_mask_texture() : godot::Ref<godot::Texture2D>();
     }
     bool get_gpu3d_screen_is_top() const {
         return gpu_scene_ ? gpu_scene_->get_screen_is_top() : true;
@@ -424,6 +481,8 @@ public:
     int get_rtc_timezone_offset_minutes() const { return rtc_timezone_offset_minutes_; }
     godot::Ref<godot::Texture2D> get_top_texture() const { return top_texture_; }
     godot::Ref<godot::Texture2D> get_bottom_texture() const { return bottom_texture_; }
+    godot::Ref<godot::Texture2D> get_presentation_top_texture() const { return presentation_texture_[0]; }
+    godot::Ref<godot::Texture2D> get_presentation_bottom_texture() const { return presentation_texture_[1]; }
     godot::AudioStreamPlayer* get_audio_player() const { return audio_player_; }
     godot::Ref<godot::Image> get_top_image() const { return top_image_; }
     godot::Ref<godot::Image> get_bottom_image() const { return bottom_image_; }
@@ -522,6 +581,11 @@ public:
         top_texture_ = godot::ImageTexture::create_from_image(top_image_);
         for (auto& pair : screen_bytes_)
             for (auto& bytes : pair) bytes.resize(kPixels * 4);
+        for (int screen = 0; screen < 2; ++screen) {
+            presentation_image_[screen] = godot::Image::create(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8);
+            presentation_texture_[screen] = godot::ImageTexture::create_from_image(presentation_image_[screen]);
+            presentation_bytes_[screen].resize(kPixels * 4);
+        }
         bottom_texture_ = godot::ImageTexture::create_from_image(bottom_image_);
         audio_stream_.instantiate();
         audio_target_seconds_ = godot::DisplayServer::get_singleton()->get_name() == godot::String("headless")
@@ -583,6 +647,8 @@ public:
                     gpu_scene_ = memnew(DqGpuScene);
                     gpu_scene_->set_name("Gpu3DScene");
                     gpu_scene_->set_scale(gpu_scale_);
+                    gpu_scene_->set_widescreen_enabled(gpu_widescreen_enabled_);
+                    gpu_scene_->set_guest_widescreen(gpu_guest_widescreen_);
                     add_child(gpu_scene_);
                 }
                 gpu_scene_->apply_frame(frame);
@@ -596,6 +662,13 @@ public:
                     }
                     for (const auto& texture : frame.new_textures)
                         installed_texture_keys_.insert(texture->key);
+                }
+            }
+            if (consume_gpu && frames_[read_slot].presentation[0] && frames_[read_slot].presentation[1]) {
+                for (int screen = 0; screen < 2; ++screen) {
+                    std::memcpy(presentation_bytes_[screen].ptrw(), frames_[read_slot].presentation[screen]->data(), kPixels * 4);
+                    presentation_image_[screen]->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, presentation_bytes_[screen]);
+                    presentation_texture_[screen]->update(presentation_image_[screen]);
                 }
             }
             {
@@ -616,10 +689,6 @@ public:
                     consumed_snapshot_["frame"] = static_cast<std::int64_t>(slot.number);
                     consumed_snapshot_["ranges"] = ranges;
                 }
-            }
-            {
-                std::lock_guard lock(mutex_);
-                consuming_slot_ = -1;
             }
             top_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, bytes[0]);
             bottom_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, bytes[1]);
@@ -648,6 +717,7 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("start"), &DqMachine::start);
         godot::ClassDB::bind_method(godot::D_METHOD("stop"), &DqMachine::stop);
         godot::ClassDB::bind_method(godot::D_METHOD("set_paused", "paused"), &DqMachine::set_paused);
+        godot::ClassDB::bind_method(godot::D_METHOD("pause_at_frame_boundary"), &DqMachine::pause_at_frame_boundary);
         godot::ClassDB::bind_method(godot::D_METHOD("is_paused"), &DqMachine::is_paused);
         godot::ClassDB::bind_method(godot::D_METHOD("get_scene"), &DqMachine::get_scene);
         godot::ClassDB::bind_method(godot::D_METHOD("step_once"), &DqMachine::step_once);
@@ -664,12 +734,15 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("set_backup_type", "name"), &DqMachine::set_backup_type);
         godot::ClassDB::bind_method(godot::D_METHOD("get_backup_type"), &DqMachine::get_backup_type);
         godot::ClassDB::bind_method(godot::D_METHOD("set_rtc_epoch", "epoch_seconds", "timezone_offset_minutes"), &DqMachine::set_rtc_epoch);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_widescreen_camera", "enabled"), &DqMachine::set_widescreen_camera);
         godot::ClassDB::bind_method(godot::D_METHOD("set_buttons", "mask"), &DqMachine::set_buttons);
         godot::ClassDB::bind_method(godot::D_METHOD("set_touch", "x", "y", "down"), &DqMachine::set_touch);
         godot::ClassDB::bind_method(godot::D_METHOD("get_top_texture"), &DqMachine::get_top_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_bottom_texture"), &DqMachine::get_bottom_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_top_image"), &DqMachine::get_top_image);
         godot::ClassDB::bind_method(godot::D_METHOD("get_bottom_image"), &DqMachine::get_bottom_image);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_presentation_top_texture"), &DqMachine::get_presentation_top_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_presentation_bottom_texture"), &DqMachine::get_presentation_bottom_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_audio_player"), &DqMachine::get_audio_player);
 #ifdef DQ9_AUDIO_TESTS
         godot::ClassDB::bind_method(godot::D_METHOD("set_test_audio_capture", "enabled"), &DqMachine::set_test_audio_capture);
@@ -682,9 +755,14 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("restore_save", "path"), &DqMachine::restore_save);
         godot::ClassDB::bind_method(godot::D_METHOD("get_stats"), &DqMachine::get_stats);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_enabled", "enabled"), &DqMachine::set_gpu3d_enabled);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_enabled"), &DqMachine::get_gpu3d_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_scale", "scale"), &DqMachine::set_gpu3d_scale);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_widescreen_enabled", "enabled"), &DqMachine::set_gpu3d_widescreen_enabled);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_guest_widescreen", "enabled"), &DqMachine::set_gpu3d_guest_widescreen);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_texture"), &DqMachine::get_gpu3d_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_mask_texture"), &DqMachine::get_gpu3d_mask_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_raw_texture"), &DqMachine::get_gpu3d_raw_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_raw_mask_texture"), &DqMachine::get_gpu3d_raw_mask_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_screen_is_top"), &DqMachine::get_gpu3d_screen_is_top);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_stats"), &DqMachine::get_gpu3d_stats);
         godot::ClassDB::bind_method(godot::D_METHOD("get_session_start_save"), &DqMachine::get_session_start_save);
@@ -752,8 +830,7 @@ private:
             audio_playback_->set_meta("_dq9_generator", audio_stream_);
         generator_capacity_ = audio_playback_.is_valid() ? audio_playback_->get_frames_available() : 0;
     }
-    static void copy_screen(dsr_session_handle* session, int screen, std::uint8_t* out) {
-        const auto* src = dsr_session_get_screen(session, screen);
+    static void copy_pixels(const std::uint32_t* src, std::uint8_t* out) {
         if (!src) return;
         for (std::size_t i = 0; i < kPixels; ++i) {
             out[i * 4] = static_cast<std::uint8_t>(src[i] >> 16U);
@@ -761,6 +838,9 @@ private:
             out[i * 4 + 2] = static_cast<std::uint8_t>(src[i]);
             out[i * 4 + 3] = static_cast<std::uint8_t>(src[i] >> 24U);
         }
+    }
+    static void copy_screen(dsr_session_handle* session, int screen, std::uint8_t* out) {
+        copy_pixels(dsr_session_get_screen(session, screen), out);
     }
     static std::uint64_t hash_screen(const std::uint32_t* pixels) {
         std::uint64_t hash = 0xcbf29ce484222325ull;
@@ -789,8 +869,7 @@ private:
 #endif
         target.new_textures.clear();
         const auto& geometry = source.geometry;
-        if (geometry.vertex_overflow || geometry.polygon_overflow || !source.opaque_only_mask ||
-            geometry.polygon_count > dq9::kGpuPolygonLimit || geometry.vertex_count > dq9::kGpuVertexLimit ||
+        if (!dq9::accepts_geometry(geometry, widescreen_camera_) || !source.opaque_only_mask ||
             source.draw_order.opaque_count + source.draw_order.translucent_count != geometry.polygon_count) return;
         for (std::size_t i = 0; i < geometry.polygon_count; ++i) {
             const auto& polygon = geometry.polygons[i];
@@ -798,6 +877,7 @@ private:
             for (std::size_t j = 0; j < polygon.count; ++j)
                 if (polygon.index[j] >= geometry.vertex_count) return;
         }
+        target.prepare_geometry(widescreen_camera_);
         target.vertex_count = geometry.vertex_count;
         std::copy_n(geometry.vertices, geometry.vertex_count, target.vertices.begin());
         std::copy_n(source.opaque_only_mask, target.opaque_only.size(), target.opaque_only.begin());
@@ -938,6 +1018,7 @@ private:
         config.deterministic_rtc = static_cast<std::uint8_t>(deterministic_rtc_);
         config.rtc_epoch_seconds = rtc_epoch_seconds_;
         config.rtc_timezone_offset_minutes = rtc_timezone_offset_minutes_;
+        config.widescreen_camera = static_cast<std::uint8_t>(widescreen_camera_);
         config.backup_type = backup_type_.c_str();
         char error[512]{};
         session_ = dsr_session_create(&config, error, sizeof(error));
@@ -979,7 +1060,7 @@ private:
                     std::unique_lock lock(mutex_);
                     cv_.wait(lock, [&] {
                         return shutdown_ || flush_requested_ || backups_requested_ || restore_requested_ ||
-                               sync_frames_ > 0 || pending_steps_ > 0 || (running_ && !paused_);
+                               barrier_requested_ || sync_frames_ > 0 || pending_steps_ > 0 || (running_ && !paused_);
                     });
                     if (shutdown_) break;
                     if (flush_requested_) {
@@ -1019,6 +1100,10 @@ private:
                         if (!listed) { backups.clear(); error_ = error; }
                         save_backups_ = std::move(backups);
                         backups_requested_ = false; cv_.notify_all();
+                        continue;
+                    }
+                    if (barrier_requested_ && sync_frames_ == 0 && pending_steps_ == 0) {
+                        barrier_requested_ = false; cv_.notify_all();
                         continue;
                     }
                     if (sync_frames_ > 0) { --sync_frames_; manual = true; do_step = true; }
@@ -1063,7 +1148,7 @@ private:
                 if (gpu_enabled) gpu_delay.begin_step();
                 if (dsr_session_step(session_, &input, error, sizeof(error)) != 0) {
                     std::lock_guard lock(mutex_); error_ = error; running_ = false; paused_ = true;
-                    sync_frames_ = 0; sync_done_ = true; cv_.notify_all();
+                    pending_steps_ = sync_frames_ = 0; sync_done_ = true; cv_.notify_all();
                     replay_active_ = replay_finished_pending_ = false;
                     continue;
                 }
@@ -1117,6 +1202,13 @@ private:
                     if (gpu_enabled) {
                         dsr::RenderFrame displayed{};
                         dsr::capture_session_render_frame(session_, displayed);
+                        if (widescreen_camera_ && displayed.presentation_top && displayed.presentation_bottom) {
+                            auto& slot = frames_[output_slot];
+                            for (int screen = 0; screen < 2; ++screen) {
+                                if (!slot.presentation[screen]) slot.presentation[screen] = std::make_unique<std::array<std::uint8_t, kPixels * 4>>();
+                                copy_pixels(screen == 0 ? displayed.presentation_top : displayed.presentation_bottom, slot.presentation[screen]->data());
+                            }
+                        }
                         gpu_delay.publish(frames_[output_slot].gpu, displayed, gpu_epoch);
                     }
                 }
@@ -1251,6 +1343,7 @@ private:
     bool loaded_ = false, running_ = false, paused_ = false;
     bool audio_priming_ = true;
     bool shutdown_ = false, initialized_ = false, flush_requested_ = false, sync_done_ = false;
+    bool barrier_requested_ = false;
     bool last_save_ok_ = true;
     bool started_ = false, backups_requested_ = false, restore_requested_ = false;
     std::uint64_t save_capacity_ = 0;
@@ -1268,6 +1361,7 @@ private:
     bool replay_active_ = false, replay_finished_pending_ = false, record_replay_hashes_ = false;
     std::vector<ReplayHash> replay_hashes_;
     std::uint8_t language_ = 1;
+    bool widescreen_camera_ = false;
     bool deterministic_rtc_ = false;
     std::string backup_type_;
     bool chip_mismatch_ = false;
@@ -1282,6 +1376,8 @@ private:
     int published_slot_ = -1, consuming_slot_ = -1;
     bool gpu_enabled_ = false;
     int gpu_scale_ = 3;
+    bool gpu_widescreen_enabled_ = false;
+    bool gpu_guest_widescreen_ = false;
     std::uint64_t gpu_epoch_ = 0, installed_texture_epoch_ = 0, installed_texture_generation_ = 0;
     std::unordered_set<dsr::gpu3d_detail::TextureKey, dq9::TextureKeyHash> installed_texture_keys_;
     DqGpuScene* gpu_scene_ = nullptr;
@@ -1305,6 +1401,9 @@ private:
     double audio_source_rate_ = kAudioRate, resample_phase_ = 0;
     godot::Ref<godot::Image> top_image_, bottom_image_;
     godot::Ref<godot::ImageTexture> top_texture_, bottom_texture_;
+    godot::PackedByteArray presentation_bytes_[2];
+    godot::Ref<godot::Image> presentation_image_[2];
+    godot::Ref<godot::ImageTexture> presentation_texture_[2];
     godot::Ref<godot::AudioStreamGenerator> audio_stream_;
     godot::Ref<godot::AudioStreamGeneratorPlayback> audio_playback_;
     godot::AudioStreamPlayer* audio_player_ = nullptr;

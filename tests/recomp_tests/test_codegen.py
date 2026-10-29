@@ -171,6 +171,23 @@ class RecompilerCodegenTests(unittest.TestCase):
             self.assertEqual(stats["direct_calls"], 1)
             self.assertEqual(stats["dsr_call_sites"], 0)
 
+    def test_camera_builder_calls_use_per_machine_dispatch(self):
+        for opcode in ("000000eb", "000000ea"):  # BL and tail B.
+            with self.subTest(opcode=opcode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                base = 0x020c28a8
+                code = bytes.fromhex(opcode + " 1eff2fe1 0700a0e3 1eff2fe1")
+                manifest = self.make_manifest(root, code, [
+                    {"addr": base, "thumb": False, "size": 8, "name": "caller"},
+                    {"addr": base + 8, "thumb": False, "size": 8, "name": "projection"},
+                ], [{"from": base, "to": base + 8, "modules": [-1]}])
+                manifest["modules"][0]["base"] = base
+                output = root / "generated"
+                emit_manifest(manifest, output)
+                body = (output / "chunk_000.cpp").read_text(encoding="utf-8")
+                self.assertIn("::dsr::dsr_call(c, 0x020c28b0u);", body)
+                self.assertNotIn("(*::dsr::p_arm9_main_020c28b0)(c);", body)
+
     def test_extra_entry_is_emitted_and_registered(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

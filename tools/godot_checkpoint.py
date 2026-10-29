@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def godot_run(seg: Path, meta: dict, godot: Path, rom: Path, work: Path,
               save: Path, output: Path, frames: int, toggles: bool = False,
-              gpu3d: bool = False) -> dict:
+              gpu3d: bool = False, widescreen: str = "off") -> dict:
     command = ["xvfb-run", "-a", str(godot.resolve()), "--path", str(ROOT / "godot"),
                "--script", "res://tests/checkpoint_run.gd", "--",
                "--rom", str(rom.resolve()), "--save", str(save),
@@ -38,6 +38,7 @@ def godot_run(seg: Path, meta: dict, godot: Path, rom: Path, work: Path,
         command.append("--toggles")
     if gpu3d:
         command.append("--gpu3d")
+    command += ["--widescreen", widescreen]
     env = os.environ.copy()
     env["XDG_DATA_HOME"] = str(work / "xdg-data")
     result = subprocess.run(command, env=env)
@@ -47,7 +48,8 @@ def godot_run(seg: Path, meta: dict, godot: Path, rom: Path, work: Path,
 
 
 def run(ladder: Path, selected: list[str], godot: Path, rom: Path,
-        toggles: bool, gpu3d: bool) -> int:
+        toggles: bool, gpu3d: bool, widescreen: str = "off",
+        enhanced_output: Path | None = None) -> int:
     passed = failed = skipped = 0
     print("NOTE: audio is not compared in Godot runs")
     for name in selected:
@@ -57,20 +59,36 @@ def run(ladder: Path, selected: list[str], godot: Path, rom: Path,
             print(f"SKIP {name}: extra_args unsupported in Godot")
             skipped += 1
             continue
-        expected = hashes(seg / "expected.hashes", meta["frames"])
+        expected = None if widescreen == "full" else hashes(seg / "expected.hashes", meta["frames"])
         with tempfile.TemporaryDirectory(prefix="dq9-godot-checkpoint-") as tmp:
             work = Path(tmp)
             save = work / "run.sav"
             output = work / "run.hashes"
             shutil.copyfile(seg / "start.sav", save)
             actual = godot_run(seg, meta, godot, rom, work, save, output,
-                               meta["frames"], toggles, gpu3d)
+                               meta["frames"], toggles, gpu3d, widescreen)
+            if widescreen == "full":
+                repeat_save = work / "repeat.sav"
+                shutil.copyfile(seg / "start.sav", repeat_save)
+                expected = godot_run(seg, meta, godot, rom, work, repeat_save,
+                                     work / "repeat.hashes", meta["frames"], toggles,
+                                     gpu3d, widescreen)
+                expected_save = sha(repeat_save)
+                if enhanced_output is not None:
+                    destination = enhanced_output / name
+                    destination.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(output, destination / "run.hashes")
+                    shutil.copyfile(work / "repeat.hashes", destination / "repeat.hashes")
+                    shutil.copyfile(save, destination / "run.sav")
+                    shutil.copyfile(repeat_save, destination / "repeat.sav")
+            else:
+                expected_save = meta["recorded"]["end_save_sha256"]
             bad = [frame for frame in range(meta["frames"]) if actual[frame] != expected[frame]]
-            label = "godot" + (" +toggles" if toggles else "") + (" +gpu3d" if gpu3d else "")
+            label = "godot" + (" +toggles" if toggles else "") + (" +gpu3d" if gpu3d else "") + f" widescreen={widescreen}"
             errors = []
             if bad:
                 errors.append(f"hashes first={bad[0]} ({len(bad)} frames differ)")
-            if sha(save) != meta["recorded"]["end_save_sha256"]:
+            if sha(save) != expected_save:
                 errors.append("save sha differs")
             if errors:
                 failed += 1
@@ -243,6 +261,10 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("names", nargs="*")
     replay.add_argument("--toggles", action="store_true")
     replay.add_argument("--gpu3d", action="store_true")
+    replay.add_argument("--widescreen", choices=("off", "picture", "full"), default="off",
+                        help="Full compares two independent enhanced runs, not Classic hashes")
+    replay.add_argument("--enhanced-output", type=Path,
+                        help="retain Full-mode hashes and saves in this directory")
     chaining = sub.add_parser("chain")
     chaining.add_argument("a")
     chaining.add_argument("b")
@@ -266,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             return chain(args.ladder, args.a, args.b, args.frames_b,
                          args.godot, args.rom, args.dq9, args.control)
         return run(args.ladder, args.names or names(args.ladder), args.godot, args.rom,
-                   args.toggles, args.gpu3d)
+                   args.toggles, args.gpu3d, args.widescreen, args.enhanced_output)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

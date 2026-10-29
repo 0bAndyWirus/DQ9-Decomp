@@ -94,6 +94,33 @@ func _settle() -> void:
 		await process_frame
 	await RenderingServer.frame_post_draw
 
+func _mesh_vertices(scene: Node) -> Array:
+	var result: Array = []
+	for child in scene.get_node("Gpu3DViewport").get_children():
+		if child is MeshInstance3D and child.mesh:
+			for surface in child.mesh.get_surface_count():
+				result.append(child.mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX])
+	return result
+
+func _paused_widescreen_switch() -> void:
+	var scene := _scene()
+	await _settle()
+	var frame: int = machine.get_gpu3d_stats().frame
+	var off := _mesh_vertices(scene)
+	var off_size := machine.get_gpu3d_texture().get_size()
+	machine.set_gpu3d_widescreen_enabled(true)
+	await _settle()
+	var picture := _mesh_vertices(scene)
+	var picture_size := machine.get_gpu3d_texture().get_size()
+	check(not off.is_empty() and picture != off, "paused Picture rebuilds retained frame geometry")
+	check(picture_size.x > off_size.x and picture_size.y == off_size.y, "paused Picture widens viewport")
+	check(int(machine.get_gpu3d_stats().frame) == frame, "paused Picture keeps the same guest frame")
+	machine.set_gpu3d_widescreen_enabled(false)
+	await _settle()
+	check(_mesh_vertices(scene) == off and machine.get_gpu3d_texture().get_size() == off_size,
+		"paused Off restores retained frame geometry and viewport")
+	check(int(machine.get_gpu3d_stats().frame) == frame, "paused Off keeps the same guest frame")
+
 func _polygon_coverage(scene: Node) -> Dictionary:
 	var effects: SubViewport = scene.get_node("Gpu3DEffects")
 	var post: MeshInstance3D = effects.get_node("Gpu3DPost")
@@ -369,6 +396,7 @@ func _run() -> void:
 	await _crack_fixture()
 	machine.set_paused(true)
 	var frame := 0
+	var paused_switch_checked := false
 	while frame < frames:
 		var state: Array = input_by_frame.get(frame, [0, -1, -1])
 		var count := 1
@@ -382,12 +410,16 @@ func _run() -> void:
 		var reason: String = stats.get("fallback", "disabled")
 		fallback_counts[reason] = int(fallback_counts.get(reason, 0)) + 1
 		check(int(stats.get("decoded_this_frame", 0)) <= 256, "texture budget at frame %d" % (frame - 1))
+		if not paused_switch_checked and bool(stats.get("valid", false)) and int(stats.get("mesh_polygon_count", 0)) > 0:
+			await _paused_widescreen_switch()
+			paused_switch_checked = true
 		var range_key := _range_key(frame - 1)
 		if not range_key.is_empty(): await _sample_range(frame - 1, range_key)
 		if checkpoints.has(frame - 1):
 			await _capture(frame - 1, 1)
 			await _capture(frame - 1, 3)
 			await _capture(frame - 1, 6)
+	check(paused_switch_checked, "paused widescreen test encountered a valid nonempty GPU frame")
 	# Dropped ring publications must not lose new texture payloads. Synchronous
 	# multi-frame stepping replaces several unconsumed slots before one upload.
 	machine.step_frames(8, 0, -1, -1, false)

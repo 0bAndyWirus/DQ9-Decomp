@@ -112,6 +112,8 @@ public:
     //   line_3d is the 3D engine's 256-pixel output for line y (may be
     //   nullptr if 3D is disabled), format defined by Gpu3D::line().
     void attach_gpu3d(Gpu3D* gpu3d);
+    // Enable the Full-mode presentation buffers; disabled accessors alias native output.
+    void set_enhanced_presentation(bool enabled);
     void render_line(int y);
     void vblank_start();
 
@@ -119,10 +121,15 @@ public:
     // screen swap and master brightness, 0xFFRRGGBB per pixel.
     const std::uint32_t* screen_top() const;
     const std::uint32_t* screen_bottom() const;
+    // Presentation-only LCD frames; guest-visible screen and capture remain unchanged.
+    const std::uint32_t* presentation_top() const;
+    const std::uint32_t* presentation_bottom() const;
     // Engine A's row-major mask: 1 only for opaque, unblended, unmodified BG0
     // 3D pixels in normal display. Brightness-transformed or scrolled lines
     // stay software (0); the GPU overlay does not replay per-line 2D effects.
     const std::uint8_t* three_d_mask() const;
+    // Presentation counterpart, including enhanced-only 3D where applicable.
+    const std::uint8_t* presentation_three_d_mask() const;
     // The display's 5-bit -> 8-bit channel expansion, for host code that composes pixels
     // outside the 2D compositor (for example the optional hi-res 3D overlay).
     static std::uint8_t expand_color5(std::uint32_t value);
