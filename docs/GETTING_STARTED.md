@@ -17,8 +17,8 @@ Built from a fresh clone on Linux with a local EU image, the program starts, pla
 
 ```sh
 sudo apt install build-essential cmake ninja-build git python3 python3-venv libsdl2-dev pkg-config
-git clone https://github.com/0bAndyWirus/DQ9-Decomp.git
-cd DQ9-Decomp
+git clone https://github.com/dq9-remastered/DQ9-Remastered.git
+cd DQ9-Remastered
 python3 -m venv .venv && . .venv/bin/activate
 python -m pip install PyYAML capstone unicorn cmake ninja
 
