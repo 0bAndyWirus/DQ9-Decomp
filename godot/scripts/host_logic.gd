@@ -5,7 +5,7 @@ const BUTTON_ACTIONS := ["ds_a", "ds_b", "ds_x", "ds_y", "ds_start", "ds_select"
 const BUTTON_BITS := [0, 1, 10, 11, 3, 2, 6, 7, 5, 4, 9, 8]
 const BUTTONS := BUTTON_ACTIONS
 const LAYOUTS := ["Vertical", "Horizontal", "Top Focus", "Bottom Focus", "Single Top", "Single Bottom", "Merged Overlay", "Single screen"]
-const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "single_screen_shapes":[{"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "opacity":1.0}], "renderer_gpu3d":0, "gpu3d_scale":3, "issue_show_auto":false}
+const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "single_screen_shapes":[{"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "opacity":1.0}], "renderer_gpu3d":0, "gpu3d_scale":3, "widescreen_mode":0, "issue_show_auto":false}
 
 static func button_mask(pressed_actions: Array) -> int:
 	var mask := 0
@@ -14,14 +14,16 @@ static func button_mask(pressed_actions: Array) -> int:
 			mask |= 1 << BUTTON_BITS[i]
 	return mask
 
-static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58, 0.56, 0.35, 0.35), integer_scale := false) -> Array[Rect2]:
+static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58, 0.56, 0.35, 0.35), integer_scale := false, wide_ratio := 1.0, wide_screen := 0) -> Array[Rect2]:
 	var result: Array[Rect2] = [Rect2(), Rect2()]
 	var safe := Vector2(maxf(1, view.x), maxf(1, view.y))
 	var top_size := Vector2(256, 192)
 	var gap := 12.0
-	var scale := minf(safe.x / 256.0, safe.y / 396.0)
+	var ratio := maxf(1.0, wide_ratio)
+	var side := 128.0 * (ratio - 1.0)
+	var scale := minf(safe.x / (256.0 * ratio), safe.y / 396.0)
 	if layout == 1:
-		scale = minf(safe.x / 524.0, safe.y / 192.0)
+		scale = minf(safe.x / (524.0 + 2.0 * side), safe.y / 192.0)
 	if integer_scale:
 		scale = maxf(1.0, floorf(scale))
 	match layout:
@@ -31,12 +33,14 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 			result[0] = Rect2(origin, top_size * scale)
 			result[1] = Rect2(origin + Vector2(0, 204 * scale), top_size * scale)
 		1:
-			var size := Vector2(524, 192) * scale
+			var size := Vector2(524.0 + 2.0 * side, 192) * scale
 			var origin := (safe - size) * 0.5
-			result[0] = Rect2(origin, top_size * scale)
-			result[1] = Rect2(origin + Vector2(268 * scale, 0), top_size * scale)
+			result[0] = Rect2(origin + Vector2(side if wide_screen == 0 else 0.0, 0) * scale, top_size * scale)
+			result[1] = Rect2(origin + Vector2(268.0 + side * (2.0 if wide_screen == 0 else 1.0), 0) * scale, top_size * scale)
 		2, 3:
-			var big := minf(safe.x / 256.0, (safe.y - gap) / (192.0 * 1.55))
+			var primary_screen := 0 if layout == 2 else 1
+			var width_factor := maxf(ratio if wide_screen == primary_screen else 1.0, 0.55 * (ratio if wide_screen != primary_screen else 1.0))
+			var big := minf(safe.x / (256.0 * width_factor), (safe.y - gap) / (192.0 * 1.55))
 			if integer_scale: big = maxf(1.0, floorf(big))
 			var small := maxf(1.0, floorf(big * 0.55)) if integer_scale else big * 0.55
 			var origin_y := (safe.y - 192.0 * (big + small) - gap) * 0.5
@@ -46,20 +50,22 @@ static func layout_rects(view: Vector2, layout: int, overlay: Rect2 = Rect2(0.58
 			if layout == 2: result[0] = primary; result[1] = secondary
 			else: result[1] = primary; result[0] = secondary
 		4, 5, 7:
-			var factor := minf(safe.x / 256.0, safe.y / 192.0)
+			var visible_screen := 1 if layout == 5 else 0
+			var factor := minf(safe.x / (256.0 * (ratio if wide_screen == visible_screen else 1.0)), safe.y / 192.0)
 			if integer_scale: factor = maxf(1.0, floorf(factor))
 			result[0 if layout != 5 else 1] = Rect2((safe - top_size * factor) * 0.5, top_size * factor)
 		6:
-			var factor := minf(safe.x / 256.0, safe.y / 192.0)
+			var factor := minf(safe.x / (256.0 * (ratio if wide_screen == 0 else 1.0)), safe.y / 192.0)
 			if integer_scale: factor = maxf(1.0, floorf(factor))
 			result[0] = Rect2((safe - top_size * factor) * 0.5, top_size * factor)
 			var r := overlay
 			var bounds := Vector2(clampf(r.size.x, 0.15, 0.75) * safe.x, clampf(r.size.y, 0.15, 0.75) * safe.y)
-			var overlay_scale := minf(bounds.x / 256.0, bounds.y / 192.0)
+			var overlay_ratio := ratio if wide_screen == 1 else 1.0
+			var overlay_scale := minf(bounds.x / (256.0 * overlay_ratio), bounds.y / 192.0)
 			if integer_scale: overlay_scale = maxf(1.0, floorf(overlay_scale))
 			var size := top_size * overlay_scale
-			var max_pos := Vector2.ONE - size / safe
-			var pos := Vector2(clampf(r.position.x, 0, max_pos.x) * safe.x, clampf(r.position.y, 0, max_pos.y) * safe.y)
+			var overlay_side := side * overlay_scale if wide_screen == 1 else 0.0
+			var pos := Vector2(clampf(r.position.x * safe.x, overlay_side, safe.x - size.x - overlay_side), clampf(r.position.y * safe.y, 0, safe.y - size.y))
 			result[1] = Rect2(pos, size)
 	return result
 
@@ -163,6 +169,7 @@ static func load_settings(path: String) -> Dictionary:
 	if not values["single_screen_shapes"] is Array: values["single_screen_shapes"] = []
 	values["renderer_gpu3d"] = clampi(int(values["renderer_gpu3d"]), 0, 1)
 	values["gpu3d_scale"] = clampi(int(values["gpu3d_scale"]), 2, 6)
+	values["widescreen_mode"] = clampi(int(values["widescreen_mode"]), 0, 2)
 	return values
 
 static func event_to_dict(event: InputEvent) -> Dictionary:

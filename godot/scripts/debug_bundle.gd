@@ -1,7 +1,7 @@
 extends RefCounted
 
 static func save_note(machine: Node, directory: String, note: String, frame: int,
-		rom_path: String, save_path: String, language: String) -> String:
+		rom_path: String, save_path: String, language: String, widescreen_mode := 0) -> String:
 	var absolute_dir := ProjectSettings.globalize_path(directory)
 	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
 		return "cannot create bundle directory: " + absolute_dir
@@ -60,11 +60,14 @@ static func save_note(machine: Node, directory: String, note: String, frame: int
 	var chip_argument := "" if chip == "auto" else " --backup-type " + _shell_quote(chip)
 	var replay := FileAccess.open(directory.path_join("replay.sh"), FileAccess.WRITE)
 	if replay == null: return "cannot write replay.sh"
-	replay.store_string("#!/bin/sh\nset -eu\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\ncd \"$SCRIPT_DIR\"\nOUT=\"$SCRIPT_DIR/replay_out\"\nmkdir -p \"$OUT\"\ncp \"$SCRIPT_DIR/session_start.sav\" \"$OUT/replay.sav\"\nexec %s --rom %s --save 'replay_out/replay.sav' --language %s%s --rtc-epoch %d --rtc-timezone-offset %d --headless --frames %d --input-script 'session_input.txt' --dump-frames %d --dump-dir 'replay_out' --dump-audio 'replay_out/audio.wav'\n" % [
-		_shell_quote(replay_binary), _shell_quote(absolute_rom), _shell_quote(language), chip_argument, rtc_epoch, rtc_offset, frame + 1, frame])
+	if widescreen_mode == 2:
+		replay.store_string("#!/bin/sh\necho 'Full widescreen changes guest state; replay this bundle with the Godot issue reviewer.' >&2\nexit 1\n")
+	else:
+		replay.store_string("#!/bin/sh\nset -eu\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\ncd \"$SCRIPT_DIR\"\nOUT=\"$SCRIPT_DIR/replay_out\"\nmkdir -p \"$OUT\"\ncp \"$SCRIPT_DIR/session_start.sav\" \"$OUT/replay.sav\"\nexec %s --rom %s --save 'replay_out/replay.sav' --language %s%s --rtc-epoch %d --rtc-timezone-offset %d --headless --frames %d --input-script 'session_input.txt' --dump-frames %d --dump-dir 'replay_out' --dump-audio 'replay_out/audio.wav'\n" % [
+			_shell_quote(replay_binary), _shell_quote(absolute_rom), _shell_quote(language), chip_argument, rtc_epoch, rtc_offset, frame + 1, frame])
 	replay.close()
 	var env := FileAccess.open(directory.path_join("env.txt"), FileAccess.WRITE)
-	env.store_string("rom_path: %s\nsave_path: %s\nlanguage: %s\nbackup_type: %s\nrtc_epoch: %d\nrtc_timezone_offset_minutes: %d\n" % [absolute_rom, current_save_path, language, chip, rtc_epoch, rtc_offset])
+	env.store_string("rom_path: %s\nsave_path: %s\nlanguage: %s\nbackup_type: %s\nrtc_epoch: %d\nrtc_timezone_offset_minutes: %d\nwidescreen_mode: %d\n" % [absolute_rom, current_save_path, language, chip, rtc_epoch, rtc_offset, widescreen_mode])
 	env.close()
 	return ""
 

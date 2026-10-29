@@ -7,7 +7,7 @@ This roadmap states goals, not achieved results. Nothing here claims that the ga
 ## v1 definition
 
 1. **Faithful port (SDL `dq9`)**: a host built locally from the user's own copy can play the European game from new game to the end credits, with persistent saves, on Linux. It runs statically recompiled original code ([architecture](ARCHITECTURE.md)).
-2. **Remaster build (Godot host)**: the same core with optional presentation upgrades. 1x mode is pixel-identical to SDL, and presentation settings never change simulation state.
+2. **Remaster build (Godot host)**: the same core with optional enhancements. Classic 1x mode is pixel-identical to SDL. Presentation-only settings do not change simulation state; launch-time guest-modifying modes such as Full widescreen have their own baselines and never replace Classic baselines.
 3. **Decompilation**: work on the remaining unmatched functions runs in parallel until v1; 100% is the stretch goal. Whatever remains at release is classified and documented with its blocker. Coverage totals stay private ([decompilation status](DECOMP_STATUS.md)).
 4. **DLC**: investigated only for content already present on the user's own cartridge image, enabled offline, never distributing game data (M7 decides).
 5. **Out of scope**: local wireless multiplayer, tag mode, online services, and Windows/Deck performance tuning beyond "works".

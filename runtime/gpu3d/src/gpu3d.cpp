@@ -47,6 +47,10 @@ namespace {
 using Matrix = std::array<std::int32_t, 16>;
 constexpr std::size_t kVertexLimit = 6144;
 constexpr std::size_t kPolygonLimit = 2048;
+constexpr std::size_t kEnhancedVertexLimit = 12288;
+constexpr std::size_t kEnhancedPolygonLimit = kEnhancedVertexLimit;
+static_assert(kPolygonLimit <= std::numeric_limits<std::uint16_t>::max());
+
 constexpr std::size_t kScreenWidth = 256;
 constexpr std::size_t kScreenHeight = 192;
 constexpr std::size_t kScreenPixels = kScreenWidth * kScreenHeight;
@@ -296,32 +300,106 @@ struct Gpu3D::Impl {
     std::int64_t transformed_texcoord_s = 0;
     std::int64_t transformed_texcoord_t = 0;
 
-    std::array<Vertex, kVertexLimit> vertices{};
-    std::array<Polygon, kPolygonLimit> polygons{};
+    // Full-mode data is owned by the pointer overlaid on the Classic vertex
+    // array. Classic therefore pays no pointer or allocation overhead.
+    struct RasterVertex {
+        std::int32_t x = 0;
+        std::int32_t y = 0;
+        std::array<float, 7> attribute{}; // 1/w, z (0..1), u/w, v/w, r/w, g/w, b/w
+    };
+
+    enum class PolygonShape { Empty, Dot, Filled, Wire };
+    struct PreparedPolygon {
+        PolygonShape shape = PolygonShape::Empty;
+        std::size_t count = 0;
+        int y_begin = 0;
+        int y_end = 0;
+        bool front_facing = false;
+        std::array<ScreenVertex, 16> screen{};
+        std::array<RasterVertex, 10> raster{};
+        ClipVertex dot{};
+    };
+    struct FullGeometry {
+        std::array<Vertex, kEnhancedVertexLimit> vertices{};
+        std::array<Polygon, kEnhancedPolygonLimit> polygons{};
+        std::array<Vertex, kEnhancedVertexLimit> render_vertices{};
+        std::array<Polygon, kEnhancedPolygonLimit> render_polygons{};
+        std::array<std::uint16_t, kEnhancedPolygonLimit> opaque_order{};
+        std::array<std::uint16_t, kEnhancedPolygonLimit> translucent_order{};
+        std::array<std::array<float, 2>, kEnhancedPolygonLimit> y_range{};
+        std::array<std::array<std::uint32_t, kEnhancedPolygonLimit>, kRenderBands> touches{};
+        std::array<std::uint32_t, kEnhancedPolygonLimit> totals{};
+        std::unique_ptr<std::array<PreparedPolygon, kEnhancedPolygonLimit>> band_polygons;
+        std::unique_ptr<std::array<std::uint32_t, kScreenPixels>> output;
+    };
+    union VertexStorage {
+        std::array<Vertex, kVertexLimit> classic;
+        FullGeometry* full;
+        VertexStorage() : classic{} {}
+        ~VertexStorage() {}
+    };
+    static_assert(sizeof(VertexStorage) == sizeof(std::array<Vertex, kVertexLimit>));
+    // These state blocks occupied the same space in f2fa275. Assert that the
+    // extra Full selector and hardware counts fit in their existing padding.
+    struct ClassicPrimitiveLayout {
+        std::array<std::uint16_t, 4> vertices;
+        std::uint32_t count;
+        std::uint8_t mode;
+        bool in_list, vertex_overflow, polygon_overflow;
+    };
+    struct CompactPrimitiveLayout {
+        std::array<std::uint16_t, 4> vertices;
+        std::uint32_t count;
+        std::uint8_t mode;
+        bool in_list : 1, vertex_overflow : 1, polygon_overflow : 1,
+             enhanced : 1, full : 1;
+        std::uint16_t hardware_count;
+    };
+    static_assert(sizeof(CompactPrimitiveLayout) == sizeof(ClassicPrimitiveLayout));
+    struct ClassicSwapLayout {
+        std::uint64_t generation;
+        std::uint8_t mode, pending_mode, geometry_mode;
+        bool vertex_overflow, polygon_overflow, pending;
+    };
+    struct CompactSwapLayout {
+        std::uint64_t generation;
+        std::uint8_t mode, pending_mode, geometry_mode;
+        bool vertex_overflow : 1, polygon_overflow : 1, pending : 1;
+        std::uint16_t hardware_count;
+    };
+    static_assert(sizeof(CompactSwapLayout) == sizeof(ClassicSwapLayout));
+    VertexStorage vertex_storage;
+    std::array<Polygon, kPolygonLimit> classic_polygons{};
     std::size_t vertex_count = 0;
     std::size_t polygon_count = 0;
     std::array<std::uint16_t, 4> primitive_vertices{};
     std::uint32_t primitive_vertex_count = 0;
     std::uint8_t primitive_mode = 0;
-    bool in_vertex_list = false;
-    bool vertex_overflow = false;
-    bool polygon_overflow = false;
+    bool in_vertex_list : 1 = false;
+    bool vertex_overflow : 1 = false;
+    bool polygon_overflow : 1 = false;
+    bool enhanced_geometry : 1 = false;
+    bool full_storage : 1 = false;
+    bool enhanced_overflow : 1 = false;
+    std::uint16_t hardware_polygon_count = 0;
 
-    std::array<Vertex, kVertexLimit> render_vertices{};
-    std::array<Polygon, kPolygonLimit> render_polygons{};
+    std::array<Vertex, kVertexLimit> classic_render_vertices{};
+    std::array<Polygon, kPolygonLimit> classic_render_polygons{};
     std::size_t render_vertex_count = 0;
     std::size_t render_polygon_count = 0;
-    std::array<std::uint16_t, kPolygonLimit> render_opaque_order{};
-    std::array<std::uint16_t, kPolygonLimit> render_translucent_order{};
+    std::array<std::uint16_t, kPolygonLimit> classic_opaque_order{};
+    std::array<std::uint16_t, kPolygonLimit> classic_translucent_order{};
     std::size_t render_opaque_count = 0;
     std::size_t render_translucent_count = 0;
     std::uint64_t render_generation = 0;
     std::uint8_t swap_mode = 0;
     std::uint8_t pending_swap_mode = 0;
     std::uint8_t geometry_swap_mode = 0;
-    bool render_vertex_overflow = false;
-    bool render_polygon_overflow = false;
-    bool swap_pending = false;
+    bool render_vertex_overflow : 1 = false;
+    bool render_polygon_overflow : 1 = false;
+    bool swap_pending : 1 = false;
+    bool render_enhanced_overflow : 1 = false;
+    std::uint16_t render_hardware_polygon_count = 0;
     // Busy flags cover submitted commands, including ones still waiting in the
     // FIFO. DQ9 reads BOX_TEST immediately after submission to cull scene objects.
     std::size_t pending_test_commands = 0;
@@ -373,6 +451,7 @@ struct Gpu3D::Impl {
     // both passes live in each target's FramePixel storage.
     bool capture_opaque_only = false;
     bool opaque_only_valid = false;
+    bool enhanced_output_valid = false;
     std::array<std::uint8_t, kScreenPixels> opaque_only{};
     std::array<std::uint8_t, kScreenPixels> opaque_only_dilated{};
     struct CaptureData {
@@ -384,10 +463,40 @@ struct Gpu3D::Impl {
         std::array<std::array<std::uint32_t, kPolygonLimit>, kRenderBands> polygon_touches{};
         std::array<std::uint32_t, kPolygonLimit> polygon_totals{};
     };
+    struct ClassicCaptureLayout {
+        std::array<std::uint8_t, kScreenPixels> causes{};
+#ifdef DSR_GPU_CAPTURE_IDS
+        std::array<std::uint8_t, kScreenPixels> polygon_ids{};
+#endif
+        std::array<bool, kScreenPixels> partial_seen{};
+        std::array<std::array<std::uint32_t, kPolygonLimit>, kRenderBands> polygon_touches{};
+        std::array<std::uint32_t, kPolygonLimit> polygon_totals{};
+    };
+    static_assert(sizeof(CaptureData) == sizeof(ClassicCaptureLayout));
     std::unique_ptr<CaptureData> capture_data;
     std::unique_ptr<BandPool> pool = std::make_unique<BandPool>();
 
     Impl() { reset(); }
+    ~Impl() {
+        if (full_storage) delete vertex_storage.full;
+        else std::destroy_at(&vertex_storage.classic);
+    }
+
+    Vertex* vertices() { return full_storage ? vertex_storage.full->vertices.data() : vertex_storage.classic.data(); }
+    const Vertex* vertices() const { return full_storage ? vertex_storage.full->vertices.data() : vertex_storage.classic.data(); }
+    Polygon* polygons() { return full_storage ? vertex_storage.full->polygons.data() : classic_polygons.data(); }
+    Vertex* render_vertices() { return full_storage ? vertex_storage.full->render_vertices.data() : classic_render_vertices.data(); }
+    const Vertex* render_vertices() const { return full_storage ? vertex_storage.full->render_vertices.data() : classic_render_vertices.data(); }
+    Polygon* render_polygons() { return full_storage ? vertex_storage.full->render_polygons.data() : classic_render_polygons.data(); }
+    const Polygon* render_polygons() const { return full_storage ? vertex_storage.full->render_polygons.data() : classic_render_polygons.data(); }
+    std::uint16_t* render_opaque_order() { return full_storage ? vertex_storage.full->opaque_order.data() : classic_opaque_order.data(); }
+    const std::uint16_t* render_opaque_order() const { return full_storage ? vertex_storage.full->opaque_order.data() : classic_opaque_order.data(); }
+    std::uint16_t* render_translucent_order() { return full_storage ? vertex_storage.full->translucent_order.data() : classic_translucent_order.data(); }
+    const std::uint16_t* render_translucent_order() const { return full_storage ? vertex_storage.full->translucent_order.data() : classic_translucent_order.data(); }
+    std::uint32_t* polygon_touches(std::size_t band) { return full_storage ? vertex_storage.full->touches[band].data() : capture_data->polygon_touches[band].data(); }
+    std::uint32_t* polygon_totals() { return full_storage ? vertex_storage.full->totals.data() : capture_data->polygon_totals.data(); }
+    const std::uint32_t* polygon_totals() const { return full_storage ? vertex_storage.full->totals.data() : capture_data->polygon_totals.data(); }
+
 
     std::uint32_t get32(std::uint32_t addr) const {
         if (addr < kIoBase || addr + 3U >= kIoEnd) return 0;
@@ -569,8 +678,8 @@ struct Gpu3D::Impl {
     }
 
     std::uint32_t ram_count() const {
-        return static_cast<std::uint32_t>(std::min<std::size_t>(polygon_count, 0xfffU)) |
-               (static_cast<std::uint32_t>(std::min<std::size_t>(vertex_count, 0x1fffU)) << 16);
+        return static_cast<std::uint32_t>(hardware_polygon_count) |
+               (static_cast<std::uint32_t>(std::min(vertex_count, kVertexLimit)) << 16);
     }
 
     std::uint32_t result_register(std::uint32_t addr) const {
@@ -671,18 +780,21 @@ struct Gpu3D::Impl {
         texcoord_t = 0;
         transformed_texcoord_s = 0;
         transformed_texcoord_t = 0;
-        vertices.fill({});
-        polygons.fill({});
+        std::fill_n(vertices(), full_storage ? kEnhancedVertexLimit : kVertexLimit, Vertex{});
+        std::fill_n(polygons(), full_storage ? kEnhancedPolygonLimit : kPolygonLimit, Polygon{});
         vertex_count = 0;
         polygon_count = 0;
+        hardware_polygon_count = 0;
         primitive_vertices = {};
         primitive_vertex_count = 0;
         primitive_mode = 0;
         in_vertex_list = false;
         vertex_overflow = false;
         polygon_overflow = false;
+        enhanced_overflow = false;
         render_vertex_count = 0;
         render_polygon_count = 0;
+        render_hardware_polygon_count = 0;
         render_opaque_count = 0;
         render_translucent_count = 0;
         render_generation = 0;
@@ -691,6 +803,7 @@ struct Gpu3D::Impl {
         geometry_swap_mode = 0;
         render_vertex_overflow = false;
         render_polygon_overflow = false;
+        render_enhanced_overflow = false;
         swap_pending = false;
         pending_test_commands = 0;
         pending_stack_commands = 0;
@@ -729,6 +842,7 @@ struct Gpu3D::Impl {
         std::fill(hires_out.begin(), hires_out.end(), 0);
         rendered_scale = 1;
         opaque_only_valid = false;
+        enhanced_output_valid = false;
         put32(0x04000350U, 0);
         put32(0x04000354U, 0x7fffU);
         put32(0x04000580U, 0xbfff0000U);
@@ -1017,9 +1131,18 @@ struct Gpu3D::Impl {
 
 
     void emit_polygon(const std::uint16_t* indices, std::uint8_t count) {
-        if (polygon_count >= kPolygonLimit) {
-            polygon_overflow = true;
-            disp3d |= 1U << 13;
+        bool hardware_polygon = true;
+        for (std::size_t i = 0; i < count; ++i)
+            hardware_polygon &= indices[i] < kVertexLimit;
+        if (hardware_polygon) {
+            if (hardware_polygon_count < kPolygonLimit) ++hardware_polygon_count;
+            else {
+                polygon_overflow = true;
+                disp3d |= 1U << 13;
+            }
+        }
+        if (polygon_count >= (enhanced_geometry ? kEnhancedPolygonLimit : kPolygonLimit)) {
+            if (enhanced_geometry) enhanced_overflow = true;
             return;
         }
         Polygon polygon{};
@@ -1029,7 +1152,7 @@ struct Gpu3D::Impl {
         polygon.texture = texture_param;
         polygon.palette = palette_param;
         polygon.viewport = get32(0x04000580U);
-        polygons[polygon_count++] = polygon;
+        polygons()[polygon_count++] = polygon;
     }
 
     void assemble_vertex(std::uint16_t index) {
@@ -1117,6 +1240,9 @@ struct Gpu3D::Impl {
         if (vertex_count >= kVertexLimit) {
             vertex_overflow = true;
             disp3d |= 1U << 13;
+        }
+        if (vertex_count >= (enhanced_geometry ? kEnhancedVertexLimit : kVertexLimit)) {
+            if (enhanced_geometry) enhanced_overflow = true;
             return;
         }
         const std::array<std::int32_t, 4> position_vector{
@@ -1133,7 +1259,7 @@ struct Gpu3D::Impl {
         vertex.color = {static_cast<float>(expand6(color5(vertex_color, 0))),
                         static_cast<float>(expand6(color5(vertex_color, 5))),
                         static_cast<float>(expand6(color5(vertex_color, 10)))};
-        vertices[vertex_count] = vertex;
+        vertices()[vertex_count] = vertex;
         const auto index = static_cast<std::uint16_t>(vertex_count);
         ++vertex_count;
         assemble_vertex(index);
@@ -1550,7 +1676,7 @@ struct Gpu3D::Impl {
         std::array<ClipVertex, 16> input{};
         std::size_t count = polygon.count;
         for (std::size_t i = 0; i < count; ++i) {
-            const auto& source = render_vertices[polygon.index[i]];
+            const auto& source = render_vertices()[polygon.index[i]];
             input[i] = {source.clip, source.u, source.v, source.color};
         }
         if ((polygon.attr & (1U << 12)) == 0U) {
@@ -1649,7 +1775,7 @@ struct Gpu3D::Impl {
             std::fill(capture_data->partial_seen.begin() + y_begin * tgt_.width,
                       capture_data->partial_seen.begin() + y_end * tgt_.width, false);
             for (int band = y_begin / tgt_.band_height; band < (y_end + tgt_.band_height - 1) / tgt_.band_height; ++band)
-                capture_data->polygon_touches[band].fill(0);
+                std::fill_n(polygon_touches(band), full_storage ? kEnhancedPolygonLimit : kPolygonLimit, 0U);
         }
         const auto clear_color = get32(0x04000350U);
         const auto clear_depth = depth15_to24(
@@ -1734,7 +1860,7 @@ struct Gpu3D::Impl {
         decoded_textures.begin_frame(texture_source.generation(texture_source.context));
         if ((disp3d & 1U) == 0U) return;
         for (std::size_t i = 0; i < render_polygon_count; ++i) {
-            const auto& polygon = render_polygons[i];
+            const auto& polygon = render_polygons()[i];
             decoded_textures.acquire(texture_source, polygon.texture, polygon.palette);
         }
     }
@@ -2112,26 +2238,51 @@ struct Gpu3D::Impl {
     // span interpolates linearly between its left and right edge values, one step
     // per pixel from the first covered pixel. Perspective correction divides the
     // interpolated u/w, v/w and colour/w by the interpolated 1/w per pixel.
-    struct RasterVertex {
-        std::int32_t x = 0;
-        std::int32_t y = 0;
-        std::array<float, 7> attribute{}; // 1/w, z (0..1), u/w, v/w, r/w, g/w, b/w
-    };
-
-    enum class PolygonShape { Empty, Dot, Filled, Wire };
-    struct PreparedPolygon {
-        PolygonShape shape = PolygonShape::Empty;
-        std::size_t count = 0;
-        int y_begin = 0;
-        int y_end = 0;
-        bool front_facing = false;
-        std::array<ScreenVertex, 16> screen{};
-        std::array<RasterVertex, 10> raster{};
-        ClipVertex dot{};
-    };
     // Created only for multithreaded rendering, then reused without per-frame
     // allocation. Inline rendering needs just one caller-owned scratch polygon.
     std::unique_ptr<std::array<PreparedPolygon, kPolygonLimit>> band_polygons;
+
+    PreparedPolygon* prepared_polygons() {
+        return full_storage ? vertex_storage.full->band_polygons->data() : band_polygons->data();
+    }
+
+    void resize_geometry_storage(bool enlarged) {
+        if (enlarged == full_storage) return;
+        band_polygons.reset(); // scratch only; it is regenerated before each pass
+        if (enlarged) {
+            auto next = std::make_unique<FullGeometry>();
+            std::copy(vertex_storage.classic.begin(), vertex_storage.classic.end(), next->vertices.data());
+            std::copy(classic_polygons.begin(), classic_polygons.end(), next->polygons.data());
+            std::copy(classic_render_vertices.begin(), classic_render_vertices.end(), next->render_vertices.data());
+            std::copy(classic_render_polygons.begin(), classic_render_polygons.end(), next->render_polygons.data());
+            std::copy(classic_opaque_order.begin(), classic_opaque_order.end(), next->opaque_order.begin());
+            std::copy(classic_translucent_order.begin(), classic_translucent_order.end(), next->translucent_order.begin());
+            if (capture_data) {
+                for (std::size_t i = 0; i < kRenderBands; ++i)
+                    std::copy(capture_data->polygon_touches[i].begin(), capture_data->polygon_touches[i].end(), next->touches[i].begin());
+                std::copy(capture_data->polygon_totals.begin(), capture_data->polygon_totals.end(), next->totals.begin());
+            }
+            std::destroy_at(&vertex_storage.classic);
+            vertex_storage.full = next.release();
+            full_storage = true;
+        } else {
+            std::unique_ptr<FullGeometry> old(vertex_storage.full);
+            std::construct_at(&vertex_storage.classic);
+            std::copy_n(old->vertices.data(), kVertexLimit, vertex_storage.classic.begin());
+            std::copy_n(old->polygons.data(), kPolygonLimit, classic_polygons.begin());
+            std::copy_n(old->render_vertices.data(), kVertexLimit, classic_render_vertices.begin());
+            std::copy_n(old->render_polygons.data(), kPolygonLimit, classic_render_polygons.begin());
+            std::copy_n(old->opaque_order.begin(), kPolygonLimit, classic_opaque_order.begin());
+            std::copy_n(old->translucent_order.begin(), kPolygonLimit, classic_translucent_order.begin());
+            if (capture_data) {
+                for (std::size_t i = 0; i < kRenderBands; ++i)
+                    std::copy_n(old->touches[i].begin(), kPolygonLimit, capture_data->polygon_touches[i].begin());
+                std::copy_n(old->totals.begin(), kPolygonLimit, capture_data->polygon_totals.begin());
+            }
+            full_storage = false;
+            enhanced_output_valid = false;
+        }
+    }
 
     struct RasterEdge {
         std::int64_t x = 0;
@@ -2262,8 +2413,8 @@ struct Gpu3D::Impl {
         }
         capture_data->causes[index] |= causes;
         if ((causes & 3U) != 0U) {
-            const auto polygon_index = static_cast<std::size_t>(&polygon - render_polygons.data());
-            ++capture_data->polygon_touches[index / (tgt_.width * tgt_.band_height)][polygon_index];
+            const auto polygon_index = static_cast<std::size_t>(&polygon - render_polygons());
+            ++polygon_touches(index / (tgt_.width * tgt_.band_height))[polygon_index];
         }
         if ((disp3d & 4U) != 0U && alpha < (get32(0x04000340U) & 31U) &&
             (causes & (4U | 8U)) == 0U) return;
@@ -2595,7 +2746,7 @@ struct Gpu3D::Impl {
         float low = 0.0F;
         float high = 0.0F;
         for (std::size_t i = 0; i < polygon.count; ++i) {
-            const auto& vertex = render_vertices[polygon.index[i]];
+            const auto& vertex = render_vertices()[polygon.index[i]];
             const float w = vertex.clip[3] != 0.0F ? vertex.clip[3] : 0.00000001F;
             const float y = 1.0F - (vertex.clip[1] + w) / (2.0F * w);
             low = i == 0 ? y : std::min(low, y);
@@ -2628,12 +2779,12 @@ struct Gpu3D::Impl {
         if (one_dot) {
             // Clipping can leave a subpixel sliver of a large polygon. Such a
             // fragment still needs rasterization, not a dot at the first vertex.
-            const auto first = to_screen(render_vertices[polygon.index[0]], polygon.viewport);
+            const auto first = to_screen(render_vertices()[polygon.index[0]], polygon.viewport);
             dot_y = first.y;
             float original_min_x = first.x, original_max_x = first.x;
             float original_min_y = first.y, original_max_y = first.y;
             for (std::size_t i = 1; i < polygon.count; ++i) {
-                const auto vertex = to_screen(render_vertices[polygon.index[i]], polygon.viewport);
+                const auto vertex = to_screen(render_vertices()[polygon.index[i]], polygon.viewport);
                 original_min_x = std::min(original_min_x, vertex.x);
                 original_max_x = std::max(original_max_x, vertex.x);
                 original_min_y = std::min(original_min_y, vertex.y);
@@ -2650,7 +2801,7 @@ struct Gpu3D::Impl {
                 const auto one_dot_limit = get32(0x04000610U) & 0x7fffU;
                 bool visible = false;
                 for (std::size_t i = 0; i < polygon.count; ++i) {
-                    const auto& vertex = render_vertices[polygon.index[i]];
+                    const auto& vertex = render_vertices()[polygon.index[i]];
                     if (vertex.clip[3] * 8.0F <= static_cast<float>(one_dot_limit)) {
                         visible = true;
                         break;
@@ -2658,7 +2809,7 @@ struct Gpu3D::Impl {
                 }
                 if (!visible) return;
             }
-            const auto& first = render_vertices[polygon.index[0]];
+            const auto& first = render_vertices()[polygon.index[0]];
             prepared.dot = {first.clip, first.u, first.v, first.color};
             // The dot path uses the original first vertex, not a clipped one.
             const int y = static_cast<int>(std::floor(dot_y));
@@ -2711,10 +2862,10 @@ struct Gpu3D::Impl {
     }
 
     void dilate_opaque_only() {
-        capture_data->polygon_totals.fill(0);
-        for (const auto& band : capture_data->polygon_touches)
+        std::fill_n(polygon_totals(), full_storage ? kEnhancedPolygonLimit : kPolygonLimit, 0U);
+        for (std::size_t band = 0; band < kRenderBands; ++band)
             for (std::size_t i = 0; i < render_polygon_count; ++i)
-                capture_data->polygon_totals[i] += band[i];
+                polygon_totals()[i] += polygon_touches(band)[i];
         // Serial after the band barrier: read raw rows, write a separate result,
         // so diagonal neighbours and band borders dilate exactly once.
         for (int y = 0; y < tgt_.height; ++y) {
@@ -2844,33 +2995,34 @@ struct Gpu3D::Impl {
     }
 
     template<bool Capture>
-    void render_frame() {
+    void render_frame(std::size_t draw_limit, bool scaled = true) {
         prepare_frame_textures();
-        std::array<std::array<float, 2>, kPolygonLimit> y_range{}; // {max, min} per polygon
+        std::array<std::array<float, 2>, kPolygonLimit> classic_y_range{};
+        auto* y_range = full_storage ? vertex_storage.full->y_range.data() : classic_y_range.data();
         render_opaque_count = 0;
         render_translucent_count = 0;
         for (std::size_t i = 0; i < render_polygon_count; ++i) {
-            const auto& polygon = render_polygons[i];
+            const auto& polygon = render_polygons()[i];
             y_range[i] = polygon_y_range(polygon);
             if (polygon_is_translucent(polygon))
-                render_translucent_order[render_translucent_count++] = static_cast<std::uint16_t>(i);
+                render_translucent_order()[render_translucent_count++] = static_cast<std::uint16_t>(i);
             else
-                render_opaque_order[render_opaque_count++] = static_cast<std::uint16_t>(i);
+                render_opaque_order()[render_opaque_count++] = static_cast<std::uint16_t>(i);
         }
         // Opaque polygons are always drawn in ascending screen-y order; translucent
         // ones too unless SWAP_BUFFERS selected manual sorting. Ties keep submission order.
-        const auto by_y = [&y_range](std::uint16_t left, std::uint16_t right) {
+        const auto by_y = [y_range](std::uint16_t left, std::uint16_t right) {
             if (y_range[left][0] != y_range[right][0]) return y_range[left][0] < y_range[right][0];
             if (y_range[left][1] != y_range[right][1]) return y_range[left][1] < y_range[right][1];
             return left < right;
         };
-        std::sort(render_opaque_order.begin(),
-                  render_opaque_order.begin() + static_cast<std::ptrdiff_t>(render_opaque_count), by_y);
+        std::sort(render_opaque_order(),
+                  render_opaque_order() + static_cast<std::ptrdiff_t>(render_opaque_count), by_y);
         if ((swap_mode & 1U) == 0U)
-            std::sort(render_translucent_order.begin(),
-                      render_translucent_order.begin() + static_cast<std::ptrdiff_t>(render_translucent_count), by_y);
-        render_target<Capture>();
-        if (output_scale > 1) {
+            std::sort(render_translucent_order(),
+                      render_translucent_order() + static_cast<std::ptrdiff_t>(render_translucent_count), by_y);
+        render_target<Capture>(draw_limit);
+        if (scaled && output_scale > 1) {
             // Sorting, texture-cache preparation and optional capture happen
             // exactly once above. This presentation pass only reads geometry,
             // IO and the pinned decoded textures; it cannot advance GX state.
@@ -2884,13 +3036,13 @@ struct Gpu3D::Impl {
             const int height = static_cast<int>(kScreenHeight) * output_scale;
             tgt_ = {hires_fb.data(), hires_out.data(), output_scale, width, height, height / kRenderBands};
             rendered_scale = 1;
-            render_target<false, true>();
+            render_target<false, true>(draw_limit);
             rendered_scale = output_scale;
         }
     }
 
     template<bool Capture, bool Scaled = false>
-    void render_target() {
+    void render_target(std::size_t draw_limit) {
         if (pool->worker_count() <= 1) {
             // Inline means one full-frame pass, not eight serialized bands.
             // No pool submission, worker, or band preparation storage is needed.
@@ -2898,20 +3050,26 @@ struct Gpu3D::Impl {
             PreparedPolygon prepared;
             auto& shading = band_shading[0];
             const auto draw = [this, &prepared, &shading](std::uint16_t index, bool translucent) {
-                const auto& polygon = render_polygons[index];
+                const auto& polygon = render_polygons()[index];
                 prepare_polygon(polygon, prepared);
                 draw_prepared_polygon<Capture>(polygon, translucent, prepared, shading,
                                       0, tgt_.height);
             };
-            for (std::size_t i = 0; i < render_opaque_count; ++i) draw(render_opaque_order[i], false);
-            for (std::size_t i = 0; i < render_translucent_count; ++i) draw(render_translucent_order[i], true);
+            for (std::size_t i = 0; i < render_opaque_count; ++i)
+                if (render_opaque_order()[i] < draw_limit) draw(render_opaque_order()[i], false);
+            for (std::size_t i = 0; i < render_translucent_count; ++i)
+                if (render_translucent_order()[i] < draw_limit) draw(render_translucent_order()[i], true);
             if constexpr (Capture) dilate_opaque_only();
             apply_edges();
             pack_rows<Capture>(0, tgt_.height);
             return;
         }
-        if (render_polygon_count != 0U && !band_polygons)
-            band_polygons = std::make_unique<std::array<PreparedPolygon, kPolygonLimit>>();
+        if (render_polygon_count != 0U) {
+            if (full_storage && !vertex_storage.full->band_polygons)
+                vertex_storage.full->band_polygons = std::make_unique<std::array<PreparedPolygon, kEnhancedPolygonLimit>>();
+            else if (!full_storage && !band_polygons)
+                band_polygons = std::make_unique<std::array<PreparedPolygon, kPolygonLimit>>();
+        }
         // Clip, project, cull and order vertices once. The prepared row bounds
         // are from the actual raster path, not the preclip sorting y range.
         // prepare_polygon only reads frozen geometry/IO and writes its own PreparedPolygon, so
@@ -2923,25 +3081,27 @@ struct Gpu3D::Impl {
                 const std::size_t first = render_polygon_count * static_cast<std::size_t>(band) / kRenderBands;
                 const std::size_t last = render_polygon_count * static_cast<std::size_t>(band + 1) / kRenderBands;
                 for (std::size_t i = first; i < last; ++i)
-                    prepare_polygon(render_polygons[i], (*band_polygons)[i]);
+                    prepare_polygon(render_polygons()[i], prepared_polygons()[i]);
             });
         } else {
             for (std::size_t i = 0; i < render_polygon_count; ++i)
-                prepare_polygon(render_polygons[i], (*band_polygons)[i]);
+                prepare_polygon(render_polygons()[i], prepared_polygons()[i]);
         }
-        pool->run(kRenderBands, [this](int band) {
+        pool->run(kRenderBands, [this, draw_limit](int band) {
             const int y_begin = band * tgt_.band_height;
             const int y_end = y_begin + tgt_.band_height;
             clear_framebuffer<Capture, Scaled>(y_begin, y_end);
             auto& shading = band_shading[static_cast<std::size_t>(band)];
             for (std::size_t i = 0; i < render_opaque_count; ++i) {
-                const auto index = render_opaque_order[i];
-                draw_prepared_polygon<Capture>(render_polygons[index], false, (*band_polygons)[index],
+                const auto index = render_opaque_order()[i];
+                if (index >= draw_limit) continue;
+                draw_prepared_polygon<Capture>(render_polygons()[index], false, prepared_polygons()[index],
                                       shading, y_begin, y_end);
             }
             for (std::size_t i = 0; i < render_translucent_count; ++i) {
-                const auto index = render_translucent_order[i];
-                draw_prepared_polygon<Capture>(render_polygons[index], true, (*band_polygons)[index],
+                const auto index = render_translucent_order()[i];
+                if (index >= draw_limit) continue;
+                draw_prepared_polygon<Capture>(render_polygons()[index], true, prepared_polygons()[index],
                                       shading, y_begin, y_end);
             }
         });
@@ -2962,16 +3122,23 @@ struct Gpu3D::Impl {
             geometry_swap_mode = pending_swap_mode;
             render_vertex_count = vertex_count;
             render_polygon_count = polygon_count;
+            render_hardware_polygon_count = hardware_polygon_count;
             render_vertex_overflow = vertex_overflow;
             render_polygon_overflow = polygon_overflow;
+            render_enhanced_overflow = enhanced_overflow;
             ++render_generation;
-            std::copy_n(vertices.begin(), render_vertex_count, render_vertices.begin());
-            std::copy_n(polygons.begin(), render_polygon_count, render_polygons.begin());
+            std::copy_n(vertices(), render_vertex_count, render_vertices());
+            std::copy_n(polygons(), render_polygon_count, render_polygons());
             vertex_count = 0;
             polygon_count = 0;
+            hardware_polygon_count = 0;
             vertex_overflow = false;
             polygon_overflow = false;
+            enhanced_overflow = false;
             swap_pending = false;
+            if (!enhanced_geometry && render_vertex_count <= kVertexLimit &&
+                render_polygon_count <= kPolygonLimit)
+                resize_geometry_storage(false);
         }
         // Geometry swap/flush is separate from rasterization: the guest can
         // upload textures during the 3D VBlank interval before render_start().
@@ -3000,7 +3167,7 @@ std::size_t gpu3d_detail::Gpu3DTestAccess::clip_positions(
     Gpu3D& gpu, const std::array<std::array<float, 4>, 3>& positions,
     std::array<std::array<float, 4>, 16>& clipped) {
     for (std::size_t i = 0; i < positions.size(); ++i)
-        gpu.impl_->render_vertices[i].clip = positions[i];
+        gpu.impl_->render_vertices()[i].clip = positions[i];
     Gpu3DPolygon polygon{};
     polygon.index = {0, 1, 2, 0};
     polygon.count = 3;
@@ -3192,6 +3359,13 @@ Gpu3D::~Gpu3D() {
 }
 
 void Gpu3D::reset() { impl_->reset(); }
+void Gpu3D::set_enhanced_geometry(bool enabled) {
+    if (enabled) impl_->resize_geometry_storage(true);
+    impl_->enhanced_geometry = enabled;
+    if (!enabled && impl_->vertex_count <= kVertexLimit && impl_->polygon_count <= kPolygonLimit &&
+        impl_->render_vertex_count <= kVertexLimit && impl_->render_polygon_count <= kPolygonLimit)
+        impl_->resize_geometry_storage(false);
+}
 void Gpu3D::set_render_threads(int threads) {
     // Configuration is machine-thread-only, between completed render calls.
     // Join the old workers before installing the new configuration.
@@ -3206,6 +3380,7 @@ void Gpu3D::set_capture_opaque_only(bool enabled) {
     if (impl_->capture_opaque_only == enabled) return;
     impl_->capture_opaque_only = enabled;
     impl_->opaque_only_valid = false;
+    impl_->enhanced_output_valid = false;
 }
 BandPool& Gpu3D::render_pool() { return *impl_->pool; }
 void Gpu3D::set_texture_source(const void* context,
@@ -3234,14 +3409,32 @@ bool Gpu3D::irq_condition() const { return impl_->irq_condition(); }
 
 void Gpu3D::vblank_start() { impl_->vblank_start(); }
 void Gpu3D::render_start() {
-    if (impl_->capture_opaque_only) impl_->render_frame<true>();
-    else impl_->render_frame<false>();
+    const auto hardware_limit = impl_->render_hardware_polygon_count;
+    const auto full_limit = impl_->render_polygon_count;
+    impl_->enhanced_output_valid = false;
+    if (impl_->capture_opaque_only) {
+        impl_->render_frame<true>(full_limit);
+        if (hardware_limit != full_limit) {
+            if (!impl_->vertex_storage.full->output)
+                impl_->vertex_storage.full->output = std::make_unique<std::array<std::uint32_t, kScreenPixels>>();
+            *impl_->vertex_storage.full->output = impl_->output;
+            impl_->enhanced_output_valid = true;
+            impl_->render_frame<false>(hardware_limit, false);
+        }
+    } else {
+        impl_->render_frame<false>(hardware_limit);
+    }
     if (on_render_complete) on_render_complete();
 }
 
 const std::uint32_t* Gpu3D::line(int y) const {
     if (y < 0 || y >= static_cast<int>(kScreenHeight)) return nullptr;
     return impl_->output.data() + static_cast<std::size_t>(y) * kScreenWidth;
+}
+
+const std::uint32_t* Gpu3D::enhanced_line(int y) const {
+    if (!impl_->enhanced_output_valid || y < 0 || y >= static_cast<int>(kScreenHeight)) return nullptr;
+    return impl_->vertex_storage.full->output->data() + static_cast<std::size_t>(y) * kScreenWidth;
 }
 
 void Gpu3D::set_output_scale(int n) {
@@ -3267,20 +3460,21 @@ const std::uint32_t* Gpu3D::scaled_line(int y) const {
 
 Gpu3DGeometryView Gpu3D::geometry_view() const {
     return {
-        impl_->render_vertices.data(),
+        impl_->render_vertices(),
         impl_->render_vertex_count,
-        impl_->render_polygons.data(),
+        impl_->render_polygons(),
         impl_->render_polygon_count,
         impl_->render_generation,
         impl_->swap_mode,
         impl_->render_vertex_overflow,
         impl_->render_polygon_overflow,
+        impl_->render_enhanced_overflow,
     };
 }
 
 Gpu3DDrawOrderView Gpu3D::draw_order_view() const {
-    return {impl_->render_opaque_order.data(), impl_->render_opaque_count,
-            impl_->render_translucent_order.data(), impl_->render_translucent_count};
+    return {impl_->render_opaque_order(), impl_->render_opaque_count,
+            impl_->render_translucent_order(), impl_->render_translucent_count};
 }
 
 Gpu3DRasterView Gpu3D::raster_view() const {
@@ -3301,7 +3495,7 @@ Gpu3DRasterView Gpu3D::raster_view() const {
         impl_->output.size(),
         impl_->opaque_only_valid ? impl_->opaque_only_dilated.data() : nullptr,
         impl_->opaque_only_valid ? impl_->capture_data->causes.data() : nullptr,
-        impl_->opaque_only_valid ? impl_->capture_data->polygon_totals.data() : nullptr,
+        impl_->opaque_only_valid ? impl_->polygon_totals() : nullptr,
 #ifdef DSR_GPU_CAPTURE_IDS
         impl_->opaque_only_valid ? impl_->capture_data->polygon_ids.data() : nullptr,
 #else

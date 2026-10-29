@@ -15,9 +15,11 @@ The extension bundles no title-specific layout or values.
 - `load_game(rom_path: String, save_path: String, language: int) -> String` creates a session and returns an empty string on success or an error message. It does not start emulation. Language is 0..5.
 - A dedicated owner thread creates and exclusively owns the session, handles frame commands and destroys it. `start()` resumes frame execution. `stop()` pauses frame execution but keeps the owner thread/session alive so it can safely be resumed or stepped; destruction and a subsequent `load_game` stop and join it.
 - `set_paused(bool)` and `is_paused() -> bool` control run state. `step_once()` while paused requests exactly one worker-owned frame.
+- `pause_at_frame_boundary()` pauses, waits for the owner to complete in-flight or previously requested steps, and uploads the latest completed frame without requesting another guest frame. Callers restore the previous pause state.
 - `step_frames(n, mask, x, y, down)` is an additional deterministic-test API, available while paused/not running; it applies one fixed input state for each of `n` frames synchronously via the owner-thread mailbox.
 
 - Optional deterministic replay: call `set_rtc_epoch(epoch_seconds, timezone_offset_minutes)` before `load_game` to make the guest RTC advance from emulated time rather than host time. The timezone offset must be in -840..840 minutes. Production hosts that omit it use the session's normal RTC behavior.
+- `set_widescreen_camera(enabled: bool)` selects the guest 16:9 camera before `load_game`; it defaults to false and cannot change a loaded session. Godot Full mode enables it.
 - `set_speed(float)` selects frames per second relative to the 59.8261 Hz normal rate. `1` is realtime; `0` is unpaced; values are clamped to 0..16.
 - `set_buttons(mask)` uses DS bits A=1, B=2, Select=4, Start=8, Right=16, Left=32, Up=64, Down=128, R=256, L=512, X=1024, Y=2048. `set_touch(x,y,down)` uses bottom-screen pixel coordinates and clamps to 0..255, 0..191.
 - `flush_save() -> bool` requests the owner thread to flush the loaded session save and waits for the actual result. `true` means pending writes completed or there was nothing to write; `false` means a write failed or no loaded session can accept the request. Failures leave the in-memory data dirty so the next flush can retry; they do not stop emulation. The Godot host does not schedule periodic flushes: existing calls are debug-bundle capture and session close, followed by a final best-effort shutdown flush. Debug-bundle capture reports a failure rather than copying a stale disk save as the current state.
@@ -297,6 +299,10 @@ and ETA, paused software screenshots/diffs, explicit live control and a return
 action. Cancel offers a normal-game return; returning/closing the game removes
 the replay copy after the worker has stopped. Original audio solo/mute is
 warned about rather than silently reproducing a debug mixer configuration.
+Godot bundles record the active widescreen mode; the reviewer restores Full
+before loading so its guest state is replayed correctly. Older bundles without
+this field default to Off. Full bundles require the Godot reviewer rather than
+silently replaying different guest state in SDL.
 
 ROM-free tests: `tests/test_issue_store.gd`. The xvfb integration
 `tests/test_issue_reviewer.gd -- <rom> <launch-save> <inputs> <native-dq9>
@@ -327,8 +333,20 @@ for `single_screen_shapes` configuration and defaults.
 ## Optional GPU 3D host compositor
 
 The launcher defaults to **Software (exact)**. Settings `renderer_gpu3d` (`0` software,
-`1` GPU hi-res experimental) and `gpu3d_scale` (`2`..`6`, default `3`) persist in
+`1` GPU hi-res experimental), `gpu3d_scale` (`2`..`6`, default `3`) and
+`widescreen_mode` (`0` Off, `1` Picture, `2` Full; default Off) persist in
 `user://settings.cfg`. Software mode creates no GPU overlay node.
+Picture widens GPU 3D presentation without changing guest state; game-side
+culling can cause pop-in. Full also widens the guest camera and uses the wide
+GPU target without Picture's clip-X correction, widening the field of view once.
+Full changes guest state and requires separate replay/parity baselines. Switching
+between Off and Picture is live; entering or leaving Full requires restarting.
+Both retain native 2D and touch coordinates. Widescreen needs GPU hi-res.
+Unsupported GPU frames fall back to the native software screen; in Full the
+modified camera remains active, so fallback is not Classic and may appear
+horizontally compressed. Valid Full GPU frames use separate presentation-screen
+textures for underlying 2D composition and GPU-excluded pixels; native screen
+getters remain the hardware-screen result for replay evidence and comparison.
 
 The host's `set_gpu3d_frame(texture: Texture2D, mask: Texture2D,
 screen_is_top: bool = true)` accepts a high-resolution SubViewport texture and a
@@ -338,10 +356,18 @@ the physical engine-A screen after POWCNT1 swapping. The mask is sampled nearest
 zero pixels discard, preserving the software composition; nonzero pixels show
 GPU colour. The overlay is a child of that physical screen's texture, so layout
 placement and occlusion follow that screen.
+Wide GPU presentation uses a neutral black side backdrop for the 3D clear
+plane, including behind partial geometry, while retaining widened geometry.
+Coverage protects partial fragments and adjacent edge pixels during postprocessing.
+Clear depth and alpha still participate in rendering; transparent clear planes
+retain their original output. Native textures, touch and Off mode are unaffected.
 
 The launcher reads `get_gpu3d_texture()`, `get_gpu3d_mask_texture()` and
 `get_gpu3d_screen_is_top()` on `frame_ready`, and sends renderer settings through
-`set_gpu3d_enabled(bool)` and `set_gpu3d_scale(int)`.
+`set_gpu3d_enabled(bool)`, `set_gpu3d_scale(int)`,
+`set_gpu3d_widescreen_enabled(bool)` and `set_gpu3d_guest_widescreen(bool)`.
+`set_widescreen_camera(bool)` must be set before loading; its EU projection
+hook fails closed if the expected function is absent or its hash differs.
 
 ROM-free coverage: `scripts/gpu3d_stub.gd` produces a coloured SubViewport and R8
 mask. Run `xvfb-run -a "$GODOT" --path godot --script
@@ -357,6 +383,8 @@ written only to ignored `build/gpu-composite/`. The same regression and
   allocate a GPU scene. Software rendering always remains active and unchanged.
 - `set_gpu3d_scale(int)` clamps to 1..6 (default 3). The `DqGpuScene` child owns an
   independent transparent, no-MSAA `SubViewport` of `256*N × 192*N` pixels.
+  Widescreen rounds its width to the nearest integer to `256*N*4/3`,
+  retaining the height and centering the native screen.
 - `get_gpu3d_texture() -> Texture2D`, `get_gpu3d_mask_texture() -> Texture2D`
   return the scene and 256×192 R8 engine-A mask for the last consumed frame.
   Both are null for disabled/unsupported frames, so the host must retain its

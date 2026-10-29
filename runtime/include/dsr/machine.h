@@ -35,6 +35,8 @@ struct MachineConfig {
     DispatchRegionTable arm9_regions{};
     DispatchRegionTable arm7_regions{};
     GuestAbiConfig guest_abi{};
+    // DQ9 EU camera projection; installation fails closed on unknown guest code.
+    bool widescreen_camera = false;
 };
 struct CpuDebugSnapshot {
     std::array<std::uint32_t, 16> registers{};

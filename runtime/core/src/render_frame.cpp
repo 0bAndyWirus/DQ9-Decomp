@@ -33,10 +33,12 @@ void capture_render_frame(const Machine& machine, std::uint64_t frame_number,
     destination.disp3dcnt = raster.disp3d;
     destination.alpha_test_ref = raster.alpha_reference;
     destination.vram_generation = machine.gpu2d().vram_generation();
-    destination.three_d_mask = machine.gpu2d().three_d_mask();
+    destination.three_d_mask = machine.gpu2d().presentation_three_d_mask();
     destination.opaque_only_mask = raster.opaque_only_mask;
     destination.screen_top = machine.gpu2d().screen_top();
     destination.screen_bottom = machine.gpu2d().screen_bottom();
+    destination.presentation_top = machine.gpu2d().presentation_top();
+    destination.presentation_bottom = machine.gpu2d().presentation_bottom();
     destination.screen_pixel_count = 256U * 192U;
 }
 

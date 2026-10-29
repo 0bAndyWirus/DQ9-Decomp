@@ -237,7 +237,17 @@ void Machine::Impl::call(Cpu* cpu, std::uint32_t target) {
     const std::uint32_t return_thumb = cpu->r[14] & 1u;
     cpu->cpsr_ctrl = (cpu->cpsr_ctrl & ~kCpsrT) | ((target & 1u) ? kCpsrT : 0u);
     runtime(cpu->id).current_pc = target & ~1u;
-    if (entry) (*entry->slot)(cpu);
+    if (entry) {
+        // The generated projection slot is shared across machines. Apply the
+        // per-machine adjustment at dispatch rather than replacing that slot.
+        if (config.widescreen_camera && cpu->id == CpuId::Arm9 &&
+            entry->module == kModuleArm9Main && entry->addr == 0x020c28b0 &&
+            entry->hash == 0x1cb108bf62a813e5ULL) {
+            cpu->r[2] = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(cpu->r[2]) * 4 + 2) / 3);
+        }
+        (*entry->slot)(cpu);
+    }
     else region->body(cpu, target & ~1u);
     cpu->cpsr_ctrl = (cpu->cpsr_ctrl & ~kCpsrT) | (return_thumb ? kCpsrT : 0u);
 }

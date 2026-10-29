@@ -14,6 +14,7 @@ Session::Session(const SessionConfig& config)
           machine.deterministic_rtc = config.deterministic_rtc;
           machine.rtc_epoch_seconds = config.rtc_epoch_seconds;
           machine.rtc_timezone_offset_minutes = config.rtc_timezone_offset_minutes;
+          machine.widescreen_camera = config.widescreen_camera;
           const auto abi_path = config.abi_config_path.empty()
               ? guest_abi_config_path_from_environment() : config.abi_config_path;
           machine.guest_abi = load_guest_abi_config(abi_path);

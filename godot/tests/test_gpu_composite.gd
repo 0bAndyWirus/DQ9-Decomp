@@ -4,6 +4,16 @@ const Logic = preload("res://scripts/host_logic.gd")
 const Stub = preload("res://scripts/gpu3d_stub.gd")
 const TOP := Color8(31, 67, 151)
 const BOTTOM := Color8(103, 43, 131)
+class SyntheticMachine extends Node:
+	var top: Texture2D
+	var bottom: Texture2D
+	var presentation_top: Texture2D
+	var presentation_bottom: Texture2D
+	func get_top_texture() -> Texture2D: return top
+	func get_bottom_texture() -> Texture2D: return bottom
+	func get_presentation_top_texture() -> Texture2D: return presentation_top if presentation_top else top
+	func get_presentation_bottom_texture() -> Texture2D: return presentation_bottom if presentation_bottom else bottom
+
 
 class SyntheticHost extends "res://scripts/main.gd":
 	func _ready() -> void:
@@ -81,6 +91,20 @@ func _key_probe(host: Control, image: Image, fraction: Vector2, expected_shape: 
 		push_error("%s: shape=%d color=%s, expected shape=%d color=%s" % [label, shape, color, expected_shape, expected_color])
 		return false
 	return true
+func _paused_overlay_probe(host: Control, expected_texture: Texture2D, expected_shape: int, expected_color: Color, label: String) -> bool:
+	var rect: Rect2 = host._single_nodes[0].get_global_rect()
+	rect.position = rect.position.round()
+	var pixel := Vector2i(rect.get_center())
+	var point := Vector2(pixel) + Vector2(0.5, 0.5)
+	var local: Vector2 = host.top_rect.get_global_transform().affine_inverse() * point
+	var shape: int = host._single_shape_at(local)
+	var color := root.get_texture().get_image().get_pixelv(pixel)
+	var matches := absf(color.r - expected_color.r) < 1.1 / 255.0 and absf(color.g - expected_color.g) < 1.1 / 255.0 and absf(color.b - expected_color.b) < 1.1 / 255.0
+	if host._single_nodes[0].texture != expected_texture or host.bottom_rect.texture != expected_texture or shape != expected_shape or not matches:
+		push_error("%s: shape=%d color=%s, expected shape=%d color=%s" % [label, shape, color, expected_shape, expected_color])
+		return false
+	return true
+
 
 func _run() -> void:
 	root.size = Vector2i(1280, 800)
@@ -94,6 +118,7 @@ func _run() -> void:
 	var ok := true
 	ok = host._ui.gpu_renderer.item_count == 2 and host._ui.gpu_renderer.selected == 0 and ok
 	ok = host._ui.gpu_scale.item_count == 5 and host._ui.gpu_scale.selected == 1 and host._ui.gpu_scale.disabled and ok
+	ok = host._ui.gpu_widescreen.item_count == 3 and host._ui.gpu_widescreen.selected == 0 and not host._ui.gpu_widescreen.disabled and ok
 	# Software must not create an extra drawable, even when a producer publishes.
 	stub.set_scale(3)
 	stub.publish(host)
@@ -303,6 +328,129 @@ func _run() -> void:
 	host._ui.gpu_renderer.select(1)
 	host._ui.gpu_renderer.item_selected.emit(1)
 	ok = host.settings.renderer_gpu3d == 1 and is_instance_valid(host.gpu3d_rect) and not host._ui.gpu_scale.disabled and host.persist_count == 3 and ok
+	# A widened opaque producer tests side visibility and native mask alignment.
+	host.settings_panel.hide()
+	host._set_layout(0)
+	var wide_image := Image.create(1024, 576, false, Image.FORMAT_RGBA8)
+	wide_image.fill(Stub.LEFT)
+	var wide_texture := ImageTexture.create_from_image(wide_image)
+	host._ui.gpu_widescreen.select(1)
+	host._ui.gpu_widescreen.item_selected.emit(1)
+	ok = host.settings.widescreen_mode == 1 and host.persist_count == 4 and ok
+	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
+	# A new ratio and an engine-A screen swap must relayout every layout,
+	# not just Horizontal. Check against the native screen rectangles.
+	var native_texture := _solid(Stub.LEFT)
+	for test_layout in 8:
+		host._set_layout(test_layout)
+		for top in [true, false]:
+			host.set_gpu3d_frame(native_texture, stub.mask_texture, top)
+			host.set_gpu3d_frame(wide_texture, stub.mask_texture, top)
+			var expected_rects := Logic.layout_rects(host.game_panel.size, test_layout, host._overlay_rect, false, 4.0 / 3.0, 0 if top else 1)
+			for index in 2:
+				var frame: Control = host.top_frame if index == 0 else host.bottom_frame
+				var expected_rect: Rect2 = expected_rects[index]
+				if not frame.position.is_equal_approx(expected_rect.position) or not frame.size.is_equal_approx(expected_rect.size):
+					push_error("Wide relayout failed for layout %d screen %d" % [test_layout, index])
+					ok = false
+			host.set_gpu3d_frame(wide_texture, stub.mask_texture, not top)
+			expected_rects = Logic.layout_rects(host.game_panel.size, test_layout, host._overlay_rect, false, 4.0 / 3.0, 1 if top else 0)
+			for index in 2:
+				var frame: Control = host.top_frame if index == 0 else host.bottom_frame
+				var expected_rect: Rect2 = expected_rects[index]
+				if not frame.position.is_equal_approx(expected_rect.position) or not frame.size.is_equal_approx(expected_rect.size):
+					push_error("Engine-A relayout failed for layout %d screen %d" % [test_layout, index])
+					ok = false
+	# Restore the original visual sampling case.
+	host._set_layout(0)
+	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
+	await _settle()
+	var screen := host.top_rect.get_global_rect()
+	screen.position = screen.position.round()
+	var capture := root.get_texture().get_image()
+	for sample in [
+		[Vector2(-0.1, 0.5), Stub.LEFT],
+		[Vector2(0.1, 0.5), TOP],
+		[Vector2(0.5, 0.5), Stub.LEFT],
+		[Vector2(0.9, 0.5), TOP],
+		[Vector2(1.1, 0.5), Stub.LEFT],
+	]:
+		var point: Vector2 = screen.position + screen.size * sample[0]
+		actual = capture.get_pixelv(Vector2i(point))
+		var expected: Color = sample[1]
+		if absf(actual.r - expected.r) > 1.1/255 or absf(actual.g - expected.g) > 1.1/255 or absf(actual.b - expected.b) > 1.1/255:
+			push_error("widescreen sample %s: got %s expected %s" % [sample[0], actual, expected])
+			ok = false
+	# Picture's neutral side backdrop and native masking survive presentation
+	# filter and integer-scale settings independently of the GPU producer.
+	wide_image.fill(Color.BLACK)
+	wide_image.fill_rect(Rect2i(128, 0, 768, 576), Stub.LEFT)
+	wide_texture.update(wide_image)
+	for nearest in [false, true]:
+		for integer in [false, true]:
+			host.settings.nearest = nearest
+			host.settings.integer_scale = integer
+			host._apply_filter()
+			host._layout_screens()
+			await _settle()
+			screen = host.top_rect.get_global_rect()
+			screen.position = screen.position.round()
+			capture = root.get_texture().get_image()
+			for sample in [[Vector2(-0.1, 0.5), Color.BLACK], [Vector2(0.5, 0.5), Stub.LEFT], [Vector2(1.1, 0.5), Color.BLACK]]:
+				var point: Vector2 = screen.position + screen.size * sample[0]
+				actual = capture.get_pixelv(Vector2i(point))
+				var expected: Color = sample[1]
+				if absf(actual.r - expected.r) > 1.1/255 or absf(actual.g - expected.g) > 1.1/255 or absf(actual.b - expected.b) > 1.1/255:
+					push_error("Picture backdrop nearest=%s integer=%s sample=%s: %s" % [nearest, integer, sample[0], actual])
+					ok = false
+	host.settings.nearest = true
+	host.settings.integer_scale = false
+	host._apply_filter()
+	host._layout_screens()
+	host._ui.gpu_widescreen.select(0)
+	host._ui.gpu_widescreen.item_selected.emit(0)
+	ok = host.settings.widescreen_mode == 0 and host.persist_count == 5 and host.top_frame.clip_contents and ok
+	# Picture is live, while entering or leaving Full defers until restart.
+	var fake_machine := SyntheticMachine.new()
+	fake_machine.top = host.top_rect.texture
+	fake_machine.bottom = host.bottom_rect.texture
+	host.machine = fake_machine
+	host._set_widescreen_mode(1)
+	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 1 and ok
+	host._set_widescreen_mode(2)
+	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 2 and host._ui.widescreen_note.text.contains("Restart") and ok
+	host._active_widescreen_mode = 2
+	host._set_widescreen_mode(0)
+	ok = host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and host._ui.widescreen_note.text.contains("Restart") and ok
+	# No emulated frame arrives while paused: presentation switches must update
+	# both the displayed overlay and the texture used for its color-key hit test.
+	var paused_under := Color8(20, 190, 40)
+	fake_machine.top = _solid(paused_under)
+	fake_machine.bottom = _solid(TOP)
+	fake_machine.presentation_top = fake_machine.top
+	fake_machine.presentation_bottom = _solid(BOTTOM)
+	host.settings.single_screen_shapes = [{"source": Rect2(0, 0, 256, 192), "destination": Rect2(0, 0, 1, 1), "opacity": 1.0, "color_key": BOTTOM}]
+	host._set_layout(7)
+	host.set_gpu3d_frame(wide_texture, _solid(Color.BLACK), false)
+	await _settle()
+	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused Full") and ok
+	host._toggle_gpu3d_compare()
+	await _settle()
+	ok = _paused_overlay_probe(host, fake_machine.bottom, 0, TOP, "paused F6 software") and ok
+	host._toggle_gpu3d_compare()
+	await _settle()
+	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused F6 GPU") and ok
+	host.settings.renderer_gpu3d = 0
+	host._apply_gpu3d_settings()
+	await _settle()
+	ok = _paused_overlay_probe(host, fake_machine.bottom, 0, TOP, "paused GPU disabled") and ok
+	host.settings.renderer_gpu3d = 1
+	host._apply_gpu3d_settings()
+	await _settle()
+	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused GPU enabled") and ok
+	host.machine = null
+	fake_machine.free()
+	host._set_widescreen_mode(0)
 	# Validity is a rolling frame ratio, not the current 3D-pixel share.
 	host._clear_gpu3d_status()
 	for i in 120:

@@ -1608,6 +1608,66 @@ void test_math_and_fibers() {
     worker.join();
 }
 
+void projection_test_original(Cpu* cpu) {
+    cpu->r[0] = cpu->r[2];
+}
+
+void test_widescreen_camera_hook() {
+    static GuestFn slot = projection_test_original;
+    FnEntry entry{0x020c28b0, 0x14c, kModuleArm9Main, 0,
+                  0x1cb108bf62a813e5ULL, &slot, "projection"};
+    MachineConfig config;
+    config.direct_boot = false;
+    config.arm9_table = {&entry, 1};
+    Machine off_before(config);
+    config.widescreen_camera = true;
+    {
+        Machine on(config);
+        auto& cpu = on.cpu(CpuId::Arm9);
+        cpu.r[2] = 0x1555;
+        dsr_call(&cpu, entry.addr);
+        check(cpu.r[0] == 0x1c72, "widescreen scales camera aspect by four thirds");
+        cpu.r[2] = 0x1000;
+        dsr_call(&cpu, entry.addr);
+        check(cpu.r[0] == 0x1556, "widescreen scales nondefault camera aspects");
+        auto& off_cpu = off_before.cpu(CpuId::Arm9);
+        off_cpu.r[2] = 0x1555;
+        dsr_call(&off_cpu, entry.addr);
+        check(off_cpu.r[0] == 0x1555, "existing disabled machine retains original aspect");
+    }
+    config.widescreen_camera = false;
+    Machine off_after(config);
+    auto& cpu = off_after.cpu(CpuId::Arm9);
+    cpu.r[2] = 0x1555;
+    dsr_call(&cpu, entry.addr);
+    check(cpu.r[0] == 0x1555, "subsequent disabled machine retains original aspect");
+    check(slot == projection_test_original, "camera hook does not mutate the shared slot");
+
+    config.widescreen_camera = true;
+    std::thread constructor([&] {
+        for (int i = 0; i < 32; ++i) {
+            Machine concurrent(config);
+        }
+    });
+    for (int i = 0; i < 1000; ++i) {
+        cpu.r[2] = 0x1555;
+        dsr_call(&cpu, entry.addr);
+        check(cpu.r[0] == 0x1555, "concurrent Full construction leaves Picture dispatch unchanged");
+    }
+    constructor.join();
+    check(slot == projection_test_original, "concurrent construction leaves the shared slot unchanged");
+
+    entry.hash ^= 1;
+    config.widescreen_camera = true;
+    bool rejected = false;
+    try {
+        Machine incompatible(config);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    check(rejected, "widescreen rejects incompatible guest projection hash");
+}
+
 void test_overlay_hash_dispatch() {
     constexpr std::array<std::uint8_t, 4> image = {0xd4, 0xc3, 0xb2, 0xa1};
     const std::uint64_t hash = fnv1a64(image.data(), image.size());
@@ -1957,6 +2017,39 @@ void test_wifi_baseband_writable_indices() {
         check(actual == (writable ? complement : initial), message);
     }
 }
+void test_widescreen_machine_geometry_capacity() {
+    static GuestFn slot = guest_entry;
+    FnEntry entry{0x020c28b0, 0x14c, kModuleArm9Main, 0,
+                  0x1cb108bf62a813e5ULL, &slot, "projection"};
+    for (const bool widescreen : {false, true}) {
+        MachineConfig config;
+        config.direct_boot = false;
+        config.arm9_table = {&entry, 1};
+        config.widescreen_camera = widescreen;
+        Machine machine(config);
+        auto& gpu = machine.gpu3d();
+        const auto port = [&gpu](std::uint32_t code, std::uint32_t value) {
+            gpu.io_write(0x04000440U + (code - 0x10U) * 4U, value, 32);
+        };
+        port(0x40, 2); // triangle strip
+        gpu.run(16);
+        for (unsigned vertex = 0; vertex < 2053; ++vertex) {
+            port(0x24, 0);
+            gpu.run(8);
+        }
+        const auto count = gpu.io_read(0x04000604U, 32);
+        check((count & 0xfffU) == 2048U && (count >> 16) == 2053U,
+              "machine geometry retains guest hardware count limits");
+        port(0x50, 0);
+        gpu.run(100000);
+        gpu.vblank_start();
+        const auto view = gpu.geometry_view();
+        check(view.polygon_count == (widescreen ? 2051U : 2048U) &&
+                  view.polygon_overflow,
+              "Full machine retains overflow geometry while Classic stays hardware-limited");
+    }
+}
+
 } // namespace
 
 int run_core_tests() {
@@ -1979,6 +2072,8 @@ int run_core_tests() {
     test_interworking_return_state();
     test_math_and_fibers();
     test_overlay_hash_dispatch();
+    test_widescreen_camera_hook();
+    test_widescreen_machine_geometry_capacity();
     test_overlay_snapshot_dispatch();
     test_overlay_snapshot_remapping_and_io();
     test_shared_region_fallback_dispatch();

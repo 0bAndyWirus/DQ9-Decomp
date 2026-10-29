@@ -47,6 +47,7 @@ typedef struct dsr_session_config {
     int32_t rtc_timezone_offset_minutes;
     /* Appended later; NULL, "" or "auto" keep the ABI config / save-file-size choice. Names as --backup-type. */
     const char* backup_type;
+    uint8_t widescreen_camera;
 } dsr_session_config;
 
 

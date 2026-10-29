@@ -56,7 +56,7 @@ The recompiler turns a locally supplied image and JSON manifest into host C++, w
 
 ## Highlights
 
-- **Faithful by design.** One simulation drives both classic and enhanced presentation; presentation settings never change game timing.
+- **Faithful by design.** SDL is the Classic reference host; Godot offers optional enhancements, including launch-time modes that change guest state and require separate baselines.
 - **Software 2D/3D rasterizers** with frame-exactness checks against a reference emulator used only as an external oracle.
 - **Deterministic debug capture and replay** for reproducing problems without sharing any game data.
 - **Parallel band rendering** and a Godot GPU path for high-resolution output experiments.
@@ -141,6 +141,7 @@ Platform guides: [Linux and Godot](docs/BUILDING.md) · [Windows](docs/BUILDING_
 | [Tools reference](docs/TOOLS.md) | What each tool does and its exit codes |
 | [Roadmap](docs/ROADMAP.md) | Milestones and gates to the final v1 release |
 | [Static recompilation decision](docs/DECISIONS/0004-static-recompilation.md) | Why this approach |
+| [Classic and enhanced hosts](docs/DECISIONS/0005-classic-sdl-enhanced-godot.md) | SDL Classic and Godot enhancement policy |
 | [Launcher and debug capture](docs/LAUNCHER_AND_DEBUG.md) | Private capture and replay workflow |
 | [Source credits](docs/RESEARCH_LOG.md) | Prior work this project builds on |
 

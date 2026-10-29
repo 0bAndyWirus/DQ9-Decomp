@@ -2084,6 +2084,170 @@ void test_polygon_vertex_ram_overflow_flags() {
     if (!ok) std::exit(1);
 }
 
+void test_enhanced_geometry_preserves_hardware_status() {
+    bool ok = true;
+    for (const bool enhanced : {false, true}) {
+        Gpu3D gpu;
+        gpu.set_enhanced_geometry(enhanced);
+        send(gpu, 0x40, {2U}); // triangle strip
+        gpu.run(16);
+        for (std::size_t vertex = 0; vertex < 2053U; ++vertex) {
+            port(gpu, 0x24, 0U);
+            gpu.run(8);
+        }
+        const auto count = gpu.io_read(0x04000604U, 32);
+        ok &= check((count & 0xfffU) == 2048U && (count >> 16) == 2053U &&
+                    (gpu.io_read(0x04000060U, 32) & (1U << 13)) != 0U,
+                    "enhanced polygon capacity retains hardware count and overflow");
+        send(gpu, 0x50, {0U});
+        gpu.run(100000);
+        gpu.vblank_start();
+        const auto view = gpu.geometry_view();
+        ok &= check(view.polygon_count == (enhanced ? 2051U : 2048U) &&
+                    view.polygon_overflow,
+                    "enhanced strip retains extra polygons without hiding overflow");
+    }
+    {
+        Gpu3D gpu;
+        gpu.set_enhanced_geometry(true);
+        send(gpu, 0x40, {1U}); // independent quads
+        gpu.run(16);
+        for (std::size_t vertex = 0; vertex < 6148U; ++vertex) {
+            port(gpu, 0x24, 0U);
+            gpu.run(8);
+        }
+        const auto count = gpu.io_read(0x04000604U, 32);
+        ok &= check((count & 0xfffU) == 1536U && (count >> 16) == 6144U &&
+                    (gpu.io_read(0x04000060U, 32) & (1U << 13)) != 0U,
+                    "extra vertices cannot advance the hardware polygon count");
+        send(gpu, 0x50, {0U});
+        gpu.run(100000);
+        gpu.vblank_start();
+        const auto view = gpu.geometry_view();
+        ok &= check(view.vertex_count == 6148U && view.polygon_count == 1537U &&
+                    view.vertex_overflow && !view.polygon_overflow,
+                    "enhanced vertices retain extra quads with hardware overflow flags");
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_enhanced_geometry_capacity_overflow_lifecycle() {
+    constexpr std::size_t capacity = 12288U;
+    bool ok = true;
+    for (const bool enhanced : {false, true}) {
+        Gpu3D gpu;
+        gpu.set_enhanced_geometry(enhanced);
+        const auto vertices = [&gpu](std::size_t count) {
+            send(gpu, 0x40, {1U}); // independent quads
+            gpu.run(16);
+            for (std::size_t i = 0; i < count; ++i) {
+                port(gpu, 0x24, 0U);
+                gpu.run(8);
+            }
+        };
+        const auto swap = [&gpu]() {
+            send(gpu, 0x50, {0U});
+            gpu.run(100000);
+            gpu.vblank_start();
+        };
+
+        vertices(capacity);
+        swap();
+        auto view = gpu.geometry_view();
+        ok &= check(view.vertex_count == (enhanced ? capacity : 6144U) &&
+                    !view.enhanced_overflow,
+                    "exact enhanced vertex capacity is not enhanced overflow, including classic mode");
+
+        vertices(capacity + 1U);
+        ok &= check(!gpu.geometry_view().enhanced_overflow,
+                    "submission overflow is not published before swap");
+        send(gpu, 0x50, {0U});
+        gpu.run(100000);
+        ok &= check(!gpu.geometry_view().enhanced_overflow,
+                    "pending swap does not publish overflow before VBlank");
+        gpu.vblank_start();
+        view = gpu.geometry_view();
+        ok &= check(view.vertex_count == (enhanced ? capacity : 6144U) &&
+                    view.enhanced_overflow == enhanced,
+                    "exceeding enhanced vertex capacity publishes overflow only in enhanced mode");
+        gpu.vblank_start();
+        ok &= check(gpu.geometry_view().enhanced_overflow == enhanced,
+                    "overflow remains latched on VBlank without a swap");
+        swap();
+        ok &= check(!gpu.geometry_view().enhanced_overflow,
+                    "next empty swap clears enhanced overflow");
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_enhanced_geometry_keeps_guest_raster_hardware_limited() {
+    std::array<std::uint32_t, 256 * 192> classic{};
+    bool ok = true;
+    for (int mode = 0; mode < 3; ++mode) {
+        Gpu3D gpu;
+        gpu.set_render_threads(0);
+        gpu.set_enhanced_geometry(mode != 0);
+        gpu.set_capture_opaque_only(mode == 2);
+        send(gpu, 0x40, {2U});
+        gpu.run(16);
+        for (std::size_t vertex = 0; vertex < 2050U; ++vertex) {
+            port(gpu, 0x24, 0U);
+            gpu.run(8);
+        }
+        triangle(gpu, 0x001fU, 31U << 16, 0, 0, 0);
+        submit_frame(gpu);
+        const auto geometry = gpu.geometry_view();
+        ok &= check(geometry.polygon_count == (mode == 0 ? 2048U : 2049U),
+                    "enhanced presentation retains polygon beyond hardware capacity");
+        for (int y = 0; y < 192; ++y) {
+            const auto* row = gpu.line(y);
+            if (mode == 0) std::copy_n(row, 256, classic.begin() + y * 256);
+            else ok &= check(std::equal(row, row + 256, classic.begin() + y * 256),
+                             "guest raster excludes enhanced-only polygon");
+        }
+        if (mode == 2)
+            ok &= check(gpu.raster_view().opaque_only_mask != nullptr,
+                        "enhanced presentation capture remains available");
+    }
+    if (!ok) std::exit(1);
+}
+
+void test_widescreen_projection_fov_equality() {
+    Gpu3D classic;
+    Gpu3D wide;
+    for (auto* gpu : {&classic, &wide}) {
+        send(*gpu, 0x10, {0U});
+        const std::uint32_t x_scale = gpu == &classic ? 4096U : 3072U;
+        send(*gpu, 0x16, {
+            x_scale, 0U, 0U, 0U,
+            0U, 4096U, 0U, 0U,
+            0U, 0U, 4096U, 0U,
+            0U, 0U, 0U, 4096U});
+        send(*gpu, 0x29, {(31U << 16) | 0xc0U});
+        send(*gpu, 0x40, {0U});
+        position16(*gpu, -3072, -2048, 1024);
+        position16(*gpu, 2048, -1024, 512);
+        position16(*gpu, 1024, 3072, -512);
+        send(*gpu, 0x41);
+        submit_frame(*gpu);
+    }
+    const auto a = classic.geometry_view();
+    const auto b = wide.geometry_view();
+    bool ok = check(a.vertex_count == 3U && b.vertex_count == 3U,
+                    "both projection matrices produce a triangle");
+    if (a.vertex_count == 3U && b.vertex_count == 3U) {
+        for (std::size_t i = 0; i < 3U; ++i) {
+            const auto& picture = a.vertices[i].clip;
+            const auto& full = b.vertices[i].clip;
+            ok &= check(picture[0] * 0.75F == full[0] &&
+                        picture[1] == full[1] && picture[2] == full[2] &&
+                        picture[3] == full[3],
+                        "Picture correction and Full projection yield the same clip-space FOV");
+        }
+    }
+    if (!ok) std::exit(1);
+}
+
 void test_swap_sort_and_z_w_depth_modes() {
     const auto render_sort = [](std::uint32_t sort_mode) {
         Gpu3D gpu;
@@ -3821,6 +3985,10 @@ int main() {
     test_clear_image_bitmap_scroll_depth_and_fog();
     test_clear_image_unmapped_slots_are_independently_zero();
     test_polygon_vertex_ram_overflow_flags();
+    test_enhanced_geometry_preserves_hardware_status();
+    test_enhanced_geometry_capacity_overflow_lifecycle();
+    test_enhanced_geometry_keeps_guest_raster_hardware_limited();
+    test_widescreen_projection_fov_equality();
     test_swap_sort_and_z_w_depth_modes();
     test_opaque_polygons_draw_in_ascending_screen_y_order();
     test_front_facing_passes_equal_depth_over_back_facing();

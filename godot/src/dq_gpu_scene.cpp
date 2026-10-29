@@ -22,14 +22,17 @@
 namespace {
 using namespace godot;
 constexpr int kWidth = 256, kHeight = 192;
+int target_width(int scale, bool widescreen) {
+    return widescreen ? (kWidth * scale * 4 + 1) / 3 : kWidth * scale;
+}
 // Godot's ArrayMesh/RenderingServer allows at most 256 surfaces per mesh.
 constexpr std::size_t kSurfaceLimit = 256;
 DqGpuScene* live_scenes = nullptr; // Main-thread-only; no static Godot resources.
 
-SubViewport* new_viewport(Node& parent, const String& name, int scale) {
+SubViewport* new_viewport(Node& parent, const String& name, int scale, bool widescreen) {
     auto* viewport = memnew(SubViewport);
     viewport->set_name(name);
-    viewport->set_size(Vector2i(kWidth * scale, kHeight * scale));
+    viewport->set_size(Vector2i(target_width(scale, widescreen), kHeight * scale));
     viewport->set_transparent_background(true);
     viewport->set_use_own_world_3d(true);
     viewport->set_msaa_3d(Viewport::MSAA_DISABLED);
@@ -96,10 +99,11 @@ void DqGpuScene::release_resources(bool children_alive) {
     resources_released_ = true;
     valid_ = color_valid_ = false;
     if (children_alive) {
+        if (coverage_viewport_) memdelete(coverage_viewport_);
         if (effects_viewport_) memdelete(effects_viewport_);
         if (viewport_) memdelete(viewport_);
     }
-    effects_viewport_ = viewport_ = nullptr;
+    effects_viewport_ = coverage_viewport_ = viewport_ = nullptr;
     post_instance_ = nullptr;
     chunks_.clear();
     materials_.clear();
@@ -126,6 +130,14 @@ void DqGpuScene::release_resources(bool children_alive) {
 
 void DqGpuScene::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_scale", "scale"), &DqGpuScene::set_scale);
+    godot::ClassDB::bind_method(godot::D_METHOD("set_widescreen_enabled", "enabled"), &DqGpuScene::set_widescreen_enabled);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_widescreen_enabled"), &DqGpuScene::get_widescreen_enabled);
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "widescreen_enabled"),
+                 "set_widescreen_enabled", "get_widescreen_enabled");
+    godot::ClassDB::bind_method(godot::D_METHOD("set_guest_widescreen", "enabled"), &DqGpuScene::set_guest_widescreen);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_guest_widescreen"), &DqGpuScene::get_guest_widescreen);
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "guest_widescreen"),
+                 "set_guest_widescreen", "get_guest_widescreen");
     godot::ClassDB::bind_method(godot::D_METHOD("get_texture"), &DqGpuScene::get_texture);
     godot::ClassDB::bind_method(godot::D_METHOD("get_mask_texture"), &DqGpuScene::get_mask_texture);
     godot::ClassDB::bind_method(godot::D_METHOD("get_raw_texture"), &DqGpuScene::get_raw_texture);
@@ -142,10 +154,24 @@ void DqGpuScene::set_scale(int scale) {
     scale = std::clamp(scale, 1, 6);
     if (scale_ == scale) return;
     scale_ = scale;
-    if (viewport_) viewport_->set_size(godot::Vector2i(kWidth * scale_, kHeight * scale_));
-    if (effects_viewport_) effects_viewport_->set_size(godot::Vector2i(kWidth * scale_, kHeight * scale_));
-    for (const auto& [key, material] : materials_)
+    if (viewport_) viewport_->set_size(godot::Vector2i(target_width(scale_, widescreen_enabled_), kHeight * scale_));
+    if (effects_viewport_) effects_viewport_->set_size(godot::Vector2i(target_width(scale_, widescreen_enabled_), kHeight * scale_));
+    if (coverage_viewport_) coverage_viewport_->set_size(godot::Vector2i(target_width(scale_, widescreen_enabled_), kHeight * scale_));
+    const double ratio = static_cast<double>(target_width(scale_, widescreen_enabled_)) / (kWidth * scale_);
+    if (post_material_.is_valid()) post_material_->set_shader_parameter("native_width_ratio", ratio);
+    for (const auto& [key, material] : materials_) {
         material->set_shader_parameter("span_margin", scale_ == 1 ? 0.0F : 1.0F / 32);
+        material->set_shader_parameter("side_native_width_ratio", ratio);
+    }
+}
+
+void DqGpuScene::set_widescreen_enabled(bool enabled) {
+    if (widescreen_enabled_ == enabled) return;
+    widescreen_enabled_ = enabled;
+    const godot::Vector2i size(target_width(scale_, enabled), kHeight * scale_);
+    if (viewport_) viewport_->set_size(size);
+    if (coverage_viewport_) coverage_viewport_->set_size(size);
+    if (effects_viewport_) effects_viewport_->set_size(size);
 }
 
 bool DqGpuScene::initialize_viewport() {
@@ -160,7 +186,7 @@ bool DqGpuScene::initialize_viewport() {
     clear_shader_ = source;
     partial_shader_ = godot::ResourceLoader::get_singleton()->load("res://shaders/ds_translucent.gdshader");
     if (partial_shader_.is_null()) return false;
-    viewport_ = new_viewport(*this, "Gpu3DViewport", scale_);
+    viewport_ = new_viewport(*this, "Gpu3DViewport", scale_, widescreen_enabled_);
     ensure_chunk(0);
     mask_bytes_.resize(kWidth * kHeight);
     toon_bytes_.resize(32 * 4);
@@ -196,6 +222,7 @@ void DqGpuScene::clear_meshes() {
         chunk.mesh->clear_surfaces();
         chunk.color->set_visible(false);
         if (chunk.metadata) chunk.metadata->set_visible(false);
+        if (chunk.coverage) chunk.coverage->set_visible(false);
     }
 }
 
@@ -210,6 +237,10 @@ void DqGpuScene::ensure_chunk(std::size_t index) {
         chunk.metadata = new_instance(*effects_viewport_, "Gpu3DIds" + godot::String::num_int64(index));
         chunk.metadata->set_mesh(chunk.mesh);
     }
+    if (coverage_viewport_) {
+        chunk.coverage = new_instance(*coverage_viewport_, "Gpu3DCoverage" + godot::String::num_int64(index));
+        chunk.coverage->set_mesh(chunk.mesh);
+    }
     chunks_.push_back(std::move(chunk));
 }
 
@@ -218,10 +249,13 @@ bool DqGpuScene::initialize_effects() {
     id_shader_ = godot::ResourceLoader::get_singleton()->load("res://shaders/ds_poly_id.gdshader");
     const godot::Ref<godot::Shader> post_shader = godot::ResourceLoader::get_singleton()->load("res://shaders/ds_post.gdshader");
     if (id_shader_.is_null() || post_shader.is_null()) return false;
-    effects_viewport_ = new_viewport(*this, "Gpu3DEffects", scale_);
+    effects_viewport_ = new_viewport(*this, "Gpu3DEffects", scale_, widescreen_enabled_);
+    coverage_viewport_ = new_viewport(*this, "Gpu3DCoverage", scale_, widescreen_enabled_);
     for (std::size_t i = 0; i < chunks_.size(); ++i) {
         chunks_[i].metadata = new_instance(*effects_viewport_, "Gpu3DIds" + godot::String::num_int64(i));
         chunks_[i].metadata->set_mesh(chunks_[i].mesh);
+        chunks_[i].coverage = new_instance(*coverage_viewport_, "Gpu3DCoverage" + godot::String::num_int64(i));
+        chunks_[i].coverage->set_mesh(chunks_[i].mesh);
     }
     fog_bytes_.resize(32); edge_bytes_.resize(8 * 4);
     fog_image_ = godot::Image::create(32, 1, false, godot::Image::FORMAT_R8);
@@ -232,6 +266,7 @@ bool DqGpuScene::initialize_effects() {
     post_material_->set_shader(post_shader);
     post_material_->set_render_priority(127);
     post_material_->set_shader_parameter("color_texture", viewport_->get_texture());
+    post_material_->set_shader_parameter("coverage_texture", coverage_viewport_->get_texture());
     post_material_->set_shader_parameter("fog_table", fog_texture_);
     post_material_->set_shader_parameter("edge_color_table", edge_texture_);
     post_material_->set_shader_parameter("color_transfer", color_transfer_);
@@ -263,6 +298,10 @@ void DqGpuScene::add_surface(const godot::Array& arrays, const dq9::GpuSceneFram
     if (effects_active_) {
         chunk.metadata->set_visible(true);
         chunk.metadata->set_surface_override_material(surface, make_material(frame, polygon, translucent, true, index, span_mesh));
+        if (widescreen_enabled_) {
+            chunk.coverage->set_visible(true);
+            chunk.coverage->set_surface_override_material(surface, make_material(frame, polygon, translucent, true, index, span_mesh, true));
+        }
     }
     ++surface_count_;
 }
@@ -285,13 +324,17 @@ bool DqGpuScene::same_run(const dsr::Gpu3DPolygon& a, const dsr::Gpu3DPolygon& b
 
 godot::Ref<godot::ShaderMaterial> DqGpuScene::make_material(const dq9::GpuSceneFrame& frame,
                                                           const dsr::Gpu3DPolygon& polygon,
-                                                          bool translucent, bool metadata, int priority, bool span_mesh) {
+                                                          bool translucent, bool metadata, int priority, bool span_mesh,
+                                                          bool coverage) {
     const MaterialKey cache_key{{polygon.texture, polygon.palette, frame.vram_generation},
         dsr::gpu3d_detail::texture_polygon_group_key(polygon.texture, polygon.attr, frame.disp3dcnt),
-        polygon.viewport, (priority << 3) | (translucent ? 1 : 0) | (metadata ? 2 : 0) | (span_mesh ? 4 : 0)};
+        polygon.viewport, (priority << 4) | (translucent ? 1 : 0) | (metadata ? 2 : 0) | (span_mesh ? 4 : 0) | (coverage ? 8 : 0)};
     if (const auto found = materials_.find(cache_key); found != materials_.end()) {
         found->second->set_shader_parameter("alpha_test_ref", static_cast<int>(frame.alpha_test_ref & 31U));
         found->second->set_shader_parameter("display_rgb555", !metadata && !effects_active_);
+        if (!span_mesh)
+            found->second->set_shader_parameter("side_native_width_ratio",
+                static_cast<double>(target_width(scale_, widescreen_enabled_)) / (kWidth * scale_));
         return found->second;
     }
     godot::Ref<godot::ShaderMaterial> material;
@@ -301,8 +344,9 @@ godot::Ref<godot::ShaderMaterial> DqGpuScene::make_material(const dq9::GpuSceneF
     material->set_render_priority(priority);
     if (metadata) {
         material->set_shader_parameter("vertex_metadata", true);
-        material->set_shader_parameter("discard_partial", span_mesh);
-        material->set_shader_parameter("discard_surface", span_mesh && translucent);
+        material->set_shader_parameter("discard_partial", span_mesh && !coverage);
+        material->set_shader_parameter("discard_surface", span_mesh && translucent && !coverage);
+        material->set_shader_parameter("coverage_only", coverage);
     }
     const bool textured = (frame.disp3dcnt & 1U) != 0 && ((polygon.texture >> 26U) & 7U) != 0;
     if (textured) {
@@ -324,6 +368,9 @@ godot::Ref<godot::ShaderMaterial> DqGpuScene::make_material(const dq9::GpuSceneF
     material->set_shader_parameter("span_mesh", span_mesh);
     material->set_shader_parameter("span_margin", scale_ == 1 ? 0.0F : 1.0F / 32);
     material->set_shader_parameter("clear_plane", !span_mesh);
+    if (!span_mesh)
+        material->set_shader_parameter("side_native_width_ratio",
+            static_cast<double>(target_width(scale_, widescreen_enabled_)) / (kWidth * scale_));
     materials_.emplace(cache_key, material);
     return material;
 }
@@ -351,6 +398,24 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
     reference_top_polygons_ = frame.capture_top_polygons;
 #endif
     mesh_polygon_count_ = skipped_wireframe_ = 0;
+    wide_crossing_left_ = wide_crossing_right_ = 0;
+    if (widescreen_enabled_) {
+        for (std::size_t i = 0; i < frame.polygon_count; ++i) {
+            const auto& polygon = frame.polygons[i];
+            bool left_out = false, left_in = false, right_out = false, right_in = false;
+            for (std::size_t j = 0; j < polygon.count && j < polygon.index.size(); ++j) {
+                const auto index = polygon.index[j];
+                if (index >= frame.vertex_count) continue;
+                const auto& clip = frame.vertices[index].clip;
+                left_out |= clip[0] < -clip[3];
+                left_in |= clip[0] >= -clip[3];
+                right_out |= clip[0] > clip[3];
+                right_in |= clip[0] <= clip[3];
+            }
+            wide_crossing_left_ += left_out && left_in;
+            wide_crossing_right_ += right_out && right_in;
+        }
+    }
     if (!have_generation_ || generation_ != frame.vram_generation || epoch_ != frame.epoch) {
         textures_.clear();
         materials_.clear();
@@ -370,6 +435,7 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
     if (effects_active_ && !initialize_effects()) return;
     if (effects_viewport_) {
         effects_viewport_->set_update_mode(effects_active_ ? godot::SubViewport::UPDATE_ALWAYS : godot::SubViewport::UPDATE_DISABLED);
+        coverage_viewport_->set_update_mode(effects_active_ && widescreen_enabled_ ? godot::SubViewport::UPDATE_ALWAYS : godot::SubViewport::UPDATE_DISABLED);
         post_instance_->set_visible(effects_active_);
     }
     if (effects_active_) {
@@ -388,6 +454,8 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
         post_material_->set_shader_parameter("fog_offset", static_cast<int>(frame.fog_offset));
         post_material_->set_shader_parameter("clear_id", static_cast<int>((frame.clear_color >> 24U) & 63U));
         post_material_->set_shader_parameter("clear_color", static_cast<int>(frame.clear_color));
+        post_material_->set_shader_parameter("extend_side_backdrop", widescreen_enabled_ && ((frame.clear_color >> 16U) & 31U) != 0);
+        post_material_->set_shader_parameter("native_width_ratio", static_cast<double>(target_width(scale_, widescreen_enabled_)) / (kWidth * scale_));
         post_material_->set_shader_parameter("clear_depth", static_cast<int>(frame.clear_depth & 0x7fffU));
     }
     auto* toon = toon_bytes_.ptrw();
@@ -459,7 +527,7 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
         }
         raster_vertices_.clear();
         for (std::size_t i = begin; i < end; ++i)
-            if (raster_mesh_.append(frame, frame.polygons[i], translucent, raster_vertices_))
+            if (raster_mesh_.append(frame, frame.polygons[i], translucent, raster_vertices_, widescreen_enabled_ && !guest_widescreen_))
                 ++mesh_polygon_count_;
         const auto vertices = raster_vertices_.size();
         if (vertices != 0) {
@@ -592,6 +660,8 @@ godot::Dictionary DqGpuScene::get_stats() const {
     out["vertex_count"] = static_cast<int64_t>(vertex_count_);
     out["mesh_polygon_count"] = static_cast<int64_t>(mesh_polygon_count_);
     out["skipped_wireframe"] = static_cast<int64_t>(skipped_wireframe_);
+    out["wide_crossing_left"] = static_cast<int64_t>(wide_crossing_left_);
+    out["wide_crossing_right"] = static_cast<int64_t>(wide_crossing_right_);
     out["three_d_pixels"] = static_cast<int64_t>(three_d_pixels_);
     out["gpu_pixels"] = static_cast<int64_t>(gpu_pixels_);
     out["gpu_pixel_share"] = three_d_pixels_ ? static_cast<double>(gpu_pixels_) / three_d_pixels_ : 0.0;

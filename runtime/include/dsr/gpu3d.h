@@ -29,8 +29,9 @@ struct Gpu3DPolygon {
 };
 
 // Borrowed view of the geometry most recently activated by SWAP_BUFFERS.
-// Pointers remain valid until Gpu3D destruction; their contents change on the
-// next SWAP_BUFFERS. Vertices contain post-transform clip coordinates.
+// Pointers remain valid until Gpu3D destruction or an enhanced-geometry
+// storage transition; contents change on the next SWAP_BUFFERS. Vertices
+// contain post-transform clip coordinates.
 struct Gpu3DGeometryView {
     const Gpu3DVertex* vertices = nullptr;
     std::size_t vertex_count = 0;
@@ -40,10 +41,13 @@ struct Gpu3DGeometryView {
     std::uint32_t swap_mode = 0;
     bool vertex_overflow = false;
     bool polygon_overflow = false;
+    // Enhanced presentation storage, distinct from the hardware RAM flags.
+    bool enhanced_overflow = false;
 };
 
 // Indices into geometry_view().polygons in the actual software draw order.
-// Borrowed until the next render_start/reset; opaque first, then translucent.
+// Borrowed until the next render_start, reset, or enhanced-geometry storage
+// transition; opaque first, then translucent.
 struct Gpu3DDrawOrderView {
     const std::uint16_t* opaque = nullptr;
     std::size_t opaque_count = 0;
@@ -114,6 +118,9 @@ public:
     Gpu3D& operator=(const Gpu3D&) = delete;
 
     void reset();
+    // Owner-thread-only, between renders. Enhanced presentation can retain
+    // geometry beyond the guest-visible hardware limits.
+    void set_enhanced_geometry(bool enabled);
     void attach_gpu2d(const Gpu2D* gpu2d);
     // Machine-thread-only, between renders. -1 reselects DSR_RENDER_THREADS/
     // hardware default; nonnegative values clamp to 0..6. Counts 0/1 render
@@ -140,6 +147,8 @@ public:
     void render_start();
     // Packed DS 6-bit RGB + 5-bit alpha row.
     const std::uint32_t* line(int y) const;
+    // Presentation-only enhanced raster, or nullptr when identical to line().
+    const std::uint32_t* enhanced_line(int y) const;
     // Optional host-only second render at an integer scale, clamped to 1..4.
     // Call on the Machine owner thread between frames; the new scale is drawn
     // at the next render_start(). Scale 1 (the default) disables the extra pass.

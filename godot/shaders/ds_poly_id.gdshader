@@ -7,6 +7,7 @@ uniform bool translucent_polygon = false;
 uniform bool vertex_metadata = false;
 uniform bool discard_partial = false;
 uniform bool discard_surface = false;
+uniform bool coverage_only = false;
 varying flat int packed_metadata;
 
 void vertex() {
@@ -19,12 +20,17 @@ void fragment() {
 	vec4 shade = ds_shade(UV, ds_vertex_color);
 	if (shade.a == 0.0 || (alpha_test_enabled && shade.a < float(alpha_test_ref))) { discard; }
 	if (discard_surface || (discard_partial && shade.a < 31.0)) { discard; }
-	// Compatibility's approximate sRGB round trip loses small data bytes. Use
-	// spaced codes in the stable part of the range; ds_post decodes these.
-	// R=64+id*3, G=64+flags*48, B=64+alpha5*6; empty pixels have alpha=0.
-	int id = vertex_metadata ? (packed_metadata & 63) : polygon_id;
-	int flags = vertex_metadata ? ((packed_metadata >> 6) & 3) :
-		((polygon_fog ? 1 : 0) + (translucent_polygon ? 2 : 0));
-	float alpha5 = vertex_metadata ? float((packed_metadata >> 8) & 31) : shade.a;
-	ALBEDO = ds_rgb8_output(ivec3(64 + id * 3, 64 + flags * 48, 64 + int(alpha5) * 6));
+	if (coverage_only) {
+		// Clear writes depth but not coverage; later/nearer geometry writes white.
+		ALBEDO = clear_plane ? vec3(0.0) : vec3(1.0);
+	} else {
+		// Compatibility's approximate sRGB round trip loses small data bytes.
+		// R=64+id*3, G=64+flags*48, B=64+alpha5*6.
+		int id = vertex_metadata ? (packed_metadata & 63) : polygon_id;
+		int flags = vertex_metadata ? ((packed_metadata >> 6) & 3) :
+			((polygon_fog ? 1 : 0) + (translucent_polygon ? 2 : 0));
+		float alpha5 = vertex_metadata ? float((packed_metadata >> 8) & 31) : shade.a;
+		// Reserve green=255 for the synthetic rear plane; real flags end at 208.
+		ALBEDO = ds_rgb8_output(ivec3(64 + id * 3, clear_plane ? 255 : 64 + flags * 48, 64 + int(alpha5) * 6));
+	}
 }

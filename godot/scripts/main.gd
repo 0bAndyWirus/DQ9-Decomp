@@ -60,6 +60,7 @@ var replay_save_path := ""
 var replay_started_ms := 0
 var replay_complete := false
 var _reviewer_was_paused := false
+var _bundle_active := false
 var _review_build_id := ""
 # Engine A can appear on either physical screen (POWCNT1 screen swap).
 # The producer supplies a mask and a texture from the same completed frame.
@@ -76,6 +77,22 @@ var _gpu3d_valid_window := PackedByteArray()
 var _gpu3d_valid_index := 0
 var _gpu3d_valid_count := 0
 var _gpu3d_frame_count := 0
+var _active_widescreen_mode := 0
+var _layout_wide_ratio := 1.0
+var _layout_wide_screen := 0
+
+func _set_widescreen_mode(mode: int) -> void:
+	settings.widescreen_mode = mode
+	if machine == null or ((_active_widescreen_mode == 2) == (mode == 2)):
+		_active_widescreen_mode = mode
+	_apply_gpu3d_settings()
+	_persist()
+
+func _update_widescreen_note() -> void:
+	if not _ui.has("widescreen_note"): return
+	var pending := machine != null and ((_active_widescreen_mode == 2) != (int(settings.widescreen_mode) == 2))
+	_ui.widescreen_note.text = "Restart the game to apply Full mode." if pending else ("Widescreen requires GPU hi-res; software fallback remains 4:3." if int(settings.renderer_gpu3d) == 0 and int(settings.widescreen_mode) != 0 else "")
+
 
 func _ready() -> void:
 	get_window().title = "DQ9-Decomp"
@@ -259,6 +276,15 @@ func _make_settings() -> PanelContainer:
 	gpu_scale.item_selected.connect(func(i): settings.gpu3d_scale=i+2; _apply_gpu3d_settings(); _persist())
 	renderer_row.add_child(gpu_scale)
 	_ui.gpu_scale = gpu_scale
+	var widescreen := OptionButton.new()
+	for name in ["Off", "Picture", "Full"]: widescreen.add_item(name)
+	widescreen.select(int(settings.widescreen_mode))
+	widescreen.tooltip_text = "Picture widens presentation only; Full also widens the guest camera and requires restarting the game."
+	widescreen.item_selected.connect(_set_widescreen_mode)
+	col.add_child(widescreen)
+	_ui.gpu_widescreen = widescreen
+	var wide_note := Label.new(); wide_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; col.add_child(wide_note); _ui.widescreen_note = wide_note
+	_update_widescreen_note()
 	_section(col,"Audio")
 	var vol_row:=HBoxContainer.new(); col.add_child(vol_row)
 	var vol_label:=Label.new(); vol_label.text="Volume"; vol_label.custom_minimum_size.x=110; vol_row.add_child(vol_label)
@@ -580,6 +606,9 @@ func _restore_backup(path: String) -> void:
 			_restore_busy = false; _show_restore_message("Restore cancelled: save flush failed. The live game is still open; repair the save path and retry.")
 			return
 	var restored: Node = ClassDB.instantiate("DqMachine"); add_child(restored)
+	if restart:
+		_active_widescreen_mode = int(settings.widescreen_mode)
+		restored.set_widescreen_camera(_active_widescreen_mode == 2)
 	restored.set_gpu3d_enabled(false)
 	var timezone := Time.get_time_zone_from_system()
 	restored.set_rtc_epoch(int(Time.get_unix_time_from_system()), int(timezone.get("bias", 0)))
@@ -620,6 +649,8 @@ func _start_game() -> void:
 		return
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
+	_active_widescreen_mode = int(settings.widescreen_mode)
+	machine.set_widescreen_camera(_active_widescreen_mode == 2)
 	_chip_hint_shown = false
 	_machine_last_save_ok = true
 	_user_speed = 1.0; _ff_held = false
@@ -657,8 +688,7 @@ func _on_machine_frame(_frame: int) -> void:
 		if shapes != _single_shapes:
 			_single_shapes = shapes.duplicate(true)
 			_layout_screens()
-		for node in _single_nodes:
-			node.texture = bottom_rect.texture
+		# Textures are updated after the GPU composite selects its presentation.
 	if int(settings.renderer_gpu3d) != 0 and machine.has_method("get_gpu3d_texture") and machine.has_method("get_gpu3d_mask_texture"):
 		var screen_is_top := gpu3d_screen_is_top
 		if machine.has_method("get_gpu3d_screen_is_top"):
@@ -667,6 +697,9 @@ func _on_machine_frame(_frame: int) -> void:
 		if machine.has_method("get_gpu3d_stats"):
 			_gpu3d_stats = machine.get_gpu3d_stats()
 			_observe_gpu3d_frame()
+	if layout == 7:
+		for node in _single_nodes:
+			node.texture = bottom_rect.texture
 
 # Integration point also used by synthetic producers. Null textures select the
 # software result for this frame (unsupported GPU effects, shadows, etc.).
@@ -679,12 +712,15 @@ func set_gpu3d_frame(texture: Texture2D, mask: Texture2D, screen_is_top := true)
 func _apply_gpu3d_settings() -> void:
 	var enabled := int(settings.renderer_gpu3d) != 0
 	if _ui.has("gpu_scale"): _ui.gpu_scale.disabled = not enabled
+	_update_widescreen_note()
 	if _ui.has("gpu_compare"): _ui.gpu_compare.disabled = not enabled
 	if not enabled:
 		_gpu3d_compare_software = false
 		_clear_gpu3d_status()
 	if machine:
 		if machine.has_method("set_gpu3d_scale"): machine.set_gpu3d_scale(int(settings.gpu3d_scale))
+		if machine.has_method("set_gpu3d_widescreen_enabled"): machine.set_gpu3d_widescreen_enabled(_active_widescreen_mode != 0)
+		if machine.has_method("set_gpu3d_guest_widescreen"): machine.set_gpu3d_guest_widescreen(_active_widescreen_mode == 2)
 		if machine.has_method("set_gpu3d_enabled"): machine.set_gpu3d_enabled(enabled)
 		# Disabling releases the producer's viewport. Re-enabling must not
 		# resurrect its cached texture/mask while the new epoch warms up.
@@ -693,8 +729,27 @@ func _apply_gpu3d_settings() -> void:
 			_gpu3d_mask = machine.get_gpu3d_mask_texture()
 	_update_gpu3d_composite()
 
+func _gpu_width_ratio() -> float:
+	if _active_widescreen_mode != 0 and _gpu3d_texture != null and _gpu3d_texture.get_height() > 0:
+		return float(_gpu3d_texture.get_width()) / float(_gpu3d_texture.get_height()) * 0.75
+	return 1.0
+
 func _update_gpu3d_composite() -> void:
+	var ratio := _gpu_width_ratio() if int(settings.renderer_gpu3d) != 0 and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null else 1.0
+	var wide_screen := 0 if gpu3d_screen_is_top or ratio <= 1.0 else 1
+	if not is_equal_approx(ratio, _layout_wide_ratio) or wide_screen != _layout_wide_screen:
+		_layout_wide_ratio = ratio
+		_layout_wide_screen = wide_screen
+		_layout_screens()
+	if machine and is_instance_valid(top_rect) and is_instance_valid(bottom_rect):
+		var use_presentation := _active_widescreen_mode == 2 and int(settings.renderer_gpu3d) != 0 and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null and machine.has_method("get_presentation_top_texture")
+		top_rect.texture = machine.get_presentation_top_texture() if use_presentation else machine.get_top_texture()
+		bottom_rect.texture = machine.get_presentation_bottom_texture() if use_presentation else machine.get_bottom_texture()
+		for node in _single_nodes:
+			node.texture = bottom_rect.texture
 	_update_single_gpu()
+	if is_instance_valid(top_frame): top_frame.clip_contents = true
+	if is_instance_valid(bottom_frame): bottom_frame.clip_contents = true
 	if int(settings.renderer_gpu3d) == 0 or _gpu3d_texture == null or _gpu3d_mask == null:
 		if is_instance_valid(gpu3d_rect):
 			gpu3d_rect.free()
@@ -715,11 +770,17 @@ func _update_gpu3d_composite() -> void:
 		screen.add_child(gpu3d_rect)
 	elif gpu3d_rect.get_parent() != screen:
 		gpu3d_rect.reparent(screen, false)
-	# Parenting inside the physical screen keeps the mask aligned for every
-	# layout, and the bottom overlay above the top GPU layer in merged mode.
+	# The GPU child extends beyond the physical screen; 2D and touch stay native.
+	# The frame must not clip those side regions, while game_panel still clips.
+	if _active_widescreen_mode != 0 and _gpu3d_texture.get_height() > 0:
+		(screen.get_parent() as Control).clip_contents = false
 	gpu3d_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	gpu3d_rect.anchor_left = (1.0 - ratio) * 0.5
+	gpu3d_rect.anchor_right = (1.0 + ratio) * 0.5
 	gpu3d_rect.texture = _gpu3d_texture
-	(gpu3d_rect.material as ShaderMaterial).set_shader_parameter("three_d_mask", _gpu3d_mask)
+	var material := gpu3d_rect.material as ShaderMaterial
+	material.set_shader_parameter("three_d_mask", _gpu3d_mask)
+	material.set_shader_parameter("width_ratio", ratio)
 	gpu3d_rect.visible = not _gpu3d_compare_software
 
 func _toggle_gpu3d_compare() -> void:
@@ -779,6 +840,7 @@ func _release_machine(drain_audio: bool, keep_on_save_failure := false) -> bool:
 			push_warning("Save flush failed before closing. The final shutdown retry is best effort; the latest save data may not be on disk.")
 	if closing.has_method("stop"): closing.stop()
 	machine = null; _active_save_config = {}
+	_update_widescreen_note()
 	set_gpu3d_frame(null, null)
 	_gpu3d_compare_software = false; _clear_gpu3d_status()
 	_ff_held = false
@@ -842,6 +904,8 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	replay_save_path = temporary_save
 	replay_issue = issue.duplicate(true); replay_complete = false
 	machine = ClassDB.instantiate("DqMachine"); add_child(machine)
+	_active_widescreen_mode = clampi(int(environment.get("widescreen_mode", 0)), 0, 2)
+	machine.set_widescreen_camera(_active_widescreen_mode == 2)
 	_machine_last_save_ok = true
 	# Software screenshots are the exact reference even when normal play uses GPU 3D.
 	machine.set_gpu3d_enabled(false)
@@ -1018,12 +1082,17 @@ func _process(_delta: float) -> void:
 		machine.set_buttons(0 if issue_reviewer.visible or is_instance_valid(_restore_dialog) or _restore_busy else Logic.button_mask(pressed))
 
 func _input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and not event.pressed:
-		if event.button_index == MOUSE_BUTTON_LEFT and _touching:
+	if (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed) or (event is InputEventScreenTouch and not event.pressed):
+		if _touching:
 			_touching = false
+			_single_active = -1
 			if machine: machine.set_touch(0,0,false)
+	if event is InputEventMouseButton and not event.pressed:
 		if _overlay_drag or _overlay_resize:
 			_overlay_drag = false; _overlay_resize = false; _persist()
+	if _bundle_active:
+		get_viewport().set_input_as_handled()
+		return
 	if _restore_busy or is_instance_valid(_restore_dialog): return
 	if rebinding_action != "":
 		if event is InputEventKey and event.pressed and not event.echo: _replace_binding(event); get_viewport().set_input_as_handled()
@@ -1040,6 +1109,9 @@ func _input(event: InputEvent) -> void:
 			return # let the focused reviewer LineEdit/TextEdit receive ordinary keys
 		if event.keycode==KEY_F12 and machine: _save_screen_hotkey(); get_viewport().set_input_as_handled(); return
 		if event.keycode==KEY_F11: get_window().mode=Window.MODE_WINDOWED if get_window().mode==Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
+		elif event.keycode==KEY_F9 and machine:
+			_save_bundle()
+			get_viewport().set_input_as_handled()
 		elif event.keycode==KEY_F10: _toggle_pause()
 		elif event.keycode==KEY_F6:
 			_toggle_gpu3d_compare()
@@ -1090,7 +1162,7 @@ func _fit_panels() -> void:
 
 func _layout_screens() -> void:
 	if not is_instance_valid(game_panel): return
-	var rects:=Logic.layout_rects(game_panel.size,layout,_overlay_rect,settings.integer_scale)
+	var rects:=Logic.layout_rects(game_panel.size,layout,_overlay_rect,settings.integer_scale,_layout_wide_ratio,_layout_wide_screen)
 	for i in 2:
 		var frame:=top_frame if i==0 else bottom_frame
 		var r:Rect2=rects[i]
@@ -1135,6 +1207,7 @@ func _update_single_gpu() -> void:
 	for node in _single_nodes:
 		var material := node.material as ShaderMaterial
 		material.set_shader_parameter("use_gpu", enabled)
+		material.set_shader_parameter("gpu_width_ratio", _gpu_width_ratio())
 		if enabled:
 			material.set_shader_parameter("gpu_texture", _gpu3d_texture)
 			material.set_shader_parameter("gpu_mask", _gpu3d_mask)
@@ -1161,7 +1234,8 @@ func _single_shape_at(point: Vector2) -> int:
 						if mask.get_pixelv(mask_pixel).r > 0.0:
 							var gpu_image := _gpu3d_texture.get_image()
 							if gpu_image:
-								var gpu_pixel := Vector2i(mini(int(uv.x * gpu_image.get_width()), gpu_image.get_width() - 1), mini(int(uv.y * gpu_image.get_height()), gpu_image.get_height() - 1))
+								var gpu_uv := Vector2(0.5 + (uv.x - 0.5) / _gpu_width_ratio(), uv.y)
+								var gpu_pixel := Vector2i(mini(int(gpu_uv.x * gpu_image.get_width()), gpu_image.get_width() - 1), mini(int(gpu_uv.y * gpu_image.get_height()), gpu_image.get_height() - 1))
 								color = color.blend(gpu_image.get_pixelv(gpu_pixel))
 				var key: Color = shape.color_key
 				if absf(color.r - key.r) < 0.5 / 255.0 and absf(color.g - key.g) < 0.5 / 255.0 and absf(color.b - key.b) < 0.5 / 255.0: continue
@@ -1214,7 +1288,107 @@ func _on_touch_input(event: InputEvent) -> void:
 func _save_screenshot() -> void:
 	var dir="user://screenshots"; DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 	var image:=get_viewport().get_texture().get_image(); image.save_png(dir+"/frame_%08d.png"%(_current_frame()))
+func _save_presentation_bundle(dir: String, frame: int) -> String:
+	var gpu_stats: Dictionary = machine.get_gpu3d_stats() if machine and machine.has_method("get_gpu3d_stats") else {}
+	var requested := int(settings.renderer_gpu3d) != 0
+	var enabled := bool(machine.get_gpu3d_enabled()) if machine and machine.has_method("get_gpu3d_enabled") else requested
+	var valid := bool(gpu_stats.get("valid", false))
+	var composited := enabled and valid and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null
+	var reason := str(gpu_stats.get("fallback", "warmup" if enabled else "disabled"))
+	if not enabled: reason = "disabled"
+	elif _gpu3d_compare_software: reason = "software_compare"
+	elif not composited and reason == "none": reason = "missing_composite_texture"
+	var captures := {}
+	var textures := {
+		"screenshot_window.png": get_viewport().get_texture(),
+		"gpu3d_raw.png": machine.get_gpu3d_raw_texture() if machine and machine.has_method("get_gpu3d_raw_texture") else null,
+		"gpu3d_output.png": _gpu3d_texture,
+		"gpu3d_mask.png": machine.get_gpu3d_raw_mask_texture() if machine and machine.has_method("get_gpu3d_raw_mask_texture") else _gpu3d_mask,
+	}
+	for filename in textures:
+		var texture: Texture2D = textures[filename]
+		var image: Image = texture.get_image() if texture else null
+		captures[filename] = image != null and not image.is_empty()
+		if captures[filename] and image.save_png(dir.path_join(filename)) != OK:
+			return "cannot write " + filename
+	var window_size := get_window().size
+	var viewport_size := get_viewport().get_visible_rect().size
+	var bundle_rom: String = replay_issue.env.get("rom_path", settings.rom_path) if not replay_issue.is_empty() else settings.rom_path
+	var bundle_save: String = replay_save_path if not replay_save_path.is_empty() else settings.save_path
+	var bundle_language: String = replay_issue.language if not replay_issue.is_empty() else settings.language
+	var machine_stats: Dictionary = machine.get_stats() if machine else {}
+	var rtc_epoch := int(machine.get_rtc_epoch()) if machine and machine.has_method("get_rtc_epoch") else 0
+	var rtc_offset := int(machine.get_rtc_timezone_offset_minutes()) if machine and machine.has_method("get_rtc_timezone_offset_minutes") else 0
+	var state := {
+		"frame": frame,
+		"note": pause_note.text,
+		"rom_path": ProjectSettings.globalize_path(bundle_rom),
+		"save_path": ProjectSettings.globalize_path(bundle_save),
+		"language": bundle_language,
+		"rtc_epoch": rtc_epoch,
+		"rtc_timezone_offset_minutes": rtc_offset,
+		"save_at_note": "save_at_note.sav" if FileAccess.file_exists(dir.path_join("save_at_note.sav")) else "",
+		"save_at_note_sha256": FileAccess.get_sha256(dir.path_join("save_at_note.sav")) if FileAccess.file_exists(dir.path_join("save_at_note.sav")) else "",
+		"machine_stats": machine_stats,
+		"widescreen_mode": _active_widescreen_mode,
+		"configured_widescreen_mode": int(settings.widescreen_mode),
+		"gpu_enabled": enabled,
+		"gpu_requested": requested,
+		"gpu_composited": composited,
+		"gpu_valid": valid,
+		"gpu_color_valid": bool(gpu_stats.get("color_valid", false)),
+		"gpu_fallback": enabled and not composited,
+		"gpu_fallback_reason": reason,
+		"gpu_compare_software": _gpu3d_compare_software,
+		"gpu_screen": "top" if gpu3d_screen_is_top else "bottom",
+		"gpu_scale": int(settings.gpu3d_scale),
+		"window_scale": int(settings.window_scale),
+		"window_size": [window_size.x, window_size.y],
+		"viewport_size": [viewport_size.x, viewport_size.y],
+		"layout": layout,
+		"integer_scale": bool(settings.integer_scale),
+		"nearest": bool(settings.nearest),
+		"gpu_stats": gpu_stats,
+		"captures": captures,
+	}
+	return _write_presentation_json(dir.path_join("presentation.json"), state)
+
+func _write_presentation_json(path: String, state: Dictionary) -> String:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return "Cannot open presentation.json for writing at %s: %s" % [path, error_string(FileAccess.get_open_error())]
+	var contents := JSON.stringify(state, "\t") + "\n"
+	file.store_string(contents)
+	var error := file.get_error()
+	if error == OK:
+		file.flush()
+		error = file.get_error()
+	file.close()
+	if error != OK:
+		return "Cannot finish writing presentation.json at %s: %s" % [path, error_string(error)]
+	# Some FileAccess backends do not update get_error() after a failed flush.
+	if FileAccess.get_file_as_string(path) != contents:
+		return "Cannot finish writing presentation.json at %s: written contents could not be read back" % path
+	return ""
+
 func _save_bundle() -> void:
+	if _bundle_active or not machine: return
+	_bundle_active = true
+	var captured_machine := machine
+	var was_paused: bool = captured_machine.is_paused()
+	var gui_was_disabled := get_viewport().gui_disable_input
+	get_viewport().gui_disable_input = true
+	captured_machine.pause_at_frame_boundary()
+	# Render both the GPU subviewports and the window composite after upload.
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	if is_instance_valid(captured_machine) and machine == captured_machine:
+		_save_bundle_at_boundary()
+		captured_machine.set_paused(was_paused)
+	get_viewport().gui_disable_input = gui_was_disabled
+	_bundle_active = false
+
+func _save_bundle_at_boundary() -> void:
 	var stamp=Time.get_datetime_string_from_system().replace(":","-").replace(" ","_")
 	var dir="user://debug/"+stamp
 	var frame := _current_frame()
@@ -1224,7 +1398,7 @@ func _save_bundle() -> void:
 		var bundle_save: String = str(config.get("save_path", settings.save_path))
 		var bundle_language: String = str(config.get("language", settings.language))
 		var result: String = DebugBundle.save_note(machine, dir, pause_note.text, frame,
-			bundle_rom, bundle_save, bundle_language)
+			bundle_rom, bundle_save, bundle_language, _active_widescreen_mode)
 		if result.is_empty() or result.begins_with("save not written:"):
 			_observe_save_result(result.is_empty())
 			_queue_save_backup_refresh()
@@ -1241,6 +1415,10 @@ func _save_bundle() -> void:
 		FileAccess.open(dir+"/comment.txt",FileAccess.WRITE).store_string(comment)
 		var s:Dictionary=machine.get_stats() if machine else {}
 		FileAccess.open(dir+"/state.txt",FileAccess.WRITE).store_string("frame=%d\nfps=%s\naudio_queue_ms=%s\nunderruns=%s\n"%[frame,_fps,s.get("audio_queue_ms",0),s.get("underruns",0)])
+	var presentation_error := _save_presentation_bundle(dir, frame)
+	if not presentation_error.is_empty():
+		push_error(presentation_error)
+		return
 	var index="user://debug/index.tsv"
 	var f=FileAccess.open(index,FileAccess.READ_WRITE if FileAccess.file_exists(index) else FileAccess.WRITE)
 	if f:

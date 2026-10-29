@@ -9,8 +9,17 @@
 
 namespace dq9 {
 
-inline constexpr std::size_t kGpuPolygonLimit = 2048;
-inline constexpr std::size_t kGpuVertexLimit = 6144;
+inline constexpr std::size_t kGpuPolygonLimit = 12288;
+inline constexpr std::size_t kGpuVertexLimit = 12288;
+inline constexpr std::size_t kHardwarePolygonLimit = 2048;
+inline constexpr std::size_t kHardwareVertexLimit = 6144;
+
+inline bool accepts_geometry(const dsr::Gpu3DGeometryView& geometry, bool full) {
+    return !geometry.enhanced_overflow &&
+           (full || (!geometry.vertex_overflow && !geometry.polygon_overflow)) &&
+           geometry.vertex_count <= (full ? kGpuVertexLimit : kHardwareVertexLimit) &&
+           geometry.polygon_count <= (full ? kGpuPolygonLimit : kHardwarePolygonLimit);
+}
 inline constexpr std::size_t kGpuNewTextureLimit = 256;
 
 struct TextureKeyHash {
@@ -71,8 +80,17 @@ inline const char* fallback_name(GpuFallback reason) {
 // Allocated lazily in each presentation slot only while GPU 3D is enabled.
 // No borrowed Machine pointers and no Godot objects may cross the worker ring.
 struct GpuSceneFrame {
-    std::array<dsr::Gpu3DVertex, kGpuVertexLimit> vertices{};
-    std::array<dsr::Gpu3DPolygon, kGpuPolygonLimit> polygons{};
+    std::vector<dsr::Gpu3DVertex> vertices = std::vector<dsr::Gpu3DVertex>(kHardwareVertexLimit);
+    std::vector<dsr::Gpu3DPolygon> polygons = std::vector<dsr::Gpu3DPolygon>(kHardwarePolygonLimit);
+
+    void prepare_geometry(bool full) {
+        const auto vertex_limit = full ? kGpuVertexLimit : kHardwareVertexLimit;
+        const auto polygon_limit = full ? kGpuPolygonLimit : kHardwarePolygonLimit;
+        if (vertices.size() != vertex_limit)
+            std::vector<dsr::Gpu3DVertex>(vertex_limit).swap(vertices);
+        if (polygons.size() != polygon_limit)
+            std::vector<dsr::Gpu3DPolygon>(polygon_limit).swap(polygons);
+    }
     std::size_t vertex_count = 0;
     std::size_t polygon_count = 0;
     std::size_t captured_polygon_count = 0;

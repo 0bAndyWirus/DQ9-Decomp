@@ -21,6 +21,12 @@ func _run() -> void:
     var language := _argument(args, "--language")
     var epoch := _argument(args, "--rtc-epoch")
     var timezone := _argument(args, "--rtc-timezone-offset")
+    var wide := _argument(args, "--widescreen")
+    if wide.is_empty(): wide = "off"
+    if wide not in ["off", "picture", "full"]:
+        print("FAIL: invalid widescreen mode")
+        quit(2)
+        return
     if rom.is_empty() or save_path.is_empty() or input_path.is_empty() or output_path.is_empty() or not frames_text.is_valid_int() or int(frames_text) <= 0 or language.is_empty() or not epoch.is_valid_int() or not timezone.is_valid_int():
         print("FAIL: invalid arguments")
         quit(2)
@@ -40,7 +46,8 @@ func _run() -> void:
     initial.rom_path = rom
     initial.save_path = save_path
     initial.language = language
-    initial.renderer_gpu3d = 0
+    initial.renderer_gpu3d = 1 if wide != "off" else 0
+    initial.widescreen_mode = ["off", "picture", "full"].find(wide)
     Logic.save_settings("user://settings.cfg", initial)
     var app = load("res://scenes/main.tscn").instantiate()
     root.add_child(app)
@@ -83,6 +90,10 @@ func _run() -> void:
                 app._apply_gpu3d_settings()
             if frame == 5 * frames / 6:
                 app._set_layout(0)
+            if args.has("--gpu3d") and wide != "full" and frame == 9 * frames / 12:
+                app._set_widescreen_mode(1)
+            if args.has("--gpu3d") and wide != "full" and frame == 10 * frames / 12:
+                app._set_widescreen_mode(0)
             if args.has("--gpu3d") and frame == 5 * frames / 6:
                 app.settings.renderer_gpu3d = 0
                 app._apply_gpu3d_settings()

@@ -20,7 +20,8 @@ class Config(ctypes.Structure):
                 ("language", ctypes.c_uint8), ("deterministic_rtc", ctypes.c_uint8),
                 ("rtc_epoch_seconds", ctypes.c_int64),
                 ("rtc_timezone_offset_minutes", ctypes.c_int32),
-                ("backup_type", ctypes.c_char_p)]  # appended in session_c.h; NULL keeps the ABI/save-size choice
+                ("backup_type", ctypes.c_char_p),  # NULL keeps the ABI/save-size choice
+                ("widescreen_camera", ctypes.c_uint8)]
 
 def fnv_screen(pixels: ctypes.POINTER(ctypes.c_uint32)) -> int:
     value = 0xCBF29CE484222325

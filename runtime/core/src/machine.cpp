@@ -4,9 +4,27 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace dsr {
 namespace {
+// EU perspective builder, shared by camera updates. Unlike changing the
+// constructor's default aspect, intercepting the builder also covers cameras
+// whose aspect is subsequently changed and cameras created in overlays.
+constexpr std::uint32_t kCameraProjection = 0x020c28b0;
+constexpr std::uint64_t kCameraProjectionHash = 0x1cb108bf62a813e5ULL;
+
+// Validate the guest version without mutating process-global generated slots.
+bool validate_camera_projection(Machine& machine) {
+    const auto& impl = detail::MachineAccess::impl(&machine.cpu(CpuId::Arm9));
+    for (std::size_t i = 0; i < impl.config.arm9_table.count; ++i) {
+        const auto& entry = impl.config.arm9_table.entries[i];
+        if (entry.module == kModuleArm9Main && entry.addr == kCameraProjection)
+            return entry.hash == kCameraProjectionHash && entry.slot && *entry.slot;
+    }
+    return false;
+}
+
 std::uint32_t get32(const std::uint8_t* p) {
     return static_cast<std::uint32_t>(p[0]) |
            (static_cast<std::uint32_t>(p[1]) << 8) |
@@ -128,6 +146,10 @@ Machine::Impl::Impl(const MachineConfig& cfg) : config(cfg), spi(cfg.firmware) {
     }
     spi.on_irq = [this] { set_irq(1, 23); };
     reset();
+    if (config.widescreen_camera) {
+        gpu3d.set_enhanced_geometry(true);
+        gpu2d.set_enhanced_presentation(true);
+    }
     if (config.direct_boot && card) boot();
 }
 
@@ -295,6 +317,11 @@ void Machine::Impl::boot() {
 Machine::Machine(const MachineConfig& config) : impl_(new Impl(config)) {
     impl_->owner = this;
     for (auto& rt : impl_->cpus) rt.cpu.m = this;
+    // Full mode requires the expected guest projection builder.
+    if (config.widescreen_camera && !validate_camera_projection(*this)) {
+        delete impl_;
+        throw std::runtime_error("DQ9 widescreen camera: guest projection hash mismatch or missing function");
+    }
     detail::install_thread_overrides(*impl_);
 }
 

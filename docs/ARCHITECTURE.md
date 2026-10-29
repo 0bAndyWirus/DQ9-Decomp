@@ -134,7 +134,7 @@ Set `DSR_VERIFY_DISPATCH=1` to compare every reused ambiguous resolution with th
 
 - Presentation (layout, scale, filter, fullscreen) is frontend-only and never feeds back into the machine.
 - The machine advances exactly one DS frame per `run_frame`; host pacing never speeds up simulation.
-- Classic mode renders at native 256×192 per screen. Optional enhanced presentation must leave simulation state identical; see [render capture](REMASTER_STAGE1.md).
+- Classic mode renders at native 256×192 per screen. Presentation-only enhancements leave simulation state identical; Godot launch-time guest-modifying modes require separate baselines. See [ADR-0005](DECISIONS/0005-classic-sdl-enhanced-godot.md) and [render capture](REMASTER_STAGE1.md).
 
 ### GPU raster hot paths
 

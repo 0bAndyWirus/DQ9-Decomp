@@ -1,6 +1,7 @@
 #include "dsr/machine.h"
 #include "dsr/render_frame.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -258,12 +259,15 @@ bool test_render_frame_three_d_compositor_mask() {
     renderer.vblank_start();
     renderer.render_start();
     dsr::RenderFrame frame{};
+    bool classic_masks_match = true;
     const auto capture_line = [&] {
         gpu.render_line(0);
         dsr::capture_render_frame(machine, 0, frame);
+        classic_masks_match &= std::equal(frame.three_d_mask, frame.three_d_mask + 256,
+                                          gpu.three_d_mask());
     };
     capture_line();
-    bool ok = check(frame.three_d_mask == gpu.three_d_mask() &&
+    bool ok = check(frame.three_d_mask == gpu.presentation_three_d_mask() &&
                     frame.three_d_mask[0] == 1 && frame.screen_top[0] == 0xffff0000U,
                     "opaque BG0 3D over BG1 sets mask without changing output");
     gpu.io_write(0x04000050U, 1U << 9, 16); // BG1 second blend target.
@@ -304,6 +308,7 @@ bool test_render_frame_three_d_compositor_mask() {
     capture_line();
     ok &= check(frame.three_d_mask[0] == 0 && frame.three_d_mask[1] == 0,
                 "forced display blank clears a previously rendered mask");
+    ok &= check(classic_masks_match, "Classic presentation and native masks match on every captured line");
     gpu.reset();
     ok &= check(gpu.three_d_mask()[1] == 0, "reset clears the whole engine A mask");
     return ok;

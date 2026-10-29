@@ -7,6 +7,7 @@ render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_never, blen
 uniform sampler2D id_texture : hint_screen_texture, filter_nearest, repeat_disable;
 uniform sampler2D depth_texture : hint_depth_texture, filter_nearest, repeat_disable;
 uniform sampler2D color_texture : filter_nearest, repeat_disable;
+uniform sampler2D coverage_texture : filter_nearest, repeat_disable;
 uniform sampler2D fog_table : filter_nearest, repeat_disable;
 uniform sampler2D edge_color_table : filter_nearest, repeat_disable;
 uniform int disp3dcnt = 0;
@@ -18,6 +19,9 @@ uniform int clear_color = 0;
 // Display-only opaque-mask output, never a general straight-alpha 3D target.
 // Partial-alpha pixels remain software; replacing metadata must not blend it.
 uniform bool opaque_mask_output = false;
+// Coverage includes partial fragments, which the opaque metadata pass excludes.
+uniform bool extend_side_backdrop = false;
+uniform float native_width_ratio = 1.0;
 uniform bool debug_depth = false;
 
 void vertex() {
@@ -33,7 +37,7 @@ int ds_clear_depth() {
 }
 
 ivec3 metadata(vec4 value) {
-	return value.a == 0.0 ? ivec3(clear_id, (clear_color & 32768) != 0 ? 1 : 0, (clear_color >> 16) & 31) :
+	return value.a == 0.0 || value.g > 0.9 ? ivec3(clear_id, (clear_color & 32768) != 0 ? 1 : 0, (clear_color >> 16) & 31) :
 		ivec3(floor((value.rgb * 255.0 - 64.0) / vec3(3.0, 48.0, 6.0) + 0.5));
 }
 
@@ -68,6 +72,21 @@ void fragment() {
 	// Screen/depth samplers must be read in fragment(), not helper functions:
 	// Godot 4.5 Compatibility otherwise emits helpers before their declarations.
 	vec4 raw_metadata = texture(id_texture, uv);
+	float native_x = (uv.x - 0.5) * native_width_ratio + 0.5;
+	vec2 texel = 1.0 / VIEWPORT_SIZE;
+	const float phase = 0.5 - 1.0 / 32.0;
+	bool backdrop_region = native_x < phase * native_width_ratio / 256.0 ||
+		native_x >= 1.0 || uv.y < phase / 192.0;
+	bool geometry_near = texture(coverage_texture, uv).r > 0.5 ||
+		texture(coverage_texture, uv + vec2(texel.x, 0.0)).r > 0.5 ||
+		texture(coverage_texture, uv - vec2(texel.x, 0.0)).r > 0.5 ||
+		texture(coverage_texture, uv + vec2(0.0, texel.y)).r > 0.5 ||
+		texture(coverage_texture, uv - vec2(0.0, texel.y)).r > 0.5;
+	if (extend_side_backdrop && backdrop_region &&
+			!geometry_near && (raw_metadata.a == 0.0 || raw_metadata.g > 0.9)) {
+		ALBEDO = vec3(0.0);
+		ALPHA = 1.0;
+	} else {
 	int depth = raw_metadata.a == 0.0 ? ds_clear_depth() : ds_depth(texture(depth_texture, uv).r);
 	if (debug_depth) {
 		ALBEDO = vec3(float(ds_depth(texture(depth_texture, uv).r)) / 16777212.0);
@@ -79,6 +98,11 @@ void fragment() {
 		ivec3 pixel = metadata(raw_metadata);
 		int clear_alpha = (clear_color >> 16) & 31;
 		bool rear_plane = raw_metadata.a == 0.0 || (clear_alpha != 31 && pixel.z == clear_alpha);
+		// Side coverage can include partial geometry absent from opaque IDs.
+		// Preserve its color, already blended over the neutral clear plane.
+		if (extend_side_backdrop && backdrop_region && geometry_near) {
+			rear_plane = false;
+		}
 		// Clear pixels need their original straight RGB6 and alpha, not the
 		// quantized premultiplied color or GL blend against earlier geometry.
 		ivec3 rgb = rear_plane ?
@@ -124,5 +148,6 @@ void fragment() {
 		// antialiased edges and fog-created partial pixels. Replace the ID
 		// framebuffer there rather than contaminating covered output with it.
 		ALPHA = opaque_mask_output ? 1.0 : float(alpha5) / 31.0;
+	}
 	}
 }
