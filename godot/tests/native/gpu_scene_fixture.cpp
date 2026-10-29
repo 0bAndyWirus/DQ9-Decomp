@@ -37,10 +37,17 @@ public:
     godot::Node* get_scene() const { return scene_; }
     godot::Dictionary render_probe(const godot::Dictionary& options) {
         if (!machine_) initialize();
-        auto frame = dq9::make_quality_probe(options, ++probe_generation_);
+        if (!static_cast<bool>(options.get("reuse_generation", false)) || probe_generation_ == 0) ++probe_generation_;
+        auto frame = dq9::make_quality_probe(options, probe_generation_);
         scene_->set_scale(static_cast<int>(options.get("scale", 1)));
         scene_->apply_frame(*frame);
         auto stats = scene_->get_stats();
+        stats["texture_generation"] = static_cast<std::int64_t>(probe_generation_);
+        stats["texture_param"] = static_cast<std::int64_t>(
+            (static_cast<unsigned>(static_cast<int>(options.get("format", 0))) << 26U) |
+            (1U << 20U) | (static_cast<unsigned>(static_cast<int>(options.get("wrap", 0))) << 16U) |
+            (static_cast<unsigned>(static_cast<int>(options.get("texture_slot", 0))) << 14U));
+        stats["palette_base"] = static_cast<int>(options.get("palette_base", 0));
         const auto bounds = dq9::DsRasterMesh::projected_bounds(*frame);
         stats["projected_bounds"] = godot::Vector4(bounds[0], bounds[1], bounds[2], bounds[3]);
         const auto max_partial = frame->new_textures.empty() ? 0 : frame->new_textures.front()->max_partial_alpha;

@@ -9,6 +9,10 @@ class SyntheticMachine extends Node:
 	var bottom: Texture2D
 	var presentation_top: Texture2D
 	var presentation_bottom: Texture2D
+	var hd_textures := false
+	var texture_dump := false
+	func set_hd_textures_enabled(enabled: bool) -> void: hd_textures = enabled
+	func set_hd_texture_dump_enabled(enabled: bool) -> void: texture_dump = enabled
 	func get_top_texture() -> Texture2D: return top
 	func get_bottom_texture() -> Texture2D: return bottom
 	func get_presentation_top_texture() -> Texture2D: return presentation_top if presentation_top else top
@@ -448,6 +452,17 @@ func _run() -> void:
 	host._apply_gpu3d_settings()
 	await _settle()
 	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused GPU enabled") and ok
+	var hd_toggle := host.find_child("HdTextures", true, false) as CheckButton
+	var dump_toggle := host.find_child("TextureDump", true, false) as CheckButton
+	ok = hd_toggle != null and dump_toggle != null and not hd_toggle.button_pressed and not dump_toggle.button_pressed and ok
+	if hd_toggle and dump_toggle:
+		hd_toggle.button_pressed = true
+		ok = host.settings.hd_textures and fake_machine.hd_textures and ok
+		dump_toggle.button_pressed = true
+		ok = fake_machine.texture_dump and ok
+		hd_toggle.button_pressed = false
+		dump_toggle.button_pressed = false
+		ok = not host.settings.hd_textures and not fake_machine.hd_textures and not fake_machine.texture_dump and ok
 	host.machine = null
 	fake_machine.free()
 	host._set_widescreen_mode(0)

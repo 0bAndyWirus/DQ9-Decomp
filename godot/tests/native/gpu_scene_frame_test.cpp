@@ -1,4 +1,6 @@
 #include "gpu_frame_delay.h"
+#include "dsr/gpu2d.h"
+#include "dsr/gpu3d.h"
 
 #include <array>
 #include <cstdio>
@@ -112,11 +114,61 @@ void test_ring_recycling() {
             slots[0]->epoch == 8 && slots[0]->vertex_count == 0,
             "reset restarts warmup and clears recycled metadata");
 }
+void test_texture_overlap_identity() {
+    constexpr std::array<std::uint32_t, 6> controls{
+        0x04000240, 0x04000241, 0, 0, 0x04000244, 0x04000245};
+    constexpr std::array<std::uint32_t, 6> lcdc{
+        0x06800000, 0x06820000, 0, 0, 0x06880000, 0x06890000};
+    const auto seed = [&](dsr::Gpu2D& gpu, unsigned bank, std::uint32_t offset,
+                          std::uint16_t value) {
+        gpu.io_write(controls[bank], 0x80, 8);
+        gpu.arm9_write(lcdc[bank] + offset, value, 16);
+    };
+    const auto map = [&](dsr::Gpu2D& gpu, unsigned bank) {
+        gpu.io_write(controls[bank], 0x83, 8);
+    };
+    dsr::Gpu2D overlap, single, zero;
+    dsr::Gpu3D renderer;
+    seed(overlap, 0, 0, 0x0100); seed(overlap, 1, 0, 0x0001);
+    seed(overlap, 4, 2, 0x000f); seed(overlap, 5, 2, 0x0010);
+    for (unsigned bank : {0U, 1U, 4U, 5U}) map(overlap, bank);
+    seed(single, 0, 0, 0x0101); seed(single, 4, 2, 0x001f);
+    map(single, 0); map(single, 4);
+    auto overlap_view = renderer.texture_view(overlap);
+    auto single_view = renderer.texture_view(single);
+    auto zero_view = renderer.texture_view(zero);
+    require(!overlap_view.textures[0].bytes && !overlap_view.palettes[0].bytes,
+            "overlap requires fallback reads");
+    const auto overlap_source = dq9::texture_source(overlap_view);
+    const auto single_source = dq9::texture_source(single_view);
+    const auto zero_source = dq9::texture_source(zero_view);
+    constexpr std::uint32_t param = 4U << 26U;
+    const auto identity = dq9::texture_identity_data(overlap_source, param, 0);
+    require(identity == dq9::texture_identity_data(single_source, param, 0),
+            "overlapping texture and palette identity equals OR-combined single banks");
+    require(identity != dq9::texture_identity_data(zero_source, param, 0),
+            "nonzero resolved content must not use the zero-content key");
+    std::vector<std::uint8_t> rgba, expected;
+    int width = 0, height = 0, expected_width = 0, expected_height = 0;
+    require(dsr::gpu3d_detail::decode_texture_rgba8(overlap_source, param, 0, rgba, width, height) &&
+            dsr::gpu3d_detail::decode_texture_rgba8(single_source, param, 0, expected, expected_width, expected_height) &&
+            rgba == expected && width == expected_width && height == expected_height &&
+            rgba[0] == 255 && rgba[3] == 255,
+            "overlap decode equals OR-combined single-bank red texel");
+    require(overlap_source.texture_byte(0x80000U) == 1 &&
+            overlap_source.palette_half(0x20002U) == 0x001f,
+            "fallback reads preserve texture wrapping and palette slot mirroring");
+    overlap.io_write(controls[0], 0, 8);
+    require(identity == dq9::texture_identity_data(single_source, param, 0) && rgba == expected,
+            "identity and decoded pixels are owned after borrowed VRAM changes");
+}
+
 }
 
 int main() {
     test_storage();
     test_geometry_acceptance();
     test_ring_recycling();
+    test_texture_overlap_identity();
     std::puts("GPU_SCENE_FRAME PASS");
 }

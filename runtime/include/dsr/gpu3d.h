@@ -105,6 +105,11 @@ struct Gpu3DTextureView {
     std::array<Gpu3DTextureSlotView, 4> textures{};
     std::array<Gpu3DTexturePaletteSlotView, 6> palettes{};
     std::uint64_t mapping_generation = 0;
+    // Borrowed owner-thread-only reads; valid for the same lifetime as slots.
+    // These resolve overlapping banks by OR, just like software rendering.
+    const void* read_context = nullptr;
+    std::uint8_t (*texture_read)(const void*, std::uint32_t) = nullptr;
+    std::uint8_t (*palette_read)(const void*, std::uint32_t) = nullptr;
 };
 
 // Register values and resolved texture slots are live when viewed; valid only

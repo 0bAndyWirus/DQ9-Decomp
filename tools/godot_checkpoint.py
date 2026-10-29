@@ -7,12 +7,15 @@ Godot errors. Audio is not compared by this runner.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
+import zlib
 
 try:
     from .checkpoint import load_meta, segment, hashes, sha, names
@@ -22,6 +25,27 @@ except ImportError:
     from host_tools import data_root, executable_name
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def synthetic_override(work: Path) -> Path:
+    """Create a ROM-free replacement keyed to a synthetic direct-colour DS texture."""
+    width = height = 8
+    descriptor = 7 << 26  # Direct colour, 8x8.
+    original = struct.pack("<H", 0x801f) * (width * height)
+    key = hashlib.sha256(b"DQ9TEX1\0" + struct.pack("<I", descriptor) + original).hexdigest()
+    replacement = bytes((224, 32, 176, 255)) * width
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + kind + payload +
+                struct.pack(">I", zlib.crc32(kind + payload)))
+
+    png = (b"\x89PNG\r\n\x1a\n" +
+           chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress((b"\0" + replacement) * height)) +
+           chunk(b"IEND", b""))
+    path = work / (key + ".png")
+    path.write_bytes(png)
+    return path
 
 
 def godot_run(seg: Path, meta: dict, godot: Path, rom: Path, work: Path,
@@ -36,6 +60,7 @@ def godot_run(seg: Path, meta: dict, godot: Path, rom: Path, work: Path,
                str(meta["rtc_timezone_offset_minutes"]), "--hashes", str(output)]
     if toggles:
         command.append("--toggles")
+        command += ["--synthetic-override", str(synthetic_override(work))]
     if gpu3d:
         command.append("--gpu3d")
     command += ["--widescreen", widescreen]

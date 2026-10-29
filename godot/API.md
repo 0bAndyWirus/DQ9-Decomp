@@ -407,6 +407,56 @@ referenced keys are decoded on later frames; incomplete frames use software.
 The frame ring carries reference-counted decoded bytes rather than live VRAM
 pointers, and does not lose uploads when a realtime presentation is skipped.
 
+### HD texture replacement and dumps
+
+`set_hd_textures_enabled(enabled: bool)` and `get_hd_textures_enabled() -> bool`
+control replacement textures; `set_hd_texture_dump_enabled(enabled: bool)` and
+`get_hd_texture_dump_enabled() -> bool` control original-texture dumps. Both
+default to false and apply only to the experimental GPU 3D producer. The
+launcher persists the replacement setting in `user://settings.cfg`; dumping is
+session-only. Neither modifies guest VRAM, the software renderer, or SDL.
+
+The content ID is SHA-256 of the following byte stream (all halfwords and
+32-bit values little-endian):
+
+1. ASCII `DQ9TEX1` followed by a zero byte; then
+   `texture_param & 0x3ff00000` as a 32-bit value.
+2. Raw texture bytes: for format 1, 4 or 6, one byte per pixel; format 2,
+   one byte per four pixels; format 3 or 5, one byte per two or four
+   pixels respectively; format 7, two bytes per pixel.
+3. For format 5, all metadata halfwords masked with `0xc000` in tile
+   order, followed by each tile's effective palette halfwords in tile order:
+   two for modes 1 and 3, three for mode 0 and four for mode 2. The metadata
+   low 14 address bits select palette data but are omitted from the hash.
+   For formats 1, 2, 3, 4 and 6, append respectively 32, 4, 16, 256 and 8
+   palette halfwords. Format 7 has no palette bytes.
+
+When texture or palette VRAM banks overlap, their bytes are OR-combined before
+decoding and identity construction, matching the software renderer.
+
+The identity omits VRAM addresses and wrap flags. Its lowercase hexadecimal
+value names both `user://texture_dumps/<sha256>.png` and
+`user://texture_overrides/<sha256>.png`. Dumping writes cached originals and newly
+decoded originals. PNG channel depth is limited to 8 bits, encoded files to
+20 MiB, dimensions to 2048 per axis and decoded RGBA to 16 MiB. The aggregate
+replacement cache is limited to 64 MiB per VRAM generation. Missing, invalid,
+oversized, or over-budget overrides use the original. If either the original
+or replacement has fractional alpha, replacement dimensions must be integer
+multiples of the original and its alpha must exactly match a nearest-neighbor
+expansion of the original; otherwise the original is used. This preserves the
+DS-derived partial-fragment eligibility.
+Toggle replacement off and on to reload changed files. Original decoded images
+remain available for immediate toggling and dumping; replacements with the
+same identity share a GPU resource across sampling modes. The texture caches
+are cleared on generation changes. Normalized UV sampling
+preserves DS clamp, repeat and mirrored-repeat behavior at replacement
+resolution. Unsupported GPU regions retain the software fallback.
+
+Game-derived dumps and replacement assets must remain local; do not distribute
+them with the source or issue bundles. See [Using Godot](../docs/USING_GODOT.md#hd-texture-replacements)
+for the authoring workflow.
+
+
 `DqGpuScene` is a registered presentation node; `DqMachine` creates it lazily.
 Its `ArrayMesh` uses maximal adjacent runs of matching texture/material state
 (including viewport and alpha/depth-write class), keeping sorted polygons
@@ -526,8 +576,8 @@ releases the GPU resources. Nearest filtering remains the pixel-art default
 for both native screens and the independent hi-res overlay. At the default
 1280×800 vertical layout each screen is only about 492×369: 3x already renders
 more samples than the window can show, and 6x is mainly useful in larger or
-single-screen layouts. Polygon/texture diagonals gain samples, not new source
-textures, geometry or hi-res 2D assets.
+single-screen layouts. Higher rendering scale adds samples, not new geometry or
+hi-res 2D assets; texture detail changes only when a replacement is supplied.
 
 Engine A can appear on either physical screen; the producer follows the hardware
 screen-swap state and the status names the active screen.

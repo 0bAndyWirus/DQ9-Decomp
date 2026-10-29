@@ -113,6 +113,38 @@ Choose from the **Layout** list in the toolbar or settings: Vertical, Horizontal
 
 In settings, set the 3D renderer to **GPU hi-res (experimental)** and pick a scale from 2x to 6x. 3D scenes are then drawn through Godot's GPU instead of the exact software rasteriser; 2D screens are unchanged. The toolbar shows the renderer state (valid-frame and 3D-pixel percentages, or the reason it fell back to software). Press **F6** to flip between GPU and software instantly and judge the difference yourself. There is no pixel-parity claim for this path; choose **Software (exact)** if anything looks wrong.
 
+### HD texture replacements
+
+HD texture replacement is an optional feature of **GPU hi-res (experimental)**
+3D, not a replacement for 2D screens or the software renderer. In settings,
+enable **HD texture replacements** (off by default; saved in
+`user://settings.cfg`). Turn it off to use the original textures again. SDL
+always uses the original software rendering.
+
+To author replacements, enable **Dump 3D textures** in **Paused / Debug**.
+This session-only switch starts off: it writes current cached original textures
+and subsequently decoded originals to `user://texture_dumps/<sha256>.png`.
+`user://` is Godot's per-user project data directory: typically
+`%APPDATA%\Godot\app_userdata\DQ9-Decomp` on Windows or
+`~/.local/share/godot/app_userdata/DQ9-Decomp` on Linux.
+The lowercase SHA-256 name identifies texture content and format rather than
+its VRAM address; changes such as a changed palette can produce a new name.
+Copy an image to `user://texture_overrides/<sha256>.png` and edit that copy;
+keep the filename unchanged. PNG channel depth is limited to 8 bits, encoded
+files to 20 MiB, dimensions to 2048 per axis and decoded RGBA to 16 MiB.
+The replacement cache is limited to 64 MiB per VRAM generation. Missing,
+invalid, oversized or over-budget replacements use the original. If either
+image has fractional alpha, the replacement must be an integer-size multiple
+of the original and preserve its alpha as a nearest-neighbor expansion;
+otherwise the original is used. Disable and re-enable **HD texture
+replacements** to reload edited files. DS texture
+clamp, repeat and mirror modes still apply at the replacement resolution.
+The GPU path remains experimental and unsupported portions of a frame can
+still use software, so a replacement need not cover every visible pixel.
+
+The dumps contain game-derived images; keep them and game-derived replacement
+assets local and do not include them in public packages or issue reports.
+
 ## 6. If something goes wrong
 
 | Message or symptom | Fix |

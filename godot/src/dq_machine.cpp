@@ -376,6 +376,21 @@ public:
         gpu_scale_ = std::clamp(scale, 1, 6);
         if (gpu_scene_) gpu_scene_->set_scale(gpu_scale_);
     }
+    void set_hd_textures_enabled(bool enabled) {
+        if (hd_textures_enabled_ == enabled) return;
+        hd_textures_enabled_ = enabled;
+        if (gpu_scene_) {
+            gpu_scene_->set_hd_textures_enabled(enabled);
+            refresh_gpu_scene();
+        }
+    }
+    bool get_hd_textures_enabled() const { return hd_textures_enabled_; }
+    void set_hd_texture_dump_enabled(bool enabled) {
+        if (hd_texture_dump_enabled_ == enabled) return;
+        hd_texture_dump_enabled_ = enabled;
+        if (gpu_scene_) gpu_scene_->set_hd_texture_dump_enabled(enabled);
+    }
+    bool get_hd_texture_dump_enabled() const { return hd_texture_dump_enabled_; }
     void set_gpu3d_widescreen_enabled(bool enabled) {
         if (gpu_widescreen_enabled_ == enabled) return;
         gpu_widescreen_enabled_ = enabled;
@@ -649,6 +664,8 @@ public:
                     gpu_scene_->set_scale(gpu_scale_);
                     gpu_scene_->set_widescreen_enabled(gpu_widescreen_enabled_);
                     gpu_scene_->set_guest_widescreen(gpu_guest_widescreen_);
+                    gpu_scene_->set_hd_textures_enabled(hd_textures_enabled_);
+                    gpu_scene_->set_hd_texture_dump_enabled(hd_texture_dump_enabled_);
                     add_child(gpu_scene_);
                 }
                 gpu_scene_->apply_frame(frame);
@@ -757,6 +774,10 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_enabled", "enabled"), &DqMachine::set_gpu3d_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_enabled"), &DqMachine::get_gpu3d_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_scale", "scale"), &DqMachine::set_gpu3d_scale);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_hd_textures_enabled", "enabled"), &DqMachine::set_hd_textures_enabled);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_hd_textures_enabled"), &DqMachine::get_hd_textures_enabled);
+        godot::ClassDB::bind_method(godot::D_METHOD("set_hd_texture_dump_enabled", "enabled"), &DqMachine::set_hd_texture_dump_enabled);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_hd_texture_dump_enabled"), &DqMachine::get_hd_texture_dump_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_widescreen_enabled", "enabled"), &DqMachine::set_gpu3d_widescreen_enabled);
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_guest_widescreen", "enabled"), &DqMachine::set_gpu3d_guest_widescreen);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_texture"), &DqMachine::get_gpu3d_texture);
@@ -943,16 +964,7 @@ private:
         if (cache.referenced.capacity() < dq9::kGpuPolygonLimit)
             cache.referenced.reserve(dq9::kGpuPolygonLimit);
         cache.referenced.clear();
-        dsr::gpu3d_detail::TextureSource textures;
-        textures.context = &source.texture;
-        textures.texture_lookup = [](const void* context, int index) -> const std::uint8_t* {
-            const auto& slots = static_cast<const dsr::Gpu3DTextureView*>(context)->textures;
-            return index >= 0 && static_cast<std::size_t>(index) < slots.size() ? slots[index].bytes : nullptr;
-        };
-        textures.palette_lookup = [](const void* context, int index) -> const std::uint8_t* {
-            const auto& slots = static_cast<const dsr::Gpu3DTextureView*>(context)->palettes;
-            return index >= 0 && static_cast<std::size_t>(index) < slots.size() ? slots[index].bytes : nullptr;
-        };
+        const auto textures = dq9::texture_source(source.texture);
         for (std::size_t i = 0; i < target.polygon_count; ++i) {
             const auto& polygon = target.polygons[i];
             if ((source.disp3dcnt & 1U) == 0 || ((polygon.texture >> 26U) & 7U) == 0 ||
@@ -966,6 +978,7 @@ private:
                 decoded->key = key;
                 dsr::gpu3d_detail::decode_texture_rgba8(textures, polygon.texture, polygon.palette,
                     decoded->rgba, decoded->width, decoded->height);
+                decoded->identity_data = dq9::texture_identity_data(textures, polygon.texture, polygon.palette);
 #ifdef DQ9_GPU_SCENE_TESTS
                 decoded->classify_alpha();
 #endif
@@ -1378,6 +1391,8 @@ private:
     int gpu_scale_ = 3;
     bool gpu_widescreen_enabled_ = false;
     bool gpu_guest_widescreen_ = false;
+    bool hd_textures_enabled_ = false;
+    bool hd_texture_dump_enabled_ = false;
     std::uint64_t gpu_epoch_ = 0, installed_texture_epoch_ = 0, installed_texture_generation_ = 0;
     std::unordered_set<dsr::gpu3d_detail::TextureKey, dq9::TextureKeyHash> installed_texture_keys_;
     DqGpuScene* gpu_scene_ = nullptr;

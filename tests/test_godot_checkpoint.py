@@ -1,12 +1,15 @@
 """ROM-free tests for Godot checkpoint replay."""
 import contextlib
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 from tools import checkpoint, godot_checkpoint
@@ -68,6 +71,10 @@ class GodotCheckpointTests(unittest.TestCase):
         if not is_native:
             self.assertNotEqual(env["XDG_DATA_HOME"], os.environ.get("XDG_DATA_HOME"))
             self.assertEqual(Path(env["XDG_DATA_HOME"]).parent, save.parent)
+            if "--toggles" in command:
+                override = Path(option("--synthetic-override"))
+                self.assertEqual(override.parent, save.parent)
+                self.assertTrue(override.is_file())
         save.write_bytes(initial if self.unchanged else b"drift" if self.save_drift else b"end")
         rows = []
         for frame in range(int(option("--frames"))):
@@ -123,6 +130,28 @@ class GodotCheckpointTests(unittest.TestCase):
         cmd, _ = self.calls[0]
         self.assertGreater(cmd.index("--toggles"), cmd.index("--"))
         self.assertGreater(cmd.index("--gpu3d"), cmd.index("--"))
+
+    def test_synthetic_override_is_valid_and_keyed_to_original(self):
+        path = godot_checkpoint.synthetic_override(self.root)
+        original = struct.pack("<H", 0x801f) * 64
+        key = hashlib.sha256(b"DQ9TEX1\0" + struct.pack("<I", 7 << 26) + original).hexdigest()
+        self.assertEqual(path.name, key + ".png")
+        data = path.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        chunks = {}
+        offset = 8
+        while offset < len(data):
+            size = struct.unpack_from(">I", data, offset)[0]
+            kind = data[offset + 4:offset + 8]
+            payload = data[offset + 8:offset + 8 + size]
+            crc = struct.unpack_from(">I", data, offset + 8 + size)[0]
+            self.assertEqual(crc, zlib.crc32(kind + payload))
+            chunks[kind] = payload
+            offset += 12 + size
+        self.assertEqual(struct.unpack(">IIBBBBB", chunks[b"IHDR"]), (8, 8, 8, 6, 0, 0, 0))
+        self.assertEqual(zlib.decompress(chunks[b"IDAT"]),
+                         (b"\0" + bytes((224, 32, 176, 255)) * 8) * 8)
+        self.assertIn(b"IEND", chunks)
 
     def test_process_and_configuration_errors(self):
         self.exit_code = 7

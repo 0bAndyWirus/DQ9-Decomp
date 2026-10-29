@@ -31,6 +31,18 @@ func _run() -> void:
         print("FAIL: invalid arguments")
         quit(2)
         return
+    if args.has("--toggles"):
+        var override_path := _argument(args, "--synthetic-override")
+        if override_path.is_empty() or not FileAccess.file_exists(override_path):
+            print("FAIL: missing synthetic override")
+            quit(2)
+            return
+        var override_dir := ProjectSettings.globalize_path("user://texture_overrides")
+        var destination := override_dir.path_join(override_path.get_file())
+        if DirAccess.make_dir_recursive_absolute(override_dir) != OK or DirAccess.copy_absolute(override_path, destination) != OK:
+            print("FAIL: cannot install synthetic override")
+            quit(2)
+            return
     var input_file := FileAccess.open(input_path, FileAccess.READ)
     if input_file == null:
         print("FAIL: cannot open input")
@@ -48,6 +60,7 @@ func _run() -> void:
     initial.language = language
     initial.renderer_gpu3d = 1 if wide != "off" else 0
     initial.widescreen_mode = ["off", "picture", "full"].find(wide)
+    initial.hd_textures = args.has("--toggles")
     Logic.save_settings("user://settings.cfg", initial)
     var app = load("res://scenes/main.tscn").instantiate()
     root.add_child(app)
@@ -56,6 +69,10 @@ func _run() -> void:
         start_button.pressed.emit()
     if app.machine == null:
         print("FAIL: start machine")
+        quit(2)
+        return
+    if args.has("--toggles") and (not app.machine.has_method("get_hd_textures_enabled") or not app.machine.get_hd_textures_enabled()):
+        print("FAIL: HD textures not enabled")
         quit(2)
         return
     app.machine.stop()
@@ -103,6 +120,13 @@ func _run() -> void:
         app.machine.step_frames(1, int(state[0]), x, y, x >= 0 and y >= 0)
         await app.machine.frame_ready
         output.store_line("%d %s %s" % [frame, _hash_hex(_hash_rgb(app.machine.get_top_image())), _hash_hex(_hash_rgb(app.machine.get_bottom_image()))])
+    if args.has("--toggles"):
+        app.settings.hd_textures = false
+        app._apply_gpu3d_settings()
+        if app.machine.get_hd_textures_enabled():
+            print("FAIL: HD textures not disabled")
+            quit(2)
+            return
     app.machine.flush_save()
     output.close()
     print("PASS: %d frames written" % frames)

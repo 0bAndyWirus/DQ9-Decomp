@@ -30,11 +30,83 @@ struct TextureKeyHash {
     }
 };
 
+// The source and its view are borrowed only while the owner-thread render
+// callback is executing. Decoded pixels and identity bytes must be copied out.
+inline dsr::gpu3d_detail::TextureSource texture_source(const dsr::Gpu3DTextureView& view) {
+    dsr::gpu3d_detail::TextureSource source;
+    source.context = &view;
+    source.texture_lookup = [](const void* context, int index) -> const std::uint8_t* {
+        const auto& slots = static_cast<const dsr::Gpu3DTextureView*>(context)->textures;
+        return index >= 0 && static_cast<std::size_t>(index) < slots.size() ? slots[index].bytes : nullptr;
+    };
+    source.palette_lookup = [](const void* context, int index) -> const std::uint8_t* {
+        const auto& slots = static_cast<const dsr::Gpu3DTextureView*>(context)->palettes;
+        return index >= 0 && static_cast<std::size_t>(index) < slots.size() ? slots[index].bytes : nullptr;
+    };
+    source.texture_read = [](const void* context, std::uint32_t address) -> std::uint8_t {
+        const auto& input = *static_cast<const dsr::Gpu3DTextureView*>(context);
+        return input.texture_read ? input.texture_read(input.read_context, address) : 0;
+    };
+    source.palette_read = [](const void* context, std::uint32_t address) -> std::uint8_t {
+        const auto& input = *static_cast<const dsr::Gpu3DTextureView*>(context);
+        return input.palette_read ? input.palette_read(input.read_context, address) : 0;
+    };
+    return source;
+}
+
+// Stable content identity input, independent of VRAM and palette addresses.
+// Raw reads use the same wrapping/unmapped semantics as the decoder.
+inline std::vector<std::uint8_t> texture_identity_data(
+        const dsr::gpu3d_detail::TextureSource& source, std::uint32_t param,
+        std::uint32_t palette) {
+    std::vector<std::uint8_t> data{'D','Q','9','T','E','X','1',0};
+    const auto append32 = [&](std::uint32_t value) {
+        for (unsigned i = 0; i < 4; ++i) data.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
+    };
+    const auto append16 = [&](std::uint16_t value) {
+        data.push_back(static_cast<std::uint8_t>(value));
+        data.push_back(static_cast<std::uint8_t>(value >> 8));
+    };
+    append32(param & 0x3ff00000U);
+    const auto format = (param >> 26U) & 7U;
+    const std::uint32_t pixels = (8U << ((param >> 20U) & 7U)) *
+                                 (8U << ((param >> 23U) & 7U));
+    const auto address = (param & 0xffffU) * 8U;
+    const auto palette_address = (palette & 0x1fffU) * (format == 2U ? 8U : 16U);
+    const auto length = format == 7U ? pixels * 2U :
+                        format == 2U || format == 5U ? pixels / 4U :
+                        format == 3U ? pixels / 2U : pixels;
+    data.reserve(12U + length + (format == 5U ? pixels / 8U + pixels / 2U : 512U));
+    for (std::uint32_t i = 0; i < length; ++i) data.push_back(source.texture_byte(address + i));
+    if (format == 5U) {
+        const auto tiles = pixels / 16U;
+        const auto metadata = 0x20000U + (address / 0x20000U == 2U ? 0x10000U : 0U) +
+                              (address % 0x20000U) / 2U;
+        // Palette offsets are addresses, not texture content. Preserve only the
+        // decoding mode; the referenced palette values are serialized below.
+        for (std::uint32_t i = 0; i < tiles; ++i)
+            append16(source.texture_half(metadata + i * 2U) & 0xc000U);
+        for (std::uint32_t i = 0; i < tiles; ++i) {
+            const auto value = source.texture_half(metadata + i * 2U);
+            const auto mode = value >> 14U;
+            const auto count = mode == 0U ? 3U : mode == 2U ? 4U : 2U;
+            const auto base = palette_address + (value & 0x3fffU) * 4U;
+            for (unsigned j = 0; j < count; ++j) append16(source.palette_half(base + j * 2U));
+        }
+    } else {
+        const auto colors = format == 1U ? 32U : format == 2U ? 4U : format == 3U ? 16U :
+                            format == 4U ? 256U : format == 6U ? 8U : 0U;
+        for (unsigned i = 0; i < colors; ++i) append16(source.palette_half(palette_address + i * 2U));
+    }
+    return data;
+}
+
 struct DecodedTexture {
     dsr::gpu3d_detail::TextureKey key{};
     int width = 0;
     int height = 0;
     std::vector<std::uint8_t> rgba;
+    std::vector<std::uint8_t> identity_data;
 #ifdef DQ9_GPU_SCENE_TESTS
     std::uint8_t max_partial_alpha = 0;
     void classify_alpha() {
