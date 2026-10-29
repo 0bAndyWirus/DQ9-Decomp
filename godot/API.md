@@ -344,9 +344,33 @@ between Off and Picture is live; entering or leaving Full requires restarting.
 Both retain native 2D and touch coordinates. Widescreen needs GPU hi-res.
 Unsupported GPU frames fall back to the native software screen; in Full the
 modified camera remains active, so fallback is not Classic and may appear
-horizontally compressed. Valid Full GPU frames use separate presentation-screen
-textures for underlying 2D composition and GPU-excluded pixels; native screen
-getters remain the hardware-screen result for replay evidence and comparison.
+horizontally compressed. For valid Full GPU frames, the guest's 256-wide 3D
+raster represents the entire wide GPU target, while native 2D remains centered.
+Presentation remaps the 3D source into the centered native composition and
+remaps its captured opaque-only eligibility to the same coordinates before
+combining it with the LCD 3D selection mask. This keeps GPU pixels aligned with
+2D occlusion and software-owned pixels rather than treating the wide raster as
+the centered native region. Separate presentation-screen textures supply the
+underlying 2D composition and GPU-excluded pixels; native screen getters remain
+the hardware-screen result for replay evidence and comparison. This correction
+does not change guest screens or frame timing.
+The source mapping samples destination pixel centers, applying BG0 scroll in
+native coordinates before mapping into the full-width 3D raster; scroll positions
+outside the 512-pixel wrap range remain transparent. Native 2D and window
+coordinates are not widened.
+The GPU overlay remains unscrolled and has no per-line 2D brightness pass:
+nonzero BG0 scroll and color-changing master brightness therefore exclude it.
+Pixels needing 2D effects or other unsupported hybrid histories still use the
+software composition; the coordinate correction does not remove those limits.
+
+In Full's side regions, presentation samples the full-wide coordinates of the
+software 3D raster and its raw opaque-only eligibility mask captured with the
+matching delayed geometry. Safe pixels use the GPU; unsafe pixels use the
+software raster's RGB5-display colour only when its alpha is opaque. If the
+software alpha is not opaque, the GPU remains visible instead: there is no
+matching side-region DS 2D composition to reproduce the missing blend. Thus
+partial-alpha side pixels are not equivalent to DS 2D blending. This side
+fallback is Full-only; Off and Picture are unchanged.
 
 The host's `set_gpu3d_frame(texture: Texture2D, mask: Texture2D,
 screen_is_top: bool = true)` accepts a high-resolution SubViewport texture and a
@@ -524,9 +548,11 @@ are unchanged.
 Raw capture causes and touch counts remain diagnostics of coverage, including
 depth-rejected fragments; they are not themselves the eligibility history.
 
-The worker owns the captured mask with the delayed geometry, then combines it
-with that scene's LCD engine-A `three_d_mask` in one byte pass. The compositor
-sees `mask = three_d_mask AND opaque_only_mask`; excluded pixels stay software
+The worker owns the captured mask with the delayed geometry. In Off and Picture,
+it combines that mask directly with the scene's LCD engine-A `three_d_mask`. In
+Full, it first maps the captured eligibility from the full-width guest 3D raster
+to the centered native composition, then combines it with `three_d_mask`. In
+either case the compositor sees the intersection; excluded pixels stay software
 and native-resolution even at scale3. Single-layer colour surfaces preserve the
 sorted sequence and reuse the span conversion/arrays of their opaque surfaces.
 Because eligible pixels have at most one partial touch, the opaque screen

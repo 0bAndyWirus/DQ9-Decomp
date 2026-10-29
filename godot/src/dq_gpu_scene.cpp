@@ -139,15 +139,21 @@ void DqGpuScene::release_resources(bool children_alive) {
     edge_texture_.unref();
     toon_texture_.unref();
     mask_texture_.unref();
+    side_software_texture_.unref();
+    side_eligibility_texture_.unref();
     color_transfer_.unref();
     fog_image_.unref();
     edge_image_.unref();
     toon_image_.unref();
     mask_image_.unref();
+    side_software_image_.unref();
+    side_eligibility_image_.unref();
     fog_bytes_.clear();
     edge_bytes_.clear();
     toon_bytes_.clear();
     mask_bytes_.clear();
+    side_software_bytes_.clear();
+    side_eligibility_bytes_.clear();
 }
 
 void DqGpuScene::_bind_methods() {
@@ -538,6 +544,7 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
     gpu_pixels_ = frame.gpu_pixels;
     valid_ = false;
     color_valid_ = false;
+    side_valid_ = false;
     fallback_ = frame.fallback;
 #ifdef DQ9_GPU_SCENE_TESTS
     reference_output_ = frame.software_output;
@@ -621,6 +628,25 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
     std::memcpy(mask_bytes_.ptrw(), frame.mask.data(), frame.mask.size());
     mask_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_R8, mask_bytes_);
     mask_texture_->update(mask_image_);
+    if (frame.side_software.size() == kWidth * kHeight * 4U) {
+        if (side_software_texture_.is_null()) {
+            side_software_bytes_.resize(kWidth * kHeight * 4);
+            side_eligibility_bytes_.resize(kWidth * kHeight);
+            side_software_image_ = godot::Image::create(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8);
+            side_eligibility_image_ = godot::Image::create(kWidth, kHeight, false, godot::Image::FORMAT_R8);
+            side_software_texture_ = godot::ImageTexture::create_from_image(side_software_image_);
+            side_eligibility_texture_ = godot::ImageTexture::create_from_image(side_eligibility_image_);
+        }
+        std::memcpy(side_software_bytes_.ptrw(), frame.side_software.data(), frame.side_software.size());
+        auto* eligibility = side_eligibility_bytes_.ptrw();
+        for (std::size_t i = 0; i < frame.opaque_only.size(); ++i)
+            eligibility[i] = frame.opaque_only[i] ? 255 : 0;
+        side_software_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, side_software_bytes_);
+        side_eligibility_image_->set_data(kWidth, kHeight, false, godot::Image::FORMAT_R8, side_eligibility_bytes_);
+        side_software_texture_->update(side_software_image_);
+        side_eligibility_texture_->update(side_eligibility_image_);
+        side_valid_ = true;
+    }
     clear_meshes();
     const auto clear_alpha = (frame.clear_color >> 16U) & 31U;
     if (clear_alpha != 0) {
@@ -738,6 +764,14 @@ godot::Ref<godot::Texture2D> DqGpuScene::get_texture() const {
 godot::Ref<godot::Texture2D> DqGpuScene::get_mask_texture() const {
     return valid_ ? godot::Ref<godot::Texture2D>(mask_texture_) : godot::Ref<godot::Texture2D>();
 }
+godot::Ref<godot::Texture2D> DqGpuScene::get_side_software_texture() const {
+    return valid_ && side_valid_ ? godot::Ref<godot::Texture2D>(side_software_texture_) : godot::Ref<godot::Texture2D>();
+}
+
+godot::Ref<godot::Texture2D> DqGpuScene::get_side_eligibility_texture() const {
+    return valid_ && side_valid_ ? godot::Ref<godot::Texture2D>(side_eligibility_texture_) : godot::Ref<godot::Texture2D>();
+}
+
 
 godot::Ref<godot::Texture2D> DqGpuScene::get_raw_texture() const {
     return color_valid_ && viewport_ ? godot::Ref<godot::Texture2D>(viewport_->get_texture()) : godot::Ref<godot::Texture2D>();

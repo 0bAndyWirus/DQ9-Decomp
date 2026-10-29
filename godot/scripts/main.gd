@@ -68,6 +68,8 @@ var gpu3d_screen_is_top := true
 var gpu3d_rect: TextureRect
 var _gpu3d_texture: Texture2D
 var _gpu3d_mask: Texture2D
+var _gpu3d_side_software: Texture2D
+var _gpu3d_side_eligibility: Texture2D
 # A/B changes presentation only: keep the same GPU scene alive even while
 # paused, so comparison never waits for another guest frame or a cache warmup.
 var _gpu3d_compare_software := false
@@ -704,7 +706,9 @@ func _on_machine_frame(_frame: int) -> void:
 		var screen_is_top := gpu3d_screen_is_top
 		if machine.has_method("get_gpu3d_screen_is_top"):
 			screen_is_top = bool(machine.get_gpu3d_screen_is_top())
-		set_gpu3d_frame(machine.get_gpu3d_texture(), machine.get_gpu3d_mask_texture(), screen_is_top)
+		var side_software: Texture2D = machine.get_gpu3d_side_software_texture() if machine.has_method("get_gpu3d_side_software_texture") else null
+		var side_eligibility: Texture2D = machine.get_gpu3d_side_eligibility_texture() if machine.has_method("get_gpu3d_side_eligibility_texture") else null
+		set_gpu3d_frame(machine.get_gpu3d_texture(), machine.get_gpu3d_mask_texture(), screen_is_top, side_software, side_eligibility)
 		if machine.has_method("get_gpu3d_stats"):
 			_gpu3d_stats = machine.get_gpu3d_stats()
 			_observe_gpu3d_frame()
@@ -714,9 +718,11 @@ func _on_machine_frame(_frame: int) -> void:
 
 # Integration point also used by synthetic producers. Null textures select the
 # software result for this frame (unsupported GPU effects, shadows, etc.).
-func set_gpu3d_frame(texture: Texture2D, mask: Texture2D, screen_is_top := true) -> void:
+func set_gpu3d_frame(texture: Texture2D, mask: Texture2D, screen_is_top := true, side_software: Texture2D = null, side_eligibility: Texture2D = null) -> void:
 	_gpu3d_texture = texture
 	_gpu3d_mask = mask
+	_gpu3d_side_software = side_software
+	_gpu3d_side_eligibility = side_eligibility
 	gpu3d_screen_is_top = screen_is_top
 	_update_gpu3d_composite()
 
@@ -740,6 +746,8 @@ func _apply_gpu3d_settings() -> void:
 		if machine.has_method("get_gpu3d_texture") and machine.has_method("get_gpu3d_mask_texture"):
 			_gpu3d_texture = machine.get_gpu3d_texture()
 			_gpu3d_mask = machine.get_gpu3d_mask_texture()
+			_gpu3d_side_software = machine.get_gpu3d_side_software_texture() if machine.has_method("get_gpu3d_side_software_texture") else null
+			_gpu3d_side_eligibility = machine.get_gpu3d_side_eligibility_texture() if machine.has_method("get_gpu3d_side_eligibility_texture") else null
 	_update_gpu3d_composite()
 
 func _gpu_width_ratio() -> float:
@@ -794,6 +802,11 @@ func _update_gpu3d_composite() -> void:
 	var material := gpu3d_rect.material as ShaderMaterial
 	material.set_shader_parameter("three_d_mask", _gpu3d_mask)
 	material.set_shader_parameter("width_ratio", ratio)
+	var side_enabled := _active_widescreen_mode == 2 and _gpu3d_side_software != null and _gpu3d_side_eligibility != null
+	material.set_shader_parameter("side_fallback_enabled", side_enabled)
+	if side_enabled:
+		material.set_shader_parameter("side_software_texture", _gpu3d_side_software)
+		material.set_shader_parameter("side_eligibility_texture", _gpu3d_side_eligibility)
 	gpu3d_rect.visible = not _gpu3d_compare_software
 
 func _toggle_gpu3d_compare() -> void:

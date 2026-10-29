@@ -1,6 +1,7 @@
 #include "dsr/gpu2d.h"
 
 #include "dsr/gpu3d.h"
+#include "dsr/full_presentation.h"
 #include "gpu2d_test.h"
 #include "composition_order.h"
 
@@ -213,6 +214,7 @@ struct Gpu2D::Impl {
         std::array<Pixel, kScreenWidth> bg0;
     };
     std::unique_ptr<Presentation> presentation;
+    unsigned presentation_scale = 1;
     std::array<std::uint8_t, kScreenWidth> unused_mask_line{};
     std::array<ExtPaletteRegion, 16> ext_regions_a{};
     std::array<ExtPaletteRegion, 16> ext_regions_b{};
@@ -793,7 +795,7 @@ struct Gpu2D::Impl {
 
     void add_bg_pixel(std::array<Pixel, kScreenWidth>& line, const Engine& engine,
                       bool is_a, int bg, int screen_y, std::uint32_t dispcnt,
-                      const std::uint32_t* line3d) {
+                      const std::uint32_t* line3d, bool full_presentation = false) {
         if ((dispcnt & (1U << (8U + static_cast<unsigned>(bg)))) == 0U) {
             return;
         }
@@ -823,7 +825,8 @@ struct Gpu2D::Impl {
                 if (source_x >= kScreenWidth) {
                     continue;
                 }
-                const std::uint32_t raw = line3d[source_x];
+                const std::uint32_t raw = line3d[full_presentation
+                    ? full_presentation_source_x(source_x, presentation_scale) : source_x];
                 const std::uint8_t alpha = static_cast<std::uint8_t>((raw >> 24U) & 31U);
                 if (alpha == 0U) {
                     continue;
@@ -1260,12 +1263,14 @@ struct Gpu2D::Impl {
         auto& masks = window_line_buffer;
         const std::uint8_t visible_layers = window_line(engine, dispcnt, y);
         auto* enhanced_bg0 = presentation ? &presentation->bg0 : nullptr;
-        const std::uint32_t* enhanced_line3d = nullptr;
+        const std::uint32_t* presentation_line3d = nullptr;
         const std::uint32_t* line3d = nullptr;
         if (is_a && gpu3d != nullptr && (powcnt1 & (1U << 2U)) != 0U) {
             line3d = gpu3d->line(y);
-            if (normal_display && presentation && (dispcnt & (1U << 3U)) != 0U)
-                enhanced_line3d = gpu3d->enhanced_line(y);
+            if (normal_display && presentation && (dispcnt & (1U << 3U)) != 0U) {
+                presentation_line3d = gpu3d->enhanced_line(y);
+                if (!presentation_line3d) presentation_line3d = line3d;
+            }
         }
         for (int bg = 0; bg < 4; ++bg) {
             if ((dispcnt & (1U << (8U + static_cast<unsigned>(bg)))) == 0U) {
@@ -1298,9 +1303,9 @@ struct Gpu2D::Impl {
                 }
             }
         }
-        if (enhanced_line3d != nullptr) {
+        if (presentation_line3d != nullptr) {
             enhanced_bg0->fill(kTransparentPixel);
-            add_bg_pixel(*enhanced_bg0, engine, is_a, 0, y, dispcnt, enhanced_line3d);
+            add_bg_pixel(*enhanced_bg0, engine, is_a, 0, y, dispcnt, presentation_line3d, true);
             presentation_a_line_valid = true;
         }
         std::array<std::array<std::uint8_t, 4>, 4> bg_order{};
@@ -1453,7 +1458,7 @@ struct Gpu2D::Impl {
         }
         };
         compose(std::false_type{});
-        if (enhanced_line3d != nullptr) compose(std::true_type{});
+        if (presentation_line3d != nullptr) compose(std::true_type{});
         if (is_a) {
             capture_display_line = output;
         }
@@ -2036,6 +2041,10 @@ void Gpu2D::set_enhanced_presentation(bool enabled) {
         impl_->presentation = std::move(presentation);
     }
 }
+void Gpu2D::set_presentation_scale(int scale) {
+    impl_->presentation_scale = full_presentation_scale(scale);
+}
+
 
 void Gpu2D::render_line(int y) {
     impl_->render_line(y);

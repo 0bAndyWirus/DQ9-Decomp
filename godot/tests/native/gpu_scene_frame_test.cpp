@@ -81,6 +81,16 @@ void test_ring_recycling() {
     first.prepare_geometry(true);
     first.vertices[0].u = 42.0F;
     first.opaque_only[0] = 1;
+    std::array<std::uint32_t, 256 * 192> hardware{}, enhanced{};
+    hardware[0] = (31U << 24U) | 2U;
+    enhanced[0] = (31U << 24U) | 62U | (32U << 6U) | (16U << 12U);
+    enhanced[1] = (16U << 24U) | 62U;
+    dsr::Gpu3DRasterView raster{};
+    raster.output = hardware.data();
+    raster.enhanced_output = enhanced.data();
+    raster.output_pixel_count = hardware.size();
+    require(first.capture_side_software(raster), "capture enhanced side raster");
+    enhanced[0] = 0;
     first.source_frame = 9;
     first.gpu_valid = true;
     delay.publish(slots[0], displayed, 7);
@@ -90,11 +100,17 @@ void test_ring_recycling() {
     auto& second = delay.capture_target();
     auto* second_ptr = &second;
     second.source_frame = 10;
+    raster.enhanced_output = nullptr;
+    require(second.capture_side_software(raster), "capture hardware raster when enhanced is absent");
     delay.publish(slots[1], displayed, 7);
     require(slots[1].get() == first_ptr && slots[1]->vertices[0].u == 42.0F &&
             slots[1]->vertices.size() == 12288 && slots[1]->mask[0] == 1 &&
             slots[1]->source_frame == 9,
             "previous owned capture is published intact with displayed mask");
+    require(slots[1]->side_software[0] == 255 && slots[1]->side_software[1] == 131 &&
+            slots[1]->side_software[2] == 65 && slots[1]->side_software[3] == 255 &&
+            slots[1]->side_software[7] == 0 && slots[1]->opaque_only[0] == 1,
+            "owned enhanced raster, alpha and raw eligibility travel with delayed geometry");
     delay.begin_step();
     auto& third = delay.capture_target();
     require(&third != first_ptr && &third != second_ptr && slots[1]->vertices[0].u == 42.0F,
@@ -102,6 +118,9 @@ void test_ring_recycling() {
     delay.publish(slots[2], displayed, 7);
     require(slots[2].get() == second_ptr && slots[1].get() == first_ptr,
             "publishing another slot leaves the consuming slot untouched");
+    require(slots[2]->side_software[0] == 8 && slots[2]->side_software[3] == 255 &&
+            slots[1]->side_software[0] == 255,
+            "later hardware raster does not overwrite delayed enhanced raster");
     delay.begin_step();
     delay.capture_target();
     delay.publish(slots[1], displayed, 7);
@@ -111,9 +130,40 @@ void test_ring_recycling() {
     delay.begin_step();
     delay.publish(slots[0], displayed, 8);
     require(!slots[0]->gpu_valid && slots[0]->fallback == dq9::GpuFallback::Warmup &&
-            slots[0]->epoch == 8 && slots[0]->vertex_count == 0,
-            "reset restarts warmup and clears recycled metadata");
+            slots[0]->epoch == 8 && slots[0]->vertex_count == 0 && slots[0]->side_software.empty(),
+            "reset restarts warmup and clears recycled metadata and side payload");
 }
+void test_full_opaque_eligibility_remap() {
+    std::array<std::uint8_t, 256 * 192> mask{};
+    mask.fill(1);
+    dsr::RenderFrame displayed{};
+    displayed.three_d_mask = mask.data();
+    for (int scale = 1; scale <= 6; ++scale) {
+        dq9::GpuFrameDelay delay;
+        std::unique_ptr<dq9::GpuSceneFrame> slot;
+        delay.begin_step();
+        auto& capture = delay.capture_target();
+        for (unsigned y = 0; y < 192; ++y)
+            for (unsigned x = 0; x < 256; ++x)
+                capture.opaque_only[y * 256 + x] = ((x + y) % 7U == 0U);
+        delay.publish(slot, displayed, 1, true, scale);
+        delay.begin_step();
+        delay.publish(slot, displayed, 1, true, scale);
+        const unsigned width = (256U * scale * 4U + 1U) / 3U;
+        unsigned eligible = 0;
+        for (unsigned y = 0; y < 192; ++y) {
+            for (unsigned x = 0; x < 256; ++x) {
+                const unsigned src = ((2U * x + 1U) * scale + width - 256U * scale) * 128U / width;
+                const bool expected = (src + y) % 7U == 0U;
+                require(slot->mask[y * 256 + x] == expected, "Full eligibility uses centered source raster");
+                eligible += expected;
+            }
+        }
+        require(slot->three_d_pixels == mask.size() && slot->gpu_pixels == eligible,
+                "Full eligibility counts match remapped mask");
+    }
+}
+
 void test_texture_overlap_identity() {
     constexpr std::array<std::uint32_t, 6> controls{
         0x04000240, 0x04000241, 0, 0, 0x04000244, 0x04000245};
@@ -169,6 +219,7 @@ int main() {
     test_storage();
     test_geometry_acceptance();
     test_ring_recycling();
+    test_full_opaque_eligibility_remap();
     test_texture_overlap_identity();
     std::puts("GPU_SCENE_FRAME PASS");
 }
