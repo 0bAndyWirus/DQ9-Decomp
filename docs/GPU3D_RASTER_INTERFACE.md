@@ -27,6 +27,8 @@ The packed viewport bytes from least to most significant are X1, Y1, X2, Y2. Wid
 
 The caller owns destination buffers, shading, texture sampling, depth and stencil tests, blending, fog, edge processing and packing. Polygon submission and per-pixel fragment order remain compatible. Inline rendering may request the full target interval; disjoint band intervals may run concurrently with immutable inputs, writing only their owned rows. The caller synchronizes before neighbor-row operations or publication. No shared mutable raster scratch may introduce cross-band dependence.
 
+Godot's `DsRasterMesh` also uses polygon preparation and row traversal; it converts the resulting boundaries and attributes into mesh geometry rather than duplicating the raster edge walker.
+
 At scale `s` (1–4), target width is `256*s`, height is `192*s`; row bounds and all screen coordinates use scaled pixels. Native and scaled outputs are separate targets. Inline and banded outputs must match exactly, including auxiliary fields.
 
 Full enhanced geometry changes the caller's storage and polygon selection, not

@@ -107,11 +107,11 @@ func _paused_widescreen_switch() -> void:
 	await _settle()
 	var frame: int = machine.get_gpu3d_stats().frame
 	var off := _mesh_vertices(scene)
-	var off_size := machine.get_gpu3d_texture().get_size()
+	var off_size: Vector2 = machine.get_gpu3d_texture().get_size()
 	machine.set_gpu3d_widescreen_enabled(true)
 	await _settle()
 	var picture := _mesh_vertices(scene)
-	var picture_size := machine.get_gpu3d_texture().get_size()
+	var picture_size: Vector2 = machine.get_gpu3d_texture().get_size()
 	check(not off.is_empty() and picture != off, "paused Picture rebuilds retained frame geometry")
 	check(picture_size.x > off_size.x and picture_size.y == off_size.y, "paused Picture widens viewport")
 	check(int(machine.get_gpu3d_stats().frame) == frame, "paused Picture keeps the same guest frame")
