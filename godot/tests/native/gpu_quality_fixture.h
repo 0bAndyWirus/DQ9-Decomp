@@ -25,10 +25,11 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
     auto source = std::make_unique<Source>();
     const auto integer = [&](const char* name, int value) { return static_cast<int>(options.get(name, value)); };
     const auto flag = [&](const char* name) { return static_cast<bool>(options.get(name, false)); };
-    const unsigned format = integer("format", 0);
+    const bool cutout_layers = flag("cutout_layers");
+    const unsigned format = cutout_layers ? 7U : integer("format", 0);
     const unsigned mode = integer("mode", 0);
     const unsigned alpha = integer("alpha", 31);
-    const unsigned wrap = integer("wrap", 0);
+    const unsigned wrap = cutout_layers ? 1U : integer("wrap", 0);
     const std::uint32_t texture = (format << 26U) | (1U << 20U) | (wrap << 16U);
     for (unsigned i = 0; i < 32; ++i) {
         const auto color = static_cast<std::uint16_t>((i * 5U % 32U) | ((i * 11U % 32U) << 5U) |
@@ -57,8 +58,10 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
             }
             case 6: bytes[offset] = static_cast<std::uint8_t>((index % 8U) | (31U << 3U)); break;
             case 7: {
-                const auto color = static_cast<std::uint16_t>(0x8000U | x * 2U | ((y * 4U) << 5U) |
-                                                             ((31U - x) << 10U));
+                const auto color = cutout_layers
+                    ? static_cast<std::uint16_t>((x & 1U) ? 0x0000U : 0x83e0U)
+                    : static_cast<std::uint16_t>(0x8000U | x * 2U | ((y * 4U) << 5U) |
+                                                 ((31U - x) << 10U));
                 bytes[offset * 2U] = static_cast<std::uint8_t>(color);
                 bytes[offset * 2U + 1U] = static_cast<std::uint8_t>(color >> 8U);
                 break;
@@ -76,7 +79,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         gpu.run(10000);
     };
     gpu.io_write(0x04000060U, 1U | (flag("highlight") ? 2U : 0U) |
-                 (flag("blend") ? 8U : 0U) |
+                 ((flag("blend") || cutout_layers) ? 8U : 0U) |
                  (flag("edges") ? 32U : 0U) | (flag("antialias") ? 16U : 0U) |
                  (flag("fog") ? 128U : 0U) | (flag("alpha_only") ? 64U : 0U) |
                  (integer("alpha_ref", 0) != 0 ? 4U : 0U), 32);
@@ -98,6 +101,34 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         for (unsigned i = 0; i < 16; ++i)
             send(0x16, i == 11 ? 2048U : i % 5U == 0 ? 4096U : 0U);
     }
+    if (cutout_layers) {
+        // The cutout spans 64 native pixels but 128 texels: each native
+        // sample sees an opaque texel while the 3x render exposes holes.
+        const auto quad = [&](int left, int right, int z, unsigned color,
+                              unsigned polygon_alpha, unsigned id, bool textured) {
+            send(0x2a, textured ? texture : 0U);
+            send(0x29, (polygon_alpha << 16U) | (id << 24U) | 0xc0U);
+            send(0x20, color);
+            send(0x40, 1U);
+            for (const auto [x, y, u, v] : std::array<std::array<int, 4>, 4>{{
+                     {left, -1024, 0, 0}, {right, -1024, 128, 0},
+                     {right, 1024, 128, 8}, {left, 1024, 0, 8}}}) {
+                send(0x22, static_cast<std::uint16_t>(u * 16) |
+                     (static_cast<std::uint32_t>(static_cast<std::uint16_t>(v * 16)) << 16U));
+                send(0x23, static_cast<std::uint16_t>(x) |
+                     (static_cast<std::uint32_t>(static_cast<std::uint16_t>(y)) << 16U));
+                send(0x23, static_cast<std::uint16_t>(z));
+            }
+            send(0x41, 0);
+        };
+        quad(-2048, 2048, 2048, 0x0000, 31, 1, false);
+        if (!flag("cutout_no_foreground"))
+            quad(-1024, 1024, -1024, 0x7fff, 31, 2, true);
+        // The left-hand opaque region supplies mask-covered control pixels.
+        quad(-2048, -1280, -1024, 0x03e0, 31, 3, false);
+        quad(-1024, 1024, 1024, 0x001f, 15, 4, false);
+        quad(-1024, 1024, 0, 0x7c00, 15, 5, false);
+    } else {
     send(0x2a, texture);
     send(0x29, (alpha << 16U) | (mode << 4U) | (8U << 24U) | 0xc0U |
          (flag("polygon_fog") ? 32768U : 0U));
@@ -118,6 +149,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         send(0x23, static_cast<std::uint16_t>(x) |
              (static_cast<std::uint32_t>(static_cast<std::uint16_t>(positions[i][1])) << 16U));
         send(0x23, flag("perspective") ? static_cast<std::uint16_t>(positions[i][2]) : 0U);
+    }
     }
     send(0x41, 0); send(0x50, 0);
     gpu.vblank_start(); gpu.render_start();

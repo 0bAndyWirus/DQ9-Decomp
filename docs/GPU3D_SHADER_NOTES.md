@@ -209,13 +209,31 @@ determines which pixels may be displayed.
 This post path is a **Z-buffered opaque-mask display** renderer, not general DS
 RGBA compositing. Production excludes unsupported fragment histories per pixel:
 
-- Capture permits one partial fragment over an alpha31 destination. It excludes
-  overlapping partial touches (including duplicate IDs), translucent depth
-  writes (bit11), depth-tolerance partial fragments (bit14), disabled blending,
-  partial destinations, changes to the accumulated fog flag, and later opaque
-  touches. Shadow/wire touches remain excluded. Zero/alpha-test-rejected partial
-  fragments do not consume a layer. One-native-pixel3×3 dilation protects
-  neighbouring edge/AA reads; it is never adjusted from comparison errors.
+- Capture permits one partial fragment over an alpha31 destination. A
+  strict-depth rejected partial fragment does not consume a layer or contaminate
+  eligibility only if its opaque destination is closer by more than 255 depth
+  units and, after rendering, every pixel in its full 3×3 final neighbourhood has
+  reliable opaque depth closer by more than 255 depth units. Capture tracks the
+  provenance of the last actual depth write separately from framebuffer alpha:
+  opaque uniform clear and alpha31 untextured polygons or indexed formats 2/3/4
+  without colour-zero transparency qualify. Cutout, direct, compressed and
+  variable-alpha textures, translucent depth writes, shadows and bitmap clear
+  do not qualify, even when a native sample is alpha31. Alpha-test-rejected and
+  zero-alpha fragments do not replace depth provenance. Any depth-accepted nonzero
+  dot in that neighbourhood fails the guard because it may be native-only.
+  Screen-border pixels fail the full-neighbourhood guard. Ties, near depths,
+  depth-tolerance mode (bit14) and other ambiguous cases fall back to software.
+  The guard is a conservative
+  heuristic, not proof that native and GPU depth or coverage are identical.
+  Capture excludes overlapping partial touches (including duplicate
+  IDs), translucent depth writes (bit11), disabled blending, partial
+  destinations, changes to the accumulated fog flag, and later opaque touches.
+  Shadow/wire footprints remain excluded; a depth-failed shadow can still affect
+  stencil. Effective zero-alpha non-shadow/non-wire fragments cannot consume
+  eligibility, even when depth-rejected; alpha-test-rejected fragments do not
+  consume a layer.
+  One-native-pixel3×3 dilation protects neighbouring edge/AA reads; it is never
+  adjusted from comparison errors.
 - The worker combines the owned, delayed mask with the LCD3D selection mask.
 - `ds_translucent.gdshader` reads the Compatibility opaque screen snapshot.
   It computes RGB6 integer blend weights `(alpha+1)/32` and `(31-alpha)/32`,
