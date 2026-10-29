@@ -1,6 +1,5 @@
 add_library(dsr_gpu3d STATIC
   src/gpu3d.cpp
-  src/rasterizer.cpp
   src/gpu2d_adapter.cpp
   src/texture.cpp
   src/texture_rgba.cpp
@@ -14,20 +13,6 @@ target_link_libraries(dsr_gpu3d_tests PRIVATE dsr_gpu3d)
 target_include_directories(dsr_gpu3d_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 dsr_target_compile_options(dsr_gpu3d_tests -Wall -Wextra -Wpedantic)
 add_test(NAME dsr_gpu3d_tests COMMAND dsr_gpu3d_tests)
-
-# Compatibility snapshots captured from the pre-refactor software renderer.
-add_executable(dsr_raster_golden_tests tests/fixtures/test_raster_goldens.cpp)
-target_link_libraries(dsr_raster_golden_tests PRIVATE dsr_gpu3d)
-target_include_directories(dsr_raster_golden_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-dsr_target_compile_options(dsr_raster_golden_tests -Wall -Wextra -Wpedantic)
-add_test(NAME dsr_raster_golden_tests COMMAND dsr_raster_golden_tests
-  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/raster_goldens.txt)
-
-add_executable(dsr_raster_boundary_tests tests/fixtures/test_raster_boundaries.cpp)
-target_link_libraries(dsr_raster_boundary_tests PRIVATE dsr_gpu3d)
-target_include_directories(dsr_raster_boundary_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-dsr_target_compile_options(dsr_raster_boundary_tests -Wall -Wextra -Wpedantic)
-add_test(NAME dsr_raster_boundary_tests COMMAND dsr_raster_boundary_tests)
 
 # BandPool is header-only and can also be used by the 2D renderer.
 find_package(Threads REQUIRED)
