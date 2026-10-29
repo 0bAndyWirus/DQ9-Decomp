@@ -75,9 +75,9 @@ The current Compatibility path uses transformed geometry, bounded material/surfa
 | Alpha / depth / polygon IDs | Preserve native history or leave unsupported pixels software-owned. Ordinary GL blending/stencil is insufficient. |
 | Edges / clipping / one-dot / wireframe | Require explicit synthetic fixtures and a software reference; GPU defaults do not establish parity. |
 | Enhanced 2D | Needs per-line layer/effect/route capture; final memory alone is insufficient. |
-| Texture replacements | Future design: content-based identity and renderer-owned replacements must not mutate guest VRAM or timing. |
+| Texture replacements | Godot GPU 3D uses optional content-identified replacements without mutating guest VRAM or timing; software remains the reference. |
 
-Replacement identity should include decode metadata, exact referenced texture bytes, compressed metadata, and effective palette bytes. A slot number alone is unstable. Missing/invalid replacements retain native decoding; no game-derived texture records or replacement assets are bundled.
+Replacement identity includes decode metadata, referenced texture bytes, compressed metadata and effective palette bytes, not a VRAM slot. Compressed metadata's palette offset is normalized out of the identity while its effective palette is included. Missing or invalid replacements retain native decoding; no game-derived texture records or replacement assets are bundled. See the [Godot API](../godot/API.md#hd-texture-replacement-and-dumps) and [authoring workflow](USING_GODOT.md#hd-texture-replacements).
 
 ## 5. Threading, audio, input, and debug boundary
 
@@ -98,4 +98,4 @@ Reuse the shared [launcher/debug workflow](LAUNCHER_AND_DEBUG.md). Saves, RAM/VR
 - High-resolution visual goals and hardware-GPU performance require separate measurements; a successful software fallback is not proof of complete GPU support.
 - Godot/SDL host parity needs identical local inputs and compatible separately supplied generated code. Keep those inputs and outputs private.
 
-Planned per-line capture, texture replacements, and broader GPU effect support are not delivered by this document. Current build prerequisites are in [Building DQ9-Decomp](BUILDING.md); synthetic rendering probes are described in [shader notes](GPU3D_SHADER_NOTES.md).
+Planned per-line capture and broader GPU effect support are not delivered by this document. Current build prerequisites are in [Building DQ9-Decomp](BUILDING.md); synthetic rendering probes are described in [shader notes](GPU3D_SHADER_NOTES.md).

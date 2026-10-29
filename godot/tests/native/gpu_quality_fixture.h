@@ -30,7 +30,10 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
     const unsigned mode = integer("mode", 0);
     const unsigned alpha = integer("alpha", 31);
     const unsigned wrap = cutout_layers ? 1U : integer("wrap", 0);
-    const std::uint32_t texture = (format << 26U) | (1U << 20U) | (wrap << 16U);
+    const unsigned texture_slot = static_cast<unsigned>(integer("texture_slot", 0));
+    const unsigned palette_base = static_cast<unsigned>(integer("palette_base", 0));
+    const std::uint32_t texture = (format << 26U) | (1U << 20U) | (wrap << 16U) |
+                                  (texture_slot << 14U);
     for (unsigned i = 0; i < 32; ++i) {
         const auto color = static_cast<std::uint16_t>((i * 5U % 32U) | ((i * 11U % 32U) << 5U) |
                                                      ((31U - i) << 10U));
@@ -51,7 +54,9 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
             case 5: {
                 const unsigned tile = (y / 4U) * 4U + x / 4U;
                 bytes[tile * 4U + y % 4U] |= static_cast<std::uint8_t>((index % 4U) << ((x % 4U) * 2U));
-                const auto metadata = static_cast<std::uint16_t>((tile % 4U) << 14U);
+                const auto tile_mode = (tile % 4U + (flag("compressed_mode_changed") && tile == 0 ? 1U : 0U)) % 4U;
+                const auto metadata = static_cast<std::uint16_t>((tile_mode << 14U) |
+                    static_cast<unsigned>(integer("compressed_palette_offset", 0)));
                 source->texture[1][tile * 2U] = static_cast<std::uint8_t>(metadata);
                 source->texture[1][tile * 2U + 1U] = static_cast<std::uint8_t>(metadata >> 8U);
                 break;
@@ -70,6 +75,14 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
             }
         }
     }
+    if (flag("texture_changed")) source->texture[0][0] ^= 1U;
+    if (flag("palette_changed")) source->palette[2] ^= 0x1fU;
+    const unsigned palette_shift = palette_base * (format == 2 ? 8U : 16U) +
+                                   (format == 5 ? static_cast<unsigned>(integer("compressed_palette_offset", 0)) * 4U : 0U);
+    if (palette_shift != 0)
+        std::copy_backward(source->palette.begin(), source->palette.begin() + 512,
+                           source->palette.begin() + 512 + palette_shift);
+    if (texture_slot == 1 && format != 5) source->texture[1] = source->texture[0];
     dsr::Gpu3D gpu;
     gpu.set_capture_opaque_only(true);
     const dsr::gpu3d_detail::TextureSource texture_source{source.get(), &Source::tex, &Source::pal};
@@ -130,6 +143,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         quad(-1024, 1024, 0, 0x7c00, 15, 5, false);
     } else {
     send(0x2a, texture);
+    send(0x2b, palette_base);
     send(0x29, (alpha << 16U) | (mode << 4U) | (8U << 24U) | 0xc0U |
          (flag("polygon_fog") ? 32768U : 0U));
     send(0x40, flag("quad") ? 1 : 0);
@@ -182,9 +196,10 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         frame->toon_table[i] = raster.toon_table[i * 2U] | (raster.toon_table[i * 2U + 1U] << 8U);
     if (format != 0) {
         auto decoded = std::make_shared<DecodedTexture>();
-        decoded->key = {texture, 0, generation};
-        dsr::gpu3d_detail::decode_texture_rgba8(texture_source, texture, 0,
+        decoded->key = {texture, palette_base, generation};
+        dsr::gpu3d_detail::decode_texture_rgba8(texture_source, texture, palette_base,
                                               decoded->rgba, decoded->width, decoded->height);
+        decoded->identity_data = dq9::texture_identity_data(texture_source, texture, palette_base);
         decoded->classify_alpha();
         frame->new_textures.push_back(std::move(decoded));
     }

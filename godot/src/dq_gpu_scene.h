@@ -12,6 +12,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <unordered_map>
+#include <map>
 
 namespace godot { class SubViewport; class MeshInstance3D; }
 
@@ -27,6 +28,10 @@ public:
     bool get_widescreen_enabled() const { return widescreen_enabled_; }
     void set_guest_widescreen(bool enabled) { guest_widescreen_ = enabled; }
     bool get_guest_widescreen() const { return guest_widescreen_; }
+    void set_hd_textures_enabled(bool enabled);
+    bool get_hd_textures_enabled() const { return hd_textures_enabled_; }
+    void set_hd_texture_dump_enabled(bool enabled);
+    bool get_hd_texture_dump_enabled() const { return hd_texture_dump_enabled_; }
     void apply_frame(const dq9::GpuSceneFrame& frame);
     godot::Ref<godot::Texture2D> get_texture() const;
     godot::Ref<godot::Texture2D> get_mask_texture() const;
@@ -37,6 +42,8 @@ public:
 #ifdef DQ9_GPU_SCENE_TESTS
     godot::Ref<godot::Image> get_reference_image() const;
     godot::PackedByteArray get_reference_polygon_ids() const;
+    godot::Dictionary test_texture_info(std::int64_t texture_param, std::int64_t palette,
+                                        std::int64_t generation);
 #endif
 
 protected:
@@ -52,6 +59,9 @@ private:
     bool same_run(const dsr::Gpu3DPolygon& a, const dsr::Gpu3DPolygon& b,
                   std::uint32_t disp3dcnt) const;
     void upload_texture(const dq9::DecodedTexture& texture);
+    struct CachedTexture;
+    void prepare_texture(CachedTexture& texture);
+    void dump_texture(CachedTexture& texture);
     bool initialize_effects();
     void clear_meshes();
     void ensure_chunk(std::size_t index);
@@ -108,13 +118,18 @@ private:
     };
     std::unordered_map<MaterialKey, godot::Ref<godot::ShaderMaterial>, MaterialKeyHash> materials_;
     struct CachedTexture {
+        godot::Ref<godot::Image> original;
         godot::Ref<godot::ImageTexture> image;
+        godot::String identity;
     };
     std::unordered_map<dsr::gpu3d_detail::TextureKey, CachedTexture, dq9::TextureKeyHash> textures_;
+    std::map<godot::String, godot::Ref<godot::ImageTexture>> replacements_;
+    std::size_t replacement_bytes_ = 0;
     std::uint64_t generation_ = 0, epoch_ = 0, number_ = 0, source_frame_ = 0;
     bool have_generation_ = false, valid_ = false, color_valid_ = false, screen_is_top_ = true;
     bool widescreen_enabled_ = false;
     bool guest_widescreen_ = false;
+    bool hd_textures_enabled_ = false, hd_texture_dump_enabled_ = false;
     int scale_ = 3;
     std::size_t polygon_count_ = 0, captured_polygon_count_ = 0, vertex_count_ = 0;
     std::size_t wide_crossing_left_ = 0, wide_crossing_right_ = 0;

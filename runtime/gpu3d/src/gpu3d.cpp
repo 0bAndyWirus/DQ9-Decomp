@@ -3589,6 +3589,13 @@ Gpu3DRasterView Gpu3D::raster_view() const {
 
 Gpu3DTextureView Gpu3D::texture_view(const Gpu2D& gpu2d) const {
     Gpu3DTextureView view{};
+    view.read_context = &gpu2d;
+    view.texture_read = [](const void* context, std::uint32_t address) {
+        return static_cast<const Gpu2D*>(context)->texture_byte(address);
+    };
+    view.palette_read = [](const void* context, std::uint32_t address) {
+        return static_cast<const Gpu2D*>(context)->texpal_byte(address);
+    };
     const auto mapping = gpu2d.frame_view();
     view.mapping_generation = mapping.mapping_generation;
     for (std::size_t i = 0; i < view.textures.size(); ++i) {

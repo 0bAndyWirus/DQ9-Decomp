@@ -1,6 +1,9 @@
 #include "dq_gpu_scene.h"
 
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/hashing_context.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/quad_mesh.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -27,6 +30,10 @@ int target_width(int scale, bool widescreen) {
 }
 // Godot's ArrayMesh/RenderingServer allows at most 256 surfaces per mesh.
 constexpr std::size_t kSurfaceLimit = 256;
+constexpr std::uint32_t kMaxOverrideDimension = 2048;
+constexpr std::size_t kMaxOverrideBytes = 2048U * 2048U * 4U;
+constexpr std::uint64_t kMaxOverrideFileBytes = 20U * 1024U * 1024U;
+constexpr std::size_t kMaxOverrideCacheBytes = 64U * 1024U * 1024U;
 DqGpuScene* live_scenes = nullptr; // Main-thread-only; no static Godot resources.
 
 SubViewport* new_viewport(Node& parent, const String& name, int scale, bool widescreen) {
@@ -60,6 +67,19 @@ std::uint8_t expand_rgb555(std::uint32_t value, unsigned shift) {
     const auto channel = (value >> shift) & 31U;
     const auto rgb6 = channel == 0 ? 0 : channel * 2U + 1U;
     return static_cast<std::uint8_t>((rgb6 << 2U) | (rgb6 >> 4U));
+}
+
+// The worker snapshots the exact raw content while the source VRAM is pinned.
+String texture_identity(const std::vector<std::uint8_t>& data) {
+    if (data.empty()) return {};
+    PackedByteArray bytes;
+    bytes.resize(static_cast<int64_t>(data.size()));
+    std::memcpy(bytes.ptrw(), data.data(), data.size());
+    Ref<HashingContext> hash;
+    hash.instantiate();
+    hash->start(HashingContext::HASH_SHA256);
+    hash->update(bytes);
+    return hash->finish().hex_encode();
 }
 
 Vector4 viewport_rect(std::uint32_t viewport) {
@@ -108,6 +128,8 @@ void DqGpuScene::release_resources(bool children_alive) {
     chunks_.clear();
     materials_.clear();
     textures_.clear();
+    replacements_.clear();
+    replacement_bytes_ = 0;
     post_material_.unref();
     id_shader_.unref();
     opaque_shader_.unref();
@@ -130,6 +152,10 @@ void DqGpuScene::release_resources(bool children_alive) {
 
 void DqGpuScene::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_scale", "scale"), &DqGpuScene::set_scale);
+    godot::ClassDB::bind_method(godot::D_METHOD("set_hd_textures_enabled", "enabled"), &DqGpuScene::set_hd_textures_enabled);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_hd_textures_enabled"), &DqGpuScene::get_hd_textures_enabled);
+    godot::ClassDB::bind_method(godot::D_METHOD("set_hd_texture_dump_enabled", "enabled"), &DqGpuScene::set_hd_texture_dump_enabled);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_hd_texture_dump_enabled"), &DqGpuScene::get_hd_texture_dump_enabled);
     godot::ClassDB::bind_method(godot::D_METHOD("set_widescreen_enabled", "enabled"), &DqGpuScene::set_widescreen_enabled);
     godot::ClassDB::bind_method(godot::D_METHOD("get_widescreen_enabled"), &DqGpuScene::get_widescreen_enabled);
     ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "widescreen_enabled"),
@@ -147,6 +173,7 @@ void DqGpuScene::_bind_methods() {
     #ifdef DQ9_GPU_SCENE_TESTS
     godot::ClassDB::bind_method(godot::D_METHOD("get_reference_image"), &DqGpuScene::get_reference_image);
     godot::ClassDB::bind_method(godot::D_METHOD("get_reference_polygon_ids"), &DqGpuScene::get_reference_polygon_ids);
+    godot::ClassDB::bind_method(godot::D_METHOD("test_texture_info", "texture_param", "palette", "generation"), &DqGpuScene::test_texture_info);
     #endif
 }
 
@@ -306,14 +333,138 @@ void DqGpuScene::add_surface(const godot::Array& arrays, const dq9::GpuSceneFram
     ++surface_count_;
 }
 
+void DqGpuScene::prepare_texture(CachedTexture& texture) {
+    if (!hd_textures_enabled_ || texture.identity.is_empty()) {
+        texture.image = godot::ImageTexture::create_from_image(texture.original);
+        return;
+    }
+
+    if (const auto found = replacements_.find(texture.identity); found != replacements_.end()) {
+        texture.image = found->second.is_valid() ? found->second :
+            godot::ImageTexture::create_from_image(texture.original);
+        return;
+    }
+    godot::Ref<godot::ImageTexture> selected;
+    const godot::String path = godot::String("user://texture_overrides/") + texture.identity + godot::String(".png");
+    if (godot::FileAccess::file_exists(path)) {
+        // Read a bounded file once, then inspect and decode those same bytes.
+        const auto file = godot::FileAccess::open(path, godot::FileAccess::READ);
+        const std::uint64_t length = file.is_valid() ? file->get_length() : 0;
+        const auto encoded = length >= 29 && length <= kMaxOverrideFileBytes ?
+            file->get_buffer(static_cast<int64_t>(length)) : godot::PackedByteArray();
+        constexpr std::uint8_t prefix[] = {137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82};
+        // Restrict channel depth to bound the decoder's intermediate image.
+        bool valid = encoded.size() == static_cast<int64_t>(length) && length >= 29 &&
+            std::memcmp(encoded.ptr(), prefix, sizeof(prefix)) == 0 &&
+            encoded[24] <= 8;
+        std::uint32_t width = 0, height = 0;
+        if (valid) {
+            for (int i = 16; i < 20; ++i) width = (width << 8U) | encoded[i];
+            for (int i = 20; i < 24; ++i) height = (height << 8U) | encoded[i];
+            valid = width > 0 && height > 0 && width <= kMaxOverrideDimension && height <= kMaxOverrideDimension;
+        }
+        const std::size_t decoded_bytes = static_cast<std::size_t>(width) * height * 4U;
+        valid = valid && decoded_bytes <= kMaxOverrideBytes &&
+            decoded_bytes <= kMaxOverrideCacheBytes - replacement_bytes_;
+        godot::Ref<godot::Image> replacement;
+        if (valid) {
+            replacement.instantiate();
+            valid = replacement->load_png_from_buffer(encoded) == godot::OK && !replacement->is_empty() &&
+                replacement->get_width() == static_cast<int>(width) &&
+                replacement->get_height() == static_cast<int>(height);
+        }
+        if (valid) {
+            replacement->convert(godot::Image::FORMAT_RGBA8);
+            const auto pixels = replacement->get_data();
+            const auto original = texture.original->get_data();
+            const auto has_partial = [](const godot::PackedByteArray& data) {
+                for (int64_t i = 3; i < data.size(); i += 4)
+                    if (data[i] != 0 && data[i] != 255) return true;
+                return false;
+            };
+            // Partial-fragment eligibility is derived from the original DS
+            // pixels. Preserve its alpha exactly, including opaque and zero
+            // pixels, whenever either image has fractional alpha.
+            if (has_partial(pixels) || has_partial(original)) {
+                const auto ow = static_cast<std::uint32_t>(texture.original->get_width());
+                const auto oh = static_cast<std::uint32_t>(texture.original->get_height());
+                valid = width % ow == 0 && height % oh == 0;
+                if (valid) {
+                    const auto sx = width / ow, sy = height / oh;
+                    for (std::uint32_t y = 0; valid && y < height; ++y)
+                        for (std::uint32_t x = 0; x < width; ++x)
+                            if (pixels[(static_cast<int64_t>(y) * width + x) * 4 + 3] !=
+                                original[(static_cast<int64_t>(y / sy) * ow + x / sx) * 4 + 3]) {
+                                valid = false;
+                                break;
+                            }
+                }
+            }
+        }
+        if (valid) {
+            selected = godot::ImageTexture::create_from_image(replacement);
+            replacement_bytes_ += decoded_bytes;
+        } else {
+            godot::UtilityFunctions::push_warning("Invalid or unsupported texture override: ", path);
+        }
+    }
+    replacements_.emplace(texture.identity, selected);
+    texture.image = selected.is_valid() ? selected : godot::ImageTexture::create_from_image(texture.original);
+}
+
+void DqGpuScene::dump_texture(CachedTexture& texture) {
+    if (texture.identity.is_empty()) return;
+    const godot::String directory = "user://texture_dumps";
+    const godot::String path = directory + godot::String("/") + texture.identity + godot::String(".png");
+    if (godot::FileAccess::file_exists(path)) return;
+    const auto error = godot::DirAccess::make_dir_recursive_absolute(directory);
+    if (error != godot::OK || texture.original->save_png(path) != godot::OK)
+        godot::UtilityFunctions::push_warning("Could not dump texture: ", path);
+}
+
+void DqGpuScene::set_hd_textures_enabled(bool enabled) {
+    if (hd_textures_enabled_ == enabled) return;
+    hd_textures_enabled_ = enabled;
+    replacements_.clear();
+    replacement_bytes_ = 0;
+    for (auto& [key, texture] : textures_) prepare_texture(texture);
+    materials_.clear();
+}
+
+void DqGpuScene::set_hd_texture_dump_enabled(bool enabled) {
+    if (hd_texture_dump_enabled_ == enabled) return;
+    hd_texture_dump_enabled_ = enabled;
+    if (enabled) for (auto& [key, texture] : textures_) dump_texture(texture);
+}
+
 void DqGpuScene::upload_texture(const dq9::DecodedTexture& texture) {
     if (textures_.contains(texture.key)) return;
     godot::PackedByteArray bytes;
     bytes.resize(static_cast<int64_t>(texture.rgba.size()));
     std::memcpy(bytes.ptrw(), texture.rgba.data(), texture.rgba.size());
-    const auto image = godot::Image::create_from_data(texture.width, texture.height, false, godot::Image::FORMAT_RGBA8, bytes);
-    textures_.emplace(texture.key, CachedTexture{godot::ImageTexture::create_from_image(image)});
+    CachedTexture cached;
+    cached.original = godot::Image::create_from_data(texture.width, texture.height, false, godot::Image::FORMAT_RGBA8, bytes);
+    cached.identity = texture_identity(texture.identity_data);
+    prepare_texture(cached);
+    if (hd_texture_dump_enabled_) dump_texture(cached);
+    textures_.emplace(texture.key, std::move(cached));
 }
+
+#ifdef DQ9_GPU_SCENE_TESTS
+godot::Dictionary DqGpuScene::test_texture_info(std::int64_t texture_param, std::int64_t palette,
+                                                 std::int64_t generation) {
+    const dsr::gpu3d_detail::TextureKey key{static_cast<std::uint32_t>(texture_param),
+        static_cast<std::uint32_t>(palette), static_cast<std::uint64_t>(generation)};
+    godot::Dictionary result;
+    const auto it = textures_.find(key);
+    if (it != textures_.end()) {
+        result["identity"] = it->second.identity;
+        result["image"] = it->second.image->get_image();
+        result["resource_id"] = static_cast<std::int64_t>(it->second.image->get_instance_id());
+    }
+    return result;
+}
+#endif
 
 bool DqGpuScene::same_run(const dsr::Gpu3DPolygon& a, const dsr::Gpu3DPolygon& b,
                          std::uint32_t disp3dcnt) const {
@@ -418,6 +569,8 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
     }
     if (!have_generation_ || generation_ != frame.vram_generation || epoch_ != frame.epoch) {
         textures_.clear();
+        replacements_.clear();
+        replacement_bytes_ = 0;
         materials_.clear();
         generation_ = frame.vram_generation;
         epoch_ = frame.epoch;

@@ -77,6 +77,7 @@ var _gpu3d_valid_window := PackedByteArray()
 var _gpu3d_valid_index := 0
 var _gpu3d_valid_count := 0
 var _gpu3d_frame_count := 0
+var _hd_texture_dump_enabled := false
 var _active_widescreen_mode := 0
 var _layout_wide_ratio := 1.0
 var _layout_wide_screen := 0
@@ -276,6 +277,11 @@ func _make_settings() -> PanelContainer:
 	gpu_scale.item_selected.connect(func(i): settings.gpu3d_scale=i+2; _apply_gpu3d_settings(); _persist())
 	renderer_row.add_child(gpu_scale)
 	_ui.gpu_scale = gpu_scale
+	var hd_textures := CheckButton.new(); hd_textures.name = "HdTextures"
+	hd_textures.text = "HD texture replacements"; hd_textures.button_pressed = settings.hd_textures
+	hd_textures.tooltip_text = "Use replacement textures with GPU hi-res."
+	hd_textures.toggled.connect(func(v): settings.hd_textures = v; _apply_gpu3d_settings(); _persist())
+	col.add_child(hd_textures)
 	var widescreen := OptionButton.new()
 	for name in ["Off", "Picture", "Full"]: widescreen.add_item(name)
 	widescreen.select(int(settings.widescreen_mode))
@@ -373,6 +379,11 @@ func _make_pause() -> PanelContainer:
 	c.add_child(speeds)
 	var stats:=CheckButton.new(); stats.text="Show statistics"; stats.button_pressed=true; stats.toggled.connect(func(v):status_label.visible=v); c.add_child(stats)
 	var shot:=Button.new(); shot.text="Save screenshot"; shot.pressed.connect(_save_screenshot); c.add_child(shot)
+	var texture_dump := CheckButton.new(); texture_dump.name = "TextureDump"
+	texture_dump.text = "Dump 3D textures"; texture_dump.button_pressed = _hd_texture_dump_enabled
+	texture_dump.tooltip_text = "Dump current and encountered GPU textures until disabled."
+	texture_dump.toggled.connect(func(v): _hd_texture_dump_enabled = v; if machine and machine.has_method("set_hd_texture_dump_enabled"): machine.set_hd_texture_dump_enabled(v))
+	c.add_child(texture_dump)
 	_make_save_controls(c, "Pause")
 	pause_note=TextEdit.new(); pause_note.placeholder_text="Quick note"; pause_note.custom_minimum_size=Vector2(0,110); c.add_child(pause_note)
 	var note:=Button.new(); note.text="Save note + screenshot bundle"; note.pressed.connect(_save_bundle); c.add_child(note)
@@ -721,6 +732,8 @@ func _apply_gpu3d_settings() -> void:
 		if machine.has_method("set_gpu3d_scale"): machine.set_gpu3d_scale(int(settings.gpu3d_scale))
 		if machine.has_method("set_gpu3d_widescreen_enabled"): machine.set_gpu3d_widescreen_enabled(_active_widescreen_mode != 0)
 		if machine.has_method("set_gpu3d_guest_widescreen"): machine.set_gpu3d_guest_widescreen(_active_widescreen_mode == 2)
+		if machine.has_method("set_hd_textures_enabled"): machine.set_hd_textures_enabled(bool(settings.hd_textures))
+		if machine.has_method("set_hd_texture_dump_enabled"): machine.set_hd_texture_dump_enabled(_hd_texture_dump_enabled)
 		if machine.has_method("set_gpu3d_enabled"): machine.set_gpu3d_enabled(enabled)
 		# Disabling releases the producer's viewport. Re-enabling must not
 		# resurrect its cached texture/mask while the new epoch warms up.

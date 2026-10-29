@@ -112,7 +112,7 @@ set_tests_properties(dq9_frame_spec_tests PROPERTIES TIMEOUT 30)
 add_executable(dq9_gpu_scene_frame_tests godot/tests/native/gpu_scene_frame_test.cpp)
 target_include_directories(dq9_gpu_scene_frame_tests PRIVATE
   godot/src runtime/gpu3d/src)
-target_link_libraries(dq9_gpu_scene_frame_tests PRIVATE dsr_headers)
+target_link_libraries(dq9_gpu_scene_frame_tests PRIVATE dsr_gpu3d)
 dsr_target_compile_options(dq9_gpu_scene_frame_tests -Wall -Wextra)
 add_test(NAME dq9_gpu_scene_frame_tests COMMAND dq9_gpu_scene_frame_tests)
 set_tests_properties(dq9_gpu_scene_frame_tests PROPERTIES TIMEOUT 30)
