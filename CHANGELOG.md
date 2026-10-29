@@ -4,8 +4,12 @@ Notable changes to the public tooling and runtime. This repository ships no game
 game code and no game binaries; see [LEGAL.md](LEGAL.md). Performance figures are from one
 machine (headless 3,000-frame English boot run) and are not general claims.
 
-## Unreleased
+## v0.6.0
 
+Godot gains experimental widescreen and HD texture replacement; several runtime parts were rewritten clean-room. SDL Classic output is unchanged from v0.5.0: five-language 3,000-frame boot hash streams, the English WAV and eight scripted runs (frames, saves, audio) are identical.
+
+- **RTC 12-hour mode keeps the PM bit (GBATEK):** hour bit 6 is set for 12-23 in both modes; 12-hour reads previously always cleared it. The game uses 24-hour mode in all tested runs, so its output is unchanged.
+- **Huffman test oracle:** the SWI Huffman differential oracle was rewritten from GBATEK, with two hand-derived vectors.
 - **Godot Full compositing:** align the full-width guest 3D raster and its captured GPU eligibility with the centered native 2D composition. In Full's side regions, unsafe pixels use the matching software 3D raster when its alpha is opaque; safe pixels and pixels with non-opaque software alpha use the GPU. The latter cannot reproduce a missing DS 2D blend. Classic and Picture presentation, guest screens and frame timing are unchanged; unsupported Full frames still fall back to the software screen with the wide camera active.
 - **Godot GPU mesh uses the clean-room raster core:** the Godot GPU path no longer carries its own edge walker; it builds meshes from the shared runtime preparation and traversal. 1x output is unchanged; at 3x/6x up to 33 pixels per frame differ in sampled frames (vertex-order/rounding).
 - **GPU3D clean-room raster core (output-identical):** polygon preparation, edge traversal and attribute interpolation sit behind a behavioural interface ([docs/GPU3D_RASTER_INTERFACE.md](docs/GPU3D_RASTER_INTERFACE.md)) pinned by 131 synthetic scenes and direct boundary tests, and were rewritten by an implementer who did not read the previous code or emulator sources, using the contracts, synthetic fixtures and sanitized intermediate-output probes. Eight scripted runs (frames, saves, audio), Godot Off/Picture and Full checks are unchanged. Not a hardware-accuracy or provenance-clearance claim.
