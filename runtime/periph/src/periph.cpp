@@ -1894,9 +1894,12 @@ struct Rtc::Impl {
         const unsigned day = static_cast<unsigned>(local.tm_mday);
         const unsigned weekday = static_cast<unsigned>(local.tm_wday);
         const unsigned hour24 = static_cast<unsigned>(local.tm_hour);
+        // GBATEK DS RTC hour register: bits 0-5 BCD hour (00-23 in 24-hour
+        // mode, 00-11 in 12-hour mode), bit 6 = PM for hours 12-23 in both
+        // modes (read-only in 24-hour mode).
         const unsigned hour = (status1_ & 0x02u) != 0 ? hour24 : hour24 % 12u;
         const auto hour_value = static_cast<std::uint8_t>(bcd(hour) |
-                                                           (hour >= 12 ? 0x40u : 0u));
+                                                           (hour24 >= 12 ? 0x40u : 0u));
         return {bcd(year), bcd(month), bcd(day), static_cast<std::uint8_t>(weekday),
                 hour_value, bcd(static_cast<unsigned>(local.tm_min)),
                 bcd(static_cast<unsigned>(local.tm_sec))};
