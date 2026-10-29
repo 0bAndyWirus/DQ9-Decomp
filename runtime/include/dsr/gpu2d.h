@@ -114,6 +114,8 @@ public:
     void attach_gpu3d(Gpu3D* gpu3d);
     // Enable the Full-mode presentation buffers; disabled accessors alias native output.
     void set_enhanced_presentation(bool enabled);
+    // Owner-thread-only Full viewport scale, clamped to the host's 1..6 range.
+    void set_presentation_scale(int scale);
     void render_line(int y);
     void vblank_start();
 

@@ -71,6 +71,8 @@ struct Gpu3DRasterView {
     const std::uint8_t* fog_density = nullptr;
     const std::uint32_t* output = nullptr;
     std::size_t output_pixel_count = 0;
+    // Full-geometry output corresponding to opaque_only_mask, when different.
+    const std::uint32_t* enhanced_output = nullptr;
     // Null unless optional capture has completed a render. A 1 permits opaque
     // or single-layer partial history; unsupported touches dilate by one pixel.
     const std::uint8_t* opaque_only_mask = nullptr;

@@ -18,4 +18,7 @@ DSR_SESSION_API void set_session_render_callback(dsr_session_handle* session,
 // Owner-thread-only optional fragment classification for hybrid GPU display.
 DSR_SESSION_API void set_session_capture_opaque_only(dsr_session_handle* session, bool enabled);
 
+// Set before stepping; affects only Full-mode presentation composition.
+DSR_SESSION_API void set_session_presentation_scale(dsr_session_handle* session, int scale);
+
 } // namespace dsr

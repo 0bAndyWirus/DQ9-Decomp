@@ -74,6 +74,16 @@ func _check(image: Image, host: Control, gpu: bool, label: String) -> bool:
 			_pixels += 1
 	return true
 
+func _screen_probe(host: Control, image: Image, top: bool, fraction: Vector2, expected: Color, label: String) -> bool:
+	var rect: Rect2 = (host.top_rect if top else host.bottom_rect).get_global_rect()
+	rect.position = rect.position.round()
+	var actual := image.get_pixelv(Vector2i(rect.position + rect.size * fraction))
+	if absf(actual.r - expected.r) > 1.1 / 255.0 or absf(actual.g - expected.g) > 1.1 / 255.0 or absf(actual.b - expected.b) > 1.1 / 255.0:
+		push_error("%s screen=%s sample=%s: got %s expected %s" % [label, "top" if top else "bottom", fraction, actual, expected])
+		return false
+	return true
+
+
 func _click(point: Vector2, pressed: bool) -> void:
 	var event := InputEventMouseButton.new()
 	event.position = point
@@ -426,6 +436,105 @@ func _run() -> void:
 	host._active_widescreen_mode = 2
 	host._set_widescreen_mode(0)
 	ok = host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and host._ui.widescreen_note.text.contains("Restart") and ok
+	# Full supplies a native-position 2D/presentation texture and a native-
+	# position eligibility mask, even though the 3D raster spans the wide
+	# texture. The asymmetric occluder and off-centre 3D color boundary make
+	# shifting either mask or GPU sampling independently observable.
+	var occluder := Color8(249, 193, 21)
+	var presentation_color := Color8(17, 101, 205)
+	var full_mask := Image.create(256, 192, false, Image.FORMAT_RGBA8)
+	full_mask.fill(Color.WHITE)
+	full_mask.fill_rect(Rect2i(40, 0, 32, 192), Color.BLACK)
+	var full_mask_texture := ImageTexture.create_from_image(full_mask)
+	var full_gpu := Image.create(1024, 576, false, Image.FORMAT_RGBA8)
+	full_gpu.fill(Stub.RIGHT)
+	full_gpu.fill_rect(Rect2i(0, 0, 448, 576), Stub.LEFT)
+	var full_gpu_texture := ImageTexture.create_from_image(full_gpu)
+	var full_presentation := Image.create(256, 192, false, Image.FORMAT_RGBA8)
+	full_presentation.fill(presentation_color)
+	full_presentation.fill_rect(Rect2i(40, 0, 32, 192), occluder)
+	var full_presentation_texture := ImageTexture.create_from_image(full_presentation)
+	var software_top := Image.create(256, 192, false, Image.FORMAT_RGBA8)
+	software_top.fill(TOP)
+	software_top.fill_rect(Rect2i(40, 0, 32, 192), occluder)
+	var software_bottom := Image.create(256, 192, false, Image.FORMAT_RGBA8)
+	software_bottom.fill(BOTTOM)
+	software_bottom.fill_rect(Rect2i(40, 0, 32, 192), occluder)
+	fake_machine.top = ImageTexture.create_from_image(software_top)
+	fake_machine.bottom = ImageTexture.create_from_image(software_bottom)
+	fake_machine.presentation_top = full_presentation_texture
+	fake_machine.presentation_bottom = full_presentation_texture
+	host._set_layout(0)
+	for top in [true, false]:
+		var software_color := TOP if top else BOTTOM
+		for mode in [1, 2]:
+			host._active_widescreen_mode = mode
+			host.set_gpu3d_frame(full_gpu_texture, full_mask_texture, top)
+			await _settle()
+			var full_capture := root.get_texture().get_image()
+			var label := "Picture baseline" if mode == 1 else "Full"
+			ok = _screen_probe(host, full_capture, top, Vector2(0.2, 0.5), occluder, label + " native 2D") and ok
+			ok = _screen_probe(host, full_capture, top, Vector2(0.35, 0.5), Stub.LEFT, label + " shifted 3D left") and ok
+			ok = _screen_probe(host, full_capture, top, Vector2(0.48, 0.5), Stub.RIGHT, label + " shifted 3D right") and ok
+			ok = _screen_probe(host, full_capture, not top, Vector2(0.48, 0.5), presentation_color if mode == 2 else (BOTTOM if top else TOP), label + " other screen") and ok
+			if mode == 2:
+				host._toggle_gpu3d_compare()
+				await _settle()
+				full_capture = root.get_texture().get_image()
+				ok = _screen_probe(host, full_capture, top, Vector2(0.2, 0.5), occluder, "Full F6 native 2D") and ok
+				ok = _screen_probe(host, full_capture, top, Vector2(0.48, 0.5), software_color, "Full F6 software") and ok
+				host._toggle_gpu3d_compare()
+				host.set_gpu3d_frame(null, null, top)
+				await _settle()
+				full_capture = root.get_texture().get_image()
+				ok = host.gpu3d_rect == null and ok
+				ok = _screen_probe(host, full_capture, top, Vector2(0.2, 0.5), occluder, "Full fallback native 2D") and ok
+				ok = _screen_probe(host, full_capture, top, Vector2(0.48, 0.5), software_color, "Full fallback software") and ok
+	# Raw wide eligibility and software raster have their own wide UV, not the
+	# centered native mask's UV. Exercise all three decisions on both sides.
+	var side_left := Color8(222, 123, 49)
+	var side_right := Color8(41, 206, 90)
+	var side_software := Image.create(1024, 576, false, Image.FORMAT_RGBA8)
+	side_software.fill(Color(1, 0, 1, 0))
+	side_software.fill_rect(Rect2i(0, 0, 85, 576), side_left)
+	side_software.fill_rect(Rect2i(896, 0, 85, 576), side_right)
+	var side_eligibility := Image.create(1024, 576, false, Image.FORMAT_R8)
+	side_eligibility.fill(Color.BLACK)
+	side_eligibility.fill_rect(Rect2i(43, 0, 42, 576), Color.WHITE)
+	side_eligibility.fill_rect(Rect2i(939, 0, 42, 576), Color.WHITE)
+	var side_software_texture := ImageTexture.create_from_image(side_software)
+	var side_eligibility_texture := ImageTexture.create_from_image(side_eligibility)
+	for mode in [0, 1, 2]:
+		host._active_widescreen_mode = mode
+		host.set_gpu3d_frame(full_gpu_texture, full_mask_texture, true)
+		await _settle()
+		var baseline := root.get_texture().get_image()
+		host.set_gpu3d_frame(full_gpu_texture, full_mask_texture, true, side_software_texture, side_eligibility_texture)
+		await _settle()
+		var side_capture := root.get_texture().get_image()
+		ok = _screen_probe(host, side_capture, true, Vector2(0.2, 0.5), occluder, "side fallback preserves native 2D mode %d" % mode) and ok
+		for sample in [
+			[Vector2(-0.13, 0.5), side_left, Stub.LEFT, "left unsafe opaque"],
+			[Vector2(-0.09, 0.5), Stub.LEFT, Stub.LEFT, "left safe"],
+			[Vector2(-0.05, 0.5), Stub.LEFT, Stub.LEFT, "left unsafe nonopaque"],
+			[Vector2(1.05, 0.5), side_right, Stub.RIGHT, "right unsafe opaque"],
+			[Vector2(1.09, 0.5), Stub.RIGHT, Stub.RIGHT, "right safe"],
+			[Vector2(1.13, 0.5), Stub.RIGHT, Stub.RIGHT, "right unsafe nonopaque"],
+		]:
+			if mode == 2:
+				ok = _screen_probe(host, side_capture, true, sample[0], sample[1], "Full " + sample[3]) and ok
+			elif mode == 1:
+				ok = _screen_probe(host, side_capture, true, sample[0], sample[2], "Picture " + sample[3]) and ok
+			else:
+				# Off clips the wide child: the newly supplied textures must not
+				# alter the rendered pixels outside the native screen either.
+				var off_rect: Rect2 = host.top_rect.get_global_rect()
+				off_rect.position = off_rect.position.round()
+				var off_pixel := Vector2i(off_rect.position + off_rect.size * sample[0])
+				if side_capture.get_pixelv(off_pixel) != baseline.get_pixelv(off_pixel):
+					push_error("Off changed at " + sample[3])
+					ok = false
+	host._active_widescreen_mode = 2
 	# No emulated frame arrives while paused: presentation switches must update
 	# both the displayed overlay and the texture used for its color-key hit test.
 	var paused_under := Color8(20, 190, 40)

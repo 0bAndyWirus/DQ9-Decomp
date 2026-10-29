@@ -440,7 +440,7 @@ void test_enhanced_presentation_mask_preserves_hardware_output() {
     set_bg_palette(gpu, 0U, 0x7c00U);
     fake_3d_line.fill(0U);
     fake_enhanced_3d_line.fill((31U << 24U) | 63U);
-    fake_enhanced_3d_line[2] = (16U << 24U) | 63U;
+    fake_enhanced_3d_line[33] = (16U << 24U) | 63U;
     fake_enhanced_enabled = true;
     gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
     gpu.render_line(0);
@@ -454,6 +454,7 @@ void test_enhanced_presentation_mask_preserves_hardware_output() {
     gpu.render_line(0);
     assert(pixel(gpu.presentation_top(), 2U) == 0xff830073U);
     assert(pixel(gpu.screen_top(), 2U) == 0xff0000ffU);
+    fake_enhanced_3d_line[33] = (31U << 24U) | 63U;
     gpu.io_write(kA + 0x50U, 0U, 16);
     gpu.io_write(kA, (1U << 16U) | (1U << 13U) | (1U << 8U) | (1U << 3U), 32);
     write16(gpu, kA + 0x40U, 0x0001U);
@@ -467,6 +468,44 @@ void test_enhanced_presentation_mask_preserves_hardware_output() {
     assert(pixel(gpu.presentation_top(), 1U) == 0xffff0000U);
     assert(pixel(gpu.screen_top(), 1U) == 0xff0000ffU);
     fake_enhanced_enabled = false;
+}
+
+void test_full_presentation_centered_raster() {
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake_gpu3d;
+    gpu.attach_gpu3d(&fake_gpu3d);
+    gpu.set_enhanced_presentation(true);
+    set_power(gpu, 0x8207U);
+    set_bg_palette(gpu, 0U, 0x7c00U);
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
+    for (int scale = 1; scale <= 6; ++scale) {
+        const unsigned width = (256U * scale * 4U + 1U) / 3U;
+        for (unsigned x = 0; x < 256; ++x) {
+            fake_3d_line[x] = (31U << 24U) | ((x & 31U) * 2U);
+            fake_enhanced_3d_line[x] = (31U << 24U) | (((255U - x) & 31U) * 2U);
+        }
+        gpu.set_presentation_scale(scale);
+        for (bool enhanced : {false, true}) {
+            fake_enhanced_enabled = enhanced;
+            gpu.render_line(0);
+            for (unsigned x = 0; x < 256; ++x) {
+                const unsigned src = ((2U * x + 1U) * scale + width - 256U * scale) * 128U / width;
+                const unsigned red = enhanced ? (255U - src) & 31U : src & 31U;
+                assert(pixel(gpu.presentation_top(), x) ==
+                       (0xff000000U | (static_cast<unsigned>(dsr::Gpu2D::expand_color5(red)) << 16U)));
+                assert(pixel(gpu.screen_top(), x) ==
+                       (0xff000000U | (static_cast<unsigned>(dsr::Gpu2D::expand_color5(x & 31U)) << 16U)));
+                assert(gpu.presentation_three_d_mask()[x] == 1U);
+            }
+        }
+    }
+    // Scroll and windows still operate in native 2D coordinates.
+    fake_enhanced_enabled = false;
+    gpu.io_write(kA + 0x10U, 255U, 16);
+    gpu.render_line(0);
+    assert(gpu.presentation_three_d_mask()[0] == 0U);
+    assert(pixel(gpu.presentation_top(), 1) == 0xff0000ffU);
+    gpu.io_write(kA + 0x10U, 0U, 16);
 }
 
 void test_mode_six_does_not_force_bg0_3d() {
@@ -1790,6 +1829,7 @@ int main(int argc, char** argv) {
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
         {"presentation_buffers", test_presentation_buffers_follow_full_mode},
         {"enhanced_mask", test_enhanced_presentation_mask_preserves_hardware_output},
+        {"full_centered_raster", test_full_presentation_centered_raster},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},
         {"indexed_bitmap", test_extended_256_color_bitmap},

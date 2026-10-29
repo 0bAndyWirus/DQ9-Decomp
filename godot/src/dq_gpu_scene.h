@@ -35,6 +35,8 @@ public:
     void apply_frame(const dq9::GpuSceneFrame& frame);
     godot::Ref<godot::Texture2D> get_texture() const;
     godot::Ref<godot::Texture2D> get_mask_texture() const;
+    godot::Ref<godot::Texture2D> get_side_software_texture() const;
+    godot::Ref<godot::Texture2D> get_side_eligibility_texture() const;
     godot::Ref<godot::Texture2D> get_raw_texture() const;
     godot::Ref<godot::Texture2D> get_raw_mask_texture() const;
     bool get_screen_is_top() const { return screen_is_top_; }
@@ -93,6 +95,10 @@ private:
     godot::Ref<godot::ImageTexture> color_transfer_;
     godot::Ref<godot::Image> toon_image_, mask_image_;
     godot::PackedByteArray toon_bytes_, mask_bytes_;
+    godot::Ref<godot::ImageTexture> side_software_texture_, side_eligibility_texture_;
+    godot::Ref<godot::Image> side_software_image_, side_eligibility_image_;
+    godot::PackedByteArray side_software_bytes_, side_eligibility_bytes_;
+    bool side_valid_ = false;
 #ifdef DQ9_GPU_SCENE_TESTS
     std::array<std::uint32_t, 256 * 192> reference_output_{};
     std::array<std::uint8_t, 256 * 192> reference_polygon_ids_{};

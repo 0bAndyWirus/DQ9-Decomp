@@ -169,6 +169,23 @@ struct GpuSceneFrame {
     std::size_t opaque_count = 0;
     std::array<std::uint8_t, 256 * 192> mask{};
     std::array<std::uint8_t, 256 * 192> opaque_only{};
+    // Full-only, RGBA8 display conversion of the raster captured with geometry.
+    // Alpha is opaque only where the 3D raster itself is fully opaque.
+    std::vector<std::uint8_t> side_software;
+    bool capture_side_software(const dsr::Gpu3DRasterView& raster) {
+        const auto* pixels = raster.enhanced_output ? raster.enhanced_output : raster.output;
+        if (!pixels || raster.output_pixel_count != 256U * 192U) return false;
+        side_software.resize(256U * 192U * 4U);
+        for (std::size_t i = 0; i < 256U * 192U; ++i) {
+            const auto p = pixels[i];
+            for (unsigned c = 0; c < 3; ++c) {
+                const auto v = (p >> (c * 6U + 1U)) & 31U;
+                side_software[i * 4U + c] = static_cast<std::uint8_t>(v * 255U / 31U);
+            }
+            side_software[i * 4U + 3U] = ((p >> 24U) & 31U) == 31U ? 255U : 0U;
+        }
+        return true;
+    }
     std::uint32_t three_d_pixels = 0, gpu_pixels = 0;
 #ifdef DQ9_GPU_SCENE_TESTS
     // Captured at render_start alongside geometry, never from the later LCD

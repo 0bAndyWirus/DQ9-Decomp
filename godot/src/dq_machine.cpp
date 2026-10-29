@@ -373,7 +373,10 @@ public:
         if (!enabled && gpu_scene_) { memdelete(gpu_scene_); gpu_scene_ = nullptr; }
     }
     void set_gpu3d_scale(int scale) {
-        gpu_scale_ = std::clamp(scale, 1, 6);
+        {
+            std::lock_guard lock(mutex_);
+            gpu_scale_ = std::clamp(scale, 1, 6);
+        }
         if (gpu_scene_) gpu_scene_->set_scale(gpu_scale_);
     }
     void set_hd_textures_enabled(bool enabled) {
@@ -428,6 +431,12 @@ public:
     }
     godot::Ref<godot::Texture2D> get_gpu3d_mask_texture() const {
         return gpu_scene_ ? gpu_scene_->get_mask_texture() : godot::Ref<godot::Texture2D>();
+    }
+    godot::Ref<godot::Texture2D> get_gpu3d_side_software_texture() const {
+        return gpu_scene_ ? gpu_scene_->get_side_software_texture() : godot::Ref<godot::Texture2D>();
+    }
+    godot::Ref<godot::Texture2D> get_gpu3d_side_eligibility_texture() const {
+        return gpu_scene_ ? gpu_scene_->get_side_eligibility_texture() : godot::Ref<godot::Texture2D>();
     }
     bool get_gpu3d_enabled() {
         std::lock_guard lock(mutex_);
@@ -782,6 +791,8 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("set_gpu3d_guest_widescreen", "enabled"), &DqMachine::set_gpu3d_guest_widescreen);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_texture"), &DqMachine::get_gpu3d_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_mask_texture"), &DqMachine::get_gpu3d_mask_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_side_software_texture"), &DqMachine::get_gpu3d_side_software_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_side_eligibility_texture"), &DqMachine::get_gpu3d_side_eligibility_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_raw_texture"), &DqMachine::get_gpu3d_raw_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_raw_mask_texture"), &DqMachine::get_gpu3d_raw_mask_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_gpu3d_screen_is_top"), &DqMachine::get_gpu3d_screen_is_top);
@@ -884,6 +895,7 @@ private:
         target.captured_polygon_count = source.geometry.polygon_count;
         target.polygon_count = target.vertex_count = target.opaque_count = 0;
         target.decoded_this_frame = 0;
+        target.side_software.clear();
 #ifdef DQ9_GPU_SCENE_TESTS
         target.native_translucent_polygons = static_cast<std::uint32_t>(source.draw_order.translucent_count);
         target.blending_polygons = 0;
@@ -902,6 +914,7 @@ private:
         target.vertex_count = geometry.vertex_count;
         std::copy_n(geometry.vertices, geometry.vertex_count, target.vertices.begin());
         std::copy_n(source.opaque_only_mask, target.opaque_only.size(), target.opaque_only.begin());
+        if (widescreen_camera_ && !target.capture_side_software(source.raster)) return;
 #ifdef DQ9_GPU_SCENE_TESTS
         target.capture_cause_pixels.fill(0);
         if (source.raster.capture_causes)
@@ -1067,6 +1080,7 @@ private:
                 double speed = 0.0;
                 bool do_step = false, manual = false;
                 bool gpu_enabled = false;
+                int gpu_scale = 1;
                 bool replaying = false, record_hashes = false;
                 std::uint64_t gpu_epoch = 0;
                 {
@@ -1133,7 +1147,7 @@ private:
                             input = input_script_[script_cursor_++].input;
                         speed = 0.0;
                     }
-                    gpu_enabled = gpu_enabled_; gpu_epoch = gpu_epoch_;
+                    gpu_enabled = gpu_enabled_; gpu_epoch = gpu_epoch_; gpu_scale = gpu_scale_;
                 }
                 if (gpu_enabled != render_callback_enabled || gpu_epoch != render_callback_epoch) {
                     gpu_delay.reset();
@@ -1158,6 +1172,7 @@ private:
                         dsr::set_session_render_callback(session_, {});
                     }
                 }
+                if (widescreen_camera_) dsr::set_session_presentation_scale(session_, gpu_scale);
                 if (gpu_enabled) gpu_delay.begin_step();
                 if (dsr_session_step(session_, &input, error, sizeof(error)) != 0) {
                     std::lock_guard lock(mutex_); error_ = error; running_ = false; paused_ = true;
@@ -1222,7 +1237,8 @@ private:
                                 copy_pixels(screen == 0 ? displayed.presentation_top : displayed.presentation_bottom, slot.presentation[screen]->data());
                             }
                         }
-                        gpu_delay.publish(frames_[output_slot].gpu, displayed, gpu_epoch);
+                        gpu_delay.publish(frames_[output_slot].gpu, displayed, gpu_epoch,
+                                          widescreen_camera_, gpu_scale);
                     }
                 }
                 const int scene = dsr_session_scene(session_);

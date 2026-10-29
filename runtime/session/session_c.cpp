@@ -196,3 +196,7 @@ void dsr::set_session_render_callback(dsr_session_handle* session,
 void dsr::set_session_capture_opaque_only(dsr_session_handle* session, bool enabled) {
     if (session) session->session.machine().gpu3d().set_capture_opaque_only(enabled);
 }
+
+void dsr::set_session_presentation_scale(dsr_session_handle* session, int scale) {
+    if (session) session->session.machine().gpu2d().set_presentation_scale(scale);
+}

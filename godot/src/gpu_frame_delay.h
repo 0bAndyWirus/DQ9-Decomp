@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_scene_frame.h"
+#include "dsr/full_presentation.h"
 
 #include <algorithm>
 #include <memory>
@@ -20,7 +21,8 @@ public:
         return *current_;
     }
     void publish(std::unique_ptr<GpuSceneFrame>& destination,
-                 const dsr::RenderFrame& displayed, std::uint64_t epoch) {
+                 const dsr::RenderFrame& displayed, std::uint64_t epoch,
+                 bool full = false, int scale = 1) {
         auto recycled = std::move(destination);
         destination = std::move(previous_);
         if (!destination) {
@@ -34,13 +36,18 @@ public:
             destination->epoch = epoch;
             destination->new_textures.clear();
             destination->opaque_only.fill(0);
+            destination->side_software.clear();
         }
         destination->number = displayed.frame_number;
         destination->screen_is_top = (displayed.gpu2d.powcnt1 & (1U << 15U)) != 0;
         destination->three_d_pixels = destination->gpu_pixels = 0;
+        const unsigned safe_scale = dsr::full_presentation_scale(scale);
         for (std::size_t i = 0; i < destination->mask.size(); ++i) {
             const auto selected = displayed.three_d_mask[i];
-            destination->mask[i] = selected & destination->opaque_only[i];
+            const auto source = full
+                ? (i / 256U) * 256U + dsr::full_presentation_source_x(i % 256U, safe_scale)
+                : i;
+            destination->mask[i] = selected & destination->opaque_only[source];
             destination->three_d_pixels += selected;
             destination->gpu_pixels += destination->mask[i];
         }

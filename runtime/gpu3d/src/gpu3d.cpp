@@ -3260,6 +3260,7 @@ Gpu3DRasterView Gpu3D::raster_view() const {
         impl_->io.data() + (0x04000360U - kIoBase),
         impl_->output.data(),
         impl_->output.size(),
+        enhanced_line(0),
         impl_->opaque_only_valid ? impl_->opaque_only_dilated.data() : nullptr,
         impl_->opaque_only_valid ? impl_->capture_data->causes.data() : nullptr,
         impl_->opaque_only_valid ? impl_->polygon_totals() : nullptr,
