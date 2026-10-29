@@ -29,6 +29,14 @@ target_include_directories(dsr_raster_boundary_tests PRIVATE ${CMAKE_CURRENT_SOU
 dsr_target_compile_options(dsr_raster_boundary_tests -Wall -Wextra -Wpedantic)
 add_test(NAME dsr_raster_boundary_tests COMMAND dsr_raster_boundary_tests)
 
+# The compatibility raster snapshots require separate float operations, not FMA.
+# Windows already sets the corresponding strict floating-point option in dsr_headers.
+if(NOT WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  foreach(target dsr_gpu3d dsr_gpu3d_tests dsr_raster_golden_tests dsr_raster_boundary_tests)
+    target_compile_options(${target} PRIVATE -ffp-contract=off)
+  endforeach()
+endif()
+
 # BandPool is header-only and can also be used by the 2D renderer.
 find_package(Threads REQUIRED)
 target_link_libraries(dsr_gpu3d PUBLIC Threads::Threads)
