@@ -15,8 +15,11 @@ inline constexpr std::size_t kHardwarePolygonLimit = 2048;
 inline constexpr std::size_t kHardwareVertexLimit = 6144;
 
 inline bool accepts_geometry(const dsr::Gpu3DGeometryView& geometry, bool full) {
+    // Hardware polygon overflow discards later polygons; a full retained list
+    // is also what the software rasterizer draws.
     return !geometry.enhanced_overflow &&
-           (full || (!geometry.vertex_overflow && !geometry.polygon_overflow)) &&
+           (full || !geometry.vertex_overflow) &&
+           (full || !geometry.polygon_overflow || geometry.polygon_count == kHardwarePolygonLimit) &&
            geometry.vertex_count <= (full ? kGpuVertexLimit : kHardwareVertexLimit) &&
            geometry.polygon_count <= (full ? kGpuPolygonLimit : kHardwarePolygonLimit);
 }

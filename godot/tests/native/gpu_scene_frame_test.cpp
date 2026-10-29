@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -55,16 +56,39 @@ void test_geometry_acceptance() {
     require(!dq9::accepts_geometry(view, true), "Full rejects excess vertices");
     view.vertex_count = 12288; view.polygon_count = 12289;
     require(!dq9::accepts_geometry(view, true), "Full rejects excess polygons");
-    view.vertex_count = 1; view.polygon_count = 1;
-    view.vertex_overflow = true;
+    // Exercise every combination independently of the count checks. Full
+    // ignores both hardware flags, but neither mode accepts enhanced overflow.
+    view.vertex_count = 1; view.polygon_count = 2048;
+    for (unsigned flags = 0; flags < 8; ++flags) {
+        view.vertex_overflow = (flags & 1U) != 0;
+        view.polygon_overflow = (flags & 2U) != 0;
+        view.enhanced_overflow = (flags & 4U) != 0;
+        require(dq9::accepts_geometry(view, false) == ((flags & 5U) == 0),
+                "classic accepts polygon overflow only without other overflow");
+        require(dq9::accepts_geometry(view, true) == ((flags & 4U) == 0),
+                "Full ignores hardware flags but rejects enhanced overflow");
+    }
+    view = {};
+    view.polygon_overflow = true;
+    view.vertex_count = 6144; view.polygon_count = 2048;
+    require(dq9::accepts_geometry(view, false), "overflow retained hardware limits are inclusive");
+    view.polygon_count = 2047;
     require(!dq9::accepts_geometry(view, false) && dq9::accepts_geometry(view, true),
-            "hardware vertex overflow rejects classic only");
-    view.vertex_overflow = false; view.polygon_overflow = true;
+            "overflow with incomplete retained list rejects classic only");
+    view.polygon_count = 0;
     require(!dq9::accepts_geometry(view, false) && dq9::accepts_geometry(view, true),
-            "hardware polygon overflow rejects classic only");
-    view.polygon_overflow = false; view.enhanced_overflow = true;
+            "overflow with empty retained list rejects classic only");
+    view.polygon_count = 2048;
+    view.vertex_count = 6145;
+    require(!dq9::accepts_geometry(view, false), "overflow cannot admit excess vertices");
+    view.vertex_count = 6144; view.polygon_count = 2049;
+    require(!dq9::accepts_geometry(view, false), "overflow cannot admit excess polygons");
+    view.vertex_count = std::numeric_limits<std::size_t>::max(); view.polygon_count = 1;
     require(!dq9::accepts_geometry(view, false) && !dq9::accepts_geometry(view, true),
-            "enhanced overflow rejects both modes even below limits");
+            "malformed vertex count rejects both modes");
+    view.vertex_count = 1; view.polygon_count = std::numeric_limits<std::size_t>::max();
+    require(!dq9::accepts_geometry(view, false) && !dq9::accepts_geometry(view, true),
+            "malformed polygon count rejects both modes");
 }
 
 void test_ring_recycling() {
