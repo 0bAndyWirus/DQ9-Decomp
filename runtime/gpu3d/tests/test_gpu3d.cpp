@@ -3693,9 +3693,10 @@ void test_hires_band_parallel_identity() {
     std::cout << "PASS: hi-res band identity 9 scenes x 3 thread modes x 2 frames x 196608 pixels\n";
 }
 
-void opaque_mask_quad(Gpu3D& gpu, std::uint32_t attr, std::int16_t z) {
+void opaque_mask_quad(Gpu3D& gpu, std::uint32_t attr, std::int16_t z,
+                      std::uint32_t polygon_id = 9U) {
     send(gpu, 0x20, {0x001fU});
-    send(gpu, 0x29, {attr | 0xc0U | (9U << 24U)});
+    send(gpu, 0x29, {attr | 0xc0U | (polygon_id << 24U)});
     send(gpu, 0x40, {1U});
     for (const auto [x, y] : std::array<std::array<std::int16_t, 2>, 4>{
              std::array<std::int16_t, 2>{-1024, -1024}, {1024, -1024},
@@ -3783,6 +3784,215 @@ void test_capture_fragment_random_reference() {
                    "captured eligibility agrees with native shade alpha, not raw texel alpha")) std::exit(1);
     }
     std::cout << "PASS: 128 randomized capture fragments against original/native references\n";
+}
+
+void test_capture_depth_rejected_history() {
+    constexpr unsigned pixel = 90U * 256U + 112U;
+    constexpr std::size_t pixels = 256U * 192U;
+    for (int threads : {0, 2, 6}) {
+        std::uint32_t behind_color = 0;
+        for (int scene = 0; scene < 6; ++scene) {
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.io_write(0x04000060U, 1U << 3U, 32);
+            quad(gpu, 0x03e0U, (31U << 16U) | (1U << 24U), 0);
+            if (scene != 2) {
+                const auto attr = (16U << 16U) | (scene == 5 ? (1U << 14U) : 0U);
+                opaque_mask_quad(gpu, attr, scene == 4 ? 0 : 1024, 9U);
+            }
+            if (scene != 0)
+                opaque_mask_quad(gpu, 16U << 16U, -1024, 10U);
+            if (scene == 2)
+                opaque_mask_quad(gpu, 16U << 16U, -2048, 11U);
+            if (scene == 3)
+                opaque_mask_quad(gpu, 16U << 16U, 2048, 11U);
+            submit_frame(gpu);
+            const auto without_capture = gpu.raster_view().output;
+            std::vector<std::uint32_t> output(without_capture, without_capture + pixels);
+            gpu.set_capture_opaque_only(true);
+            gpu.render_start();
+            const auto raster = gpu.raster_view();
+            bool ok = check(raster.opaque_only_mask != nullptr &&
+                            raster.capture_causes != nullptr &&
+                            raster.capture_polygon_touches != nullptr,
+                            "depth history capture publishes mask and diagnostics");
+            if (!ok) std::exit(1);
+            ok &= check(std::equal(output.begin(), output.end(), raster.output),
+                        "depth history capture preserves native output");
+            ok &= check(raster.opaque_only_mask[pixel] ==
+                            ((scene == 2 || scene == 4 || scene == 5) ? 0U : 1U),
+                        "occluded partials are ignored except ties and depth-equal mode");
+            if (scene == 0) {
+                behind_color = raster.output[pixel];
+                ok &= check(raster.capture_causes[pixel] != 0U &&
+                            raster.capture_polygon_touches[1] != 0U,
+                            "occluded partial remains in raw capture diagnostics");
+            } else {
+                ok &= check(raster.output[pixel] != behind_color,
+                            "later accepted partial changes the native framebuffer");
+            }
+            if (!ok) std::exit(1);
+        }
+        {
+            Gpu3D edge;
+            edge.set_render_threads(threads);
+            edge.set_capture_opaque_only(true);
+            edge.io_write(0x04000060U, 1U << 3U, 32);
+            opaque_mask_quad(edge, 31U << 16U, 0, 1U);
+            opaque_mask_quad(edge, 16U << 16U, 1024, 9U);
+            submit_frame(edge);
+            const auto raster = edge.raster_view();
+            constexpr unsigned inside = 90U * 256U + 112U;
+            constexpr unsigned boundary = 90U * 256U + 96U;
+            bool ok = check(raster.opaque_only_mask != nullptr && raster.capture_causes != nullptr,
+                            "occluder edge capture publishes buffers");
+            if (!ok) std::exit(1);
+            ok &= check(raster.capture_causes[boundary] != 0U &&
+                        raster.opaque_only_mask[boundary] == 0U,
+                        "rejected partial at an opaque edge remains conservative");
+            ok &= check(raster.opaque_only_mask[inside] == 1U,
+                        "rejected partial inside an opaque neighborhood stays eligible");
+            if (!ok) std::exit(1);
+        }
+        {
+            Gpu3D dot;
+            dot.set_render_threads(threads);
+            dot.set_capture_opaque_only(true);
+            dot.io_write(0x04000060U, 1U << 3U, 32);
+            dot.io_write(0x04000610U, 8U, 32);
+            quad(dot, 0x03e0U, (31U << 16U) | (1U << 24U), 0);
+            send(dot, 0x20, {0x001fU});
+            send(dot, 0x29, {0xc0U | (16U << 16U) | (1U << 13U) | (9U << 24U)});
+            send(dot, 0x40, {0U});
+            position16(dot, 0, 0, 1024);
+            position16(dot, 0, 0, 1024);
+            position16(dot, 0, 0, 1024);
+            send(dot, 0x41);
+            submit_frame(dot);
+            const auto raster = dot.raster_view();
+            constexpr unsigned center = 96U * 256U + 128U;
+            bool ok = check(raster.opaque_only_mask != nullptr && raster.capture_causes != nullptr,
+                            "one-dot capture publishes buffers");
+            if (!ok) std::exit(1);
+            ok &= check(raster.capture_causes[center] != 0U &&
+                        raster.opaque_only_mask[center] == 1U,
+                        "safely occluded one-dot partial is diagnostic-only");
+            ok &= check(((dot.line(96)[128] >> 6U) & 63U) == 63U,
+                        "depth-rejected one-dot leaves opaque framebuffer intact");
+            if (!ok) std::exit(1);
+        }
+        {
+            Gpu3D transparent;
+            transparent.set_render_threads(threads);
+            transparent.set_capture_opaque_only(true);
+            auto source = std::make_unique<TestTextureSource>();
+            source->textures[0].fill(1U); // A5I3 alpha zero, palette index one.
+            dsr::gpu3d_detail::Gpu3DTestAccess::attach_texture_source(
+                transparent, source->readonly_view());
+            transparent.io_write(0x04000060U, 1U | (1U << 3U), 32);
+            opaque_mask_quad(transparent, 31U << 16U, 0, 1U);
+            send(transparent, 0x2a, {6U << 26U});
+            opaque_mask_quad(transparent, 16U << 16U, 1024, 9U);
+            submit_frame(transparent);
+            const auto raster = transparent.raster_view();
+            constexpr unsigned boundary = 90U * 256U + 96U;
+            bool ok = check(raster.opaque_only_mask != nullptr && raster.capture_causes != nullptr,
+                            "transparent rejected fragment capture publishes buffers");
+            if (!ok) std::exit(1);
+            ok &= check(raster.capture_causes[boundary] != 0U &&
+                        raster.opaque_only_mask[boundary] == 1U,
+                        "zero-effective-alpha rejected partial does not exclude an opaque edge");
+            if (!ok) std::exit(1);
+        }
+        {
+            Gpu3D dots;
+            dots.set_render_threads(threads);
+            dots.set_capture_opaque_only(true);
+            dots.io_write(0x04000060U, 1U << 3U, 32);
+            dots.io_write(0x04000610U, 8U, 32);
+            quad(dots, 0x03e0U, (31U << 16U) | (1U << 24U), 1024);
+            send(dots, 0x20, {0x001fU});
+            send(dots, 0x29, {0xc0U | (31U << 16U) | (1U << 13U) | (2U << 24U)});
+            for (std::int16_t y : {-96, -64, 0, 32, 64}) {
+                for (std::int16_t x : {-64, -32, 0, 32, 64}) {
+                    send(dots, 0x40, {0U});
+                    for (int vertex = 0; vertex < 3; ++vertex)
+                        position16(dots, x, y, -1024);
+                    send(dots, 0x41);
+                }
+            }
+            opaque_mask_quad(dots, 16U << 16U, 0, 9U);
+            opaque_mask_quad(dots, 16U << 16U, 0, 10U);
+            submit_frame(dots);
+            const auto raster = dots.raster_view();
+            constexpr unsigned center = 96U * 256U + 128U;
+            bool ok = check(raster.opaque_only_mask != nullptr && raster.capture_causes != nullptr,
+                            "native-only occluder capture publishes buffers");
+            if (!ok) std::exit(1);
+            for (unsigned y = 94; y <= 98; ++y)
+                for (unsigned x = 126; x <= 130; ++x)
+                    ok &= check((dots.line(y)[x] & 63U) == 63U,
+                                "native-only dots cover the complete occlusion neighborhood");
+            ok &= check((dots.line(96)[128] & 63U) == 63U &&
+                        raster.capture_causes[center] != 0U,
+                        "opaque one-dot fragment rejects the partial at the center");
+            ok &= check(raster.opaque_only_mask[center] == 0U,
+                        "native-only opaque dot cannot prove GPU occlusion");
+            if (!ok) std::exit(1);
+        }
+        Gpu3D shadow;
+        shadow.set_render_threads(threads);
+        shadow.set_capture_opaque_only(true);
+        shadow_scene(shadow, true, 1U);
+        submit_frame(shadow);
+        const auto raster = shadow.raster_view();
+        constexpr unsigned shadow_pixel = 96U * 256U + 128U;
+        bool ok = check(raster.opaque_only_mask != nullptr &&
+                        raster.opaque_only_mask[shadow_pixel] == 0U,
+                        "depth-failed shadow mask remains conservatively ineligible");
+        ok &= check(((shadow.line(96)[128] >> 6U) & 63U) == 29U,
+                    "depth-failed shadow mask still sets stencil for shadow color");
+        if (!ok) std::exit(1);
+    }
+    std::cout << "PASS: depth-aware capture history and shadow stencil, 3 thread modes\n";
+}
+
+void test_capture_opaque_depth_provenance() {
+    constexpr unsigned pixel = 90U * 256U + 112U;
+    for (int threads : {0, 2, 6}) {
+        for (int scene = 0; scene < 5; ++scene) {
+            Gpu3D gpu;
+            gpu.set_render_threads(threads);
+            gpu.set_capture_opaque_only(true);
+            auto source = std::make_unique<TestTextureSource>();
+            // Every native sample sees opaque index 1, even in the potentially
+            // cutout case. Eligibility must depend on format, not this sample.
+            source->textures[0].fill(scene == 2 ? 0xf9U : scene == 3 ? 0xffU : 0x55U);
+            source->palettes[0][2] = 31U;
+            dsr::gpu3d_detail::Gpu3DTestAccess::attach_texture_source(gpu, source->readonly_view());
+            gpu.io_write(0x04000060U, 1U | (1U << 3U), 32);
+            const auto texture = scene == 2 ? 6U << 26U :
+                                 scene == 3 ? 7U << 26U :
+                                 (2U << 26U) | (scene == 1 || scene == 4 ? 1U << 29U : 0U);
+            send(gpu, 0x2a, {texture});
+            quad(gpu, 0x7fffU, (31U << 16U) | (1U << 24U), 0);
+            send(gpu, 0x2a, {0U});
+            if (scene == 4)
+                quad(gpu, 0x7fffU, (31U << 16U) | (2U << 24U), -512);
+            opaque_mask_quad(gpu, 16U << 16U, 1024, 9U);
+            opaque_mask_quad(gpu, 16U << 16U, 2048, 10U);
+            submit_frame(gpu);
+            const auto raster = gpu.raster_view();
+            bool ok = check(raster.opaque_only_mask != nullptr && raster.capture_causes != nullptr,
+                            "opaque depth provenance capture publishes buffers");
+            if (!ok) std::exit(1);
+            ok &= check(raster.capture_causes[pixel] != 0U,
+                        "rejected partial layers reach provenance guard");
+            ok &= check(raster.opaque_only_mask[pixel] == (scene == 0 || scene == 4 ? 1U : 0U),
+                        "only reliably opaque final depth protects rejected partials");
+            if (!ok) std::exit(1);
+        }
+    }
 }
 
 void test_opaque_only_capture() {
@@ -3915,6 +4125,8 @@ int main() {
     test_capture_fragment_random_reference();
     test_single_layer_capture_policy();
     test_opaque_only_capture();
+    test_capture_depth_rejected_history();
+    test_capture_opaque_depth_provenance();
     test_band_parallel_identity();
     test_color_rounding_matches_lround();
     test_prepared_texture_and_polygon_cache_reference();

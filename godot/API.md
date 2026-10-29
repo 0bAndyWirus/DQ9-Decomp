@@ -443,17 +443,36 @@ This pass never writes depth or replaces opaque polygon-ID/fog metadata.
 Hybrid presentation uses the software renderer's optional `opaque_only_mask`,
 captured with geometry at scanline214. `Gpu3D::set_capture_opaque_only(bool)` is
 off by default; the Godot owner thread enables it only while GPU3D is enabled.
-Capture now permits one nonzero partial fragment over opaque history, including
-partial fragments rejected by the depth test (the GPU performs that test too).
+Capture permits one nonzero partial fragment over opaque history. A strict-depth
+rejected partial fragment does not consume a layer or otherwise contaminate
+eligibility only when it is behind an opaque destination by more than 255 depth
+units, and after rendering every pixel in its full 3×3 final neighbourhood has
+reliable opaque depth closer by more than 255 depth units. Provenance tracks the
+last actual depth write, not just the accumulated framebuffer alpha. An opaque
+uniform clear or an alpha31 untextured polygon or indexed texture format 2/3/4
+without colour-zero transparency qualifies; cutout, direct, compressed and
+variable-alpha textures, translucent depth writes, shadows and bitmap clear do
+not. Zero-alpha and alpha-test-rejected fragments do not replace depth provenance.
+The guard also rejects any depth-accepted nonzero dot in that neighbourhood, since
+it may be native-only.
+Screen-border pixels cannot satisfy the full-neighbourhood guard. Ambiguous
+pixels fall back to software, including ties, near depths and
+depth-equal/tolerance mode (bit14). This guard
+is a conservative heuristic, not proof that native and GPU depth or coverage
+are identical. Shadow stencil effects remain software-owned even when a shadow
+fragment fails the colour depth test.
 It excludes overlapping partial touches (including duplicate IDs), translucent
-depth updates (attribute bit11), partial depth-equal/tolerance cases (bit14),
-blending-disabled replacements, partial destinations, fog-flag changes, and
-shadow/wire footprints. An opaque fragment touched after a partial one is also
-excluded: moving it to the GPU opaque pass could otherwise change history.
-Alpha-test-rejected/zero fragments do not contribute a partial layer. Decal
-texel alpha changes colour, not alpha31 fragment opacity.
-The one-native-pixel3×3 exclusion dilation still runs after the band barrier.
-No comparison error changes the mask and quality thresholds are unchanged.
+depth updates (attribute bit11), blending-disabled replacements, partial
+destinations, fog-flag changes, and shadow/wire footprints. An opaque fragment
+touched after a partial one is also excluded: moving it to the GPU opaque pass
+could otherwise change history. Effective zero-alpha non-shadow/non-wire
+fragments cannot consume eligibility, even when depth-rejected; alpha-test
+rejections do not contribute a partial layer. Decal texel alpha changes colour,
+not alpha31 fragment opacity. The one-native-pixel3×3 exclusion dilation still runs after
+the band barrier. No comparison error changes the mask and quality thresholds
+are unchanged.
+Raw capture causes and touch counts remain diagnostics of coverage, including
+depth-rejected fragments; they are not themselves the eligibility history.
 
 The worker owns the captured mask with the delayed geometry, then combines it
 with that scene's LCD engine-A `three_d_mask` in one byte pass. The compositor

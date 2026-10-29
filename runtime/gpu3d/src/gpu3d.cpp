@@ -460,6 +460,14 @@ struct Gpu3D::Impl {
         std::array<std::uint8_t, kScreenPixels> polygon_ids{};
 #endif
         std::array<bool, kScreenPixels> partial_seen{};
+        // Nearest ignored depth-rejected partial; 0x1000000 means none.
+        std::array<std::uint32_t, kScreenPixels> occluded_depth{};
+        // Provenance of the current depth, not the resulting framebuffer alpha:
+        // alpha may stay 31 after a translucent depth write over opaque history.
+        std::array<bool, kScreenPixels> reliable_opaque_depth{};
+        // Dots need not have a corresponding GPU mesh; do not rely on them
+        // as occluders, even if a later fragment changes the native depth.
+        std::array<bool, kScreenPixels> dot_touched{};
         std::array<std::array<std::uint32_t, kPolygonLimit>, kRenderBands> polygon_touches{};
         std::array<std::uint32_t, kPolygonLimit> polygon_totals{};
     };
@@ -469,6 +477,9 @@ struct Gpu3D::Impl {
         std::array<std::uint8_t, kScreenPixels> polygon_ids{};
 #endif
         std::array<bool, kScreenPixels> partial_seen{};
+        std::array<std::uint32_t, kScreenPixels> occluded_depth{};
+        std::array<bool, kScreenPixels> reliable_opaque_depth{};
+        std::array<bool, kScreenPixels> dot_touched{};
         std::array<std::array<std::uint32_t, kPolygonLimit>, kRenderBands> polygon_touches{};
         std::array<std::uint32_t, kPolygonLimit> polygon_totals{};
     };
@@ -1774,6 +1785,10 @@ struct Gpu3D::Impl {
                       capture_data->causes.begin() + y_end * tgt_.width, 0);
             std::fill(capture_data->partial_seen.begin() + y_begin * tgt_.width,
                       capture_data->partial_seen.begin() + y_end * tgt_.width, false);
+            std::fill(capture_data->occluded_depth.begin() + y_begin * tgt_.width,
+                      capture_data->occluded_depth.begin() + y_end * tgt_.width, 0x01000000U);
+            std::fill(capture_data->dot_touched.begin() + y_begin * tgt_.width,
+                      capture_data->dot_touched.begin() + y_end * tgt_.width, false);
             for (int band = y_begin / tgt_.band_height; band < (y_end + tgt_.band_height - 1) / tgt_.band_height; ++band)
                 std::fill_n(polygon_touches(band), full_storage ? kEnhancedPolygonLimit : kPolygonLimit, 0U);
         }
@@ -1787,6 +1802,12 @@ struct Gpu3D::Impl {
         const auto green = expand6(color5(static_cast<std::uint16_t>(clear_color), 5));
         const auto blue = expand6(color5(static_cast<std::uint16_t>(clear_color), 10));
         const bool bitmap = (disp3d & (1U << 14)) != 0U;
+        if constexpr (Capture) {
+            // Bitmap clear has per-texel alpha/depth, not a uniform GPU clear plane.
+            std::fill(capture_data->reliable_opaque_depth.begin() + y_begin * tgt_.width,
+                      capture_data->reliable_opaque_depth.begin() + y_end * tgt_.width,
+                      !bitmap && alpha == 31U);
+        }
         if (!bitmap) {
             std::fill(tgt_.fb + y_begin * tgt_.width,
                       tgt_.fb + y_end * tgt_.width,
@@ -2210,7 +2231,6 @@ struct Gpu3D::Impl {
                         std::uint32_t depth) {
         const auto polygon_id = static_cast<std::uint8_t>((polygon.attr >> 24) & 63U);
         const auto pixel_index = static_cast<std::size_t>(y) * tgt_.width + static_cast<std::size_t>(x);
-        if constexpr (Capture) capture_fragment(polygon, shading, pixel_index, u, v);
         auto& destination = tgt_.fb[pixel_index];
         const bool depth_equal = (polygon.attr & (1U << 14)) != 0U;
         const auto depth_delta = depth > destination.depth
@@ -2219,6 +2239,7 @@ struct Gpu3D::Impl {
         const bool less_equal = front_facing && destination.facing == 2U && destination.alpha == 31U;
         const bool depth_fail = depth_equal ? depth_delta > kDepthEqualTolerance
             : less_equal ? depth > destination.depth : depth >= destination.depth;
+        if constexpr (Capture) capture_fragment(polygon, shading, pixel_index, u, v, depth, depth_fail);
         if (depth_fail) {
             if (((polygon.attr >> 4) & 3U) == 3U && polygon_id == 0U)
                 destination.stencil = true;
@@ -2227,6 +2248,28 @@ struct Gpu3D::Impl {
         // Texture decoding and colour shading cannot affect a depth-rejected fragment.
         // Keep the shadow-mask stencil update above, but shade only visible fragments.
         const auto shaded = shade_pixel<Format, Rounded>(polygon, shading, vertex_color, u, v);
+        if constexpr (Capture) {
+            const auto mode = shading.mode;
+            const auto alpha = shaded.alpha;
+            const bool alpha_pass = alpha != 0U &&
+                ((disp3d & (1U << 2)) == 0U || alpha >= (get32(0x04000340U) & 31U));
+            const bool duplicate = alpha < 31U && destination.translucent_polygon_id == polygon_id;
+            if (mode == 3U) {
+                // Stencil and shadow coverage are software-owned.
+                capture_data->reliable_opaque_depth[pixel_index] = false;
+            } else if (alpha_pass && !duplicate &&
+                       (alpha == 31U || (polygon.attr & (1U << 11)) != 0U)) {
+                const auto format = (polygon.texture >> 26U) & 7U;
+                // Indexed formats 2/3/4 with colour-zero transparency disabled
+                // are opaque at every texel. Direct, compressed and alpha-indexed
+                // textures can contain holes or partial alpha between DS samples.
+                const bool opaque_texture = !shading.textured ||
+                    ((format == 2U || format == 3U || format == 4U) &&
+                     !shading.color_zero_transparent);
+                capture_data->reliable_opaque_depth[pixel_index] =
+                    shading.alpha_attr == 31U && opaque_texture;
+            }
+        }
         blend_pixel<(Format != -1)>(destination, shaded, polygon_id,
                     is_translucent_polygon, (polygon.attr & (1U << 15)) != 0U,
                     depth, polygon.attr, front_facing);
@@ -2395,7 +2438,8 @@ struct Gpu3D::Impl {
     // Diagnose raw causes, then permit only a single partial fragment over
     // opaque history. Shadow/wire and ambiguous multilayer pixels stay software.
     void capture_fragment(const Polygon& polygon, PolygonShading& shading,
-                          std::size_t index, float u, float v) {
+                          std::size_t index, float u, float v,
+                          std::uint32_t depth, bool depth_fail) {
         std::uint8_t causes = 0;
         if (shading.alpha_attr == 0U) causes |= 8U;
         else if (shading.alpha_attr != 31U) causes |= 1U;
@@ -2416,9 +2460,20 @@ struct Gpu3D::Impl {
             const auto polygon_index = static_cast<std::size_t>(&polygon - render_polygons());
             ++polygon_touches(index / (tgt_.width * tgt_.band_height))[polygon_index];
         }
+        if (alpha == 0U && (causes & (4U | 8U)) == 0U) return;
         if ((disp3d & 4U) != 0U && alpha < (get32(0x04000340U) & 31U) &&
             (causes & (4U | 8U)) == 0U) return;
         const auto& destination = tgt_.fb[index];
+        // Only ordinary fragments distinctly behind opaque depth can be ignored;
+        // the final neighbourhood guard also excludes unreliable coverage edges.
+        if (depth_fail && (causes & 3U) != 0U && (causes & (4U | 8U)) == 0U &&
+            (polygon.attr & (1U << 14)) == 0U && destination.alpha == 31U &&
+            depth > destination.depth && depth - destination.depth > kDepthEqualTolerance) {
+            capture_data->occluded_depth[index] = std::min(capture_data->occluded_depth[index], depth);
+            return;
+        }
+        if (depth_fail && (causes & 3U) != 0U)
+            opaque_only[index] = 0;
         if (!gpu3d_detail::capture_single_layer(alpha, polygon.attr, disp3d,
                 destination.alpha, destination.fog, capture_data->partial_seen[index]))
             opaque_only[index] = 0;
@@ -2718,15 +2773,19 @@ struct Gpu3D::Impl {
             : static_cast<std::uint32_t>(std::floor(
                 std::clamp((screen.z + 1.0F) * 0.5F, 0.0F, 1.0F) * 4194303.0F)) << 2;
         const auto index = static_cast<std::size_t>(y) * tgt_.width + static_cast<std::size_t>(x);
-        if constexpr (Capture) capture_fragment(polygon, shading, index, vertex.u, vertex.v);
         auto& destination = tgt_.fb[index];
         const auto depth_delta = depth > destination.depth
             ? depth - destination.depth : destination.depth - depth;
-        if ((polygon.attr & (1U << 14)) != 0U
-                ? depth_delta > kDepthEqualTolerance : depth >= destination.depth) {
+        const bool depth_fail = (polygon.attr & (1U << 14)) != 0U
+            ? depth_delta > kDepthEqualTolerance : depth >= destination.depth;
+        if constexpr (Capture) capture_fragment(polygon, shading, index, vertex.u, vertex.v, depth, depth_fail);
+        if (depth_fail) {
             if (((polygon.attr >> 4) & 3U) == 3U && polygon_id == 0U)
                 destination.stencil = true;
             return;
+        }
+        if constexpr (Capture) {
+            if (alpha != 0U) capture_data->dot_touched[index] = true;
         }
         blend_pixel(destination, {shaded.r, shaded.g, shaded.b, alpha}, polygon_id,
                     is_translucent_polygon, (polygon.attr & (1U << 15)) != 0U,
@@ -2866,6 +2925,30 @@ struct Gpu3D::Impl {
         for (std::size_t band = 0; band < kRenderBands; ++band)
             for (std::size_t i = 0; i < render_polygon_count; ++i)
                 polygon_totals()[i] += polygon_touches(band)[i];
+        // A native-only occluder at an edge cannot protect a GPU fragment.
+        // Require reliable opaque depth distinctly nearer throughout a 3x3 area.
+        for (int y = 0; y < tgt_.height; ++y) {
+            for (int x = 0; x < tgt_.width; ++x) {
+                const auto index = static_cast<std::size_t>(y) * tgt_.width + x;
+                const auto depth = capture_data->occluded_depth[index];
+                if (depth == 0x01000000U) continue;
+                if (x == 0 || y == 0 || x + 1 == tgt_.width || y + 1 == tgt_.height) {
+                    opaque_only[index] = 0;
+                    continue;
+                }
+                for (int row = y - 1; row <= y + 1; ++row) {
+                    for (int column = x - 1; column <= x + 1; ++column) {
+                        const auto neighbour = row * tgt_.width + column;
+                        const auto& pixel = tgt_.fb[neighbour];
+                        if (capture_data->dot_touched[neighbour] ||
+                            !capture_data->reliable_opaque_depth[neighbour] ||
+                            pixel.alpha != 31U || depth <= pixel.depth ||
+                            depth - pixel.depth <= kDepthEqualTolerance)
+                            opaque_only[index] = 0;
+                    }
+                }
+            }
+        }
         // Serial after the band barrier: read raw rows, write a separate result,
         // so diagonal neighbours and band borders dilate exactly once.
         for (int y = 0; y < tgt_.height; ++y) {

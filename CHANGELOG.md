@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Godot GPU 3D hybrid mask:** translucent fragments hidden behind reliably opaque depth no longer force the software fallback on the visible pixel, so fewer models are split between GPU and software rendering. Overlapping translucent layers still fall back (layered GPU compositing is not implemented). SDL output is unchanged.
 - **Scene classifier (read-only):** the session API and Godot `DqMachine.get_scene()` / `scene_changed` report BATTLE and CHARACTER_CREATION from completed-frame guest memory; everything else, including intro and title, reports OTHER. Not validated for automatic presentation switching; the ladder is unchanged.
 - **Godot widescreen:** Picture widens GPU presentation without changing guest state; Full also widens the guest camera and requires a restart and separate baselines. Both require experimental GPU 3D; SDL remains the Classic reference. Godot issue bundles can include presented-window and GPU captures, with Full replayed in the Godot reviewer.
 - **Clean-room rewrites (output-identical):** ordinary 2D blending/brightness and target selection, the cartridge B7 low-address redirect, and the SPU IMA-ADPCM step/index and PSG duty tables were rewritten blind from GBATEK-based contracts in [docs/cleanroom/](docs/cleanroom/) with exhaustive ROM-free tests. Eight scripted runs (164,534 frames, saves, audio) are unchanged.
