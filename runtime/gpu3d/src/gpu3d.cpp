@@ -6,6 +6,7 @@
 #include "cpu_features.h"
 #include "texture.h"
 #include "gpu3d_test.h"
+#include "rasterizer_impl.h"
 
 #include <algorithm>
 #include <array>
@@ -40,6 +41,10 @@
 #define DSR_SPAN_TARGETS __attribute__((target_clones("avx2", "default")))
 #endif
 #endif
+#if DSR_X86_SPANS
+#include "rasterizer_simd.h"
+#endif
+
 
 namespace dsr {
 namespace {
@@ -162,22 +167,9 @@ std::uint32_t pack_pixel(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::ui
 
 using Vertex = Gpu3DVertex;
 using Polygon = Gpu3DPolygon;
-struct ClipVertex {
-    std::array<float, 4> clip{};
-    float u = 0.0F;
-    float v = 0.0F;
-    std::array<float, 3> color{};
-};
+using ClipVertex = gpu3d_detail::RasterInputVertex;
 
-struct ScreenVertex {
-    float x = 0.0F;
-    float y = 0.0F;
-    float z = 0.0F;
-    float inv_w = 0.0F;
-    float u_over_w = 0.0F;
-    float v_over_w = 0.0F;
-    std::array<float, 3> color_over_w{};
-};
+using ScreenVertex = gpu3d_detail::RasterScreenVertex;
 
 struct FramePixel {
     std::uint8_t r = 0;
@@ -302,11 +294,8 @@ struct Gpu3D::Impl {
 
     // Full-mode data is owned by the pointer overlaid on the Classic vertex
     // array. Classic therefore pays no pointer or allocation overhead.
-    struct RasterVertex {
-        std::int32_t x = 0;
-        std::int32_t y = 0;
-        std::array<float, 7> attribute{}; // 1/w, z (0..1), u/w, v/w, r/w, g/w, b/w
-    };
+    using RasterVertex = gpu3d_detail::RasterVertex;
+    using RasterEdge = gpu3d_detail::RasterBoundary;
 
     enum class PolygonShape { Empty, Dot, Filled, Wire };
     struct PreparedPolygon {
@@ -1342,17 +1331,17 @@ struct Gpu3D::Impl {
                 std::array<ClipVertex, 16> next{};
                 std::size_t next_count = 0;
                 auto previous = input[count - 1U];
-                auto previous_distance = plane_distance(previous, plane);
+                auto previous_distance = gpu3d_detail::raster_plane_distance(previous, plane);
                 bool previous_inside = previous_distance >= 0.0F;
                 for (std::size_t i = 0; i < count; ++i) {
                     const auto current = input[i];
-                    const auto current_distance = plane_distance(current, plane);
+                    const auto current_distance = gpu3d_detail::raster_plane_distance(current, plane);
                     const bool current_inside = current_distance >= 0.0F;
                     if (current_inside != previous_inside) {
                         const auto divisor = previous_distance - current_distance;
                         if (std::abs(divisor) > 1.0e-20F && next_count < next.size())
                             next[next_count++] =
-                                interpolate_clip(previous, current, previous_distance / divisor);
+                                gpu3d_detail::interpolate_raster_clip(previous, current, previous_distance / divisor);
                     }
                     if (current_inside && next_count < next.size()) next[next_count++] = current;
                     previous = current;
@@ -1659,29 +1648,6 @@ struct Gpu3D::Impl {
         notify_fifo_change(old_below, old_irq, callback);
     }
 
-    float plane_distance(const ClipVertex& vertex, int plane) const {
-        const auto x = vertex.clip[0];
-        const auto y = vertex.clip[1];
-        const auto z = vertex.clip[2];
-        const auto w = vertex.clip[3];
-        switch (plane) {
-        case 0: return x + w;
-        case 1: return w - x;
-        case 2: return y + w;
-        case 3: return w - y;
-        case 4: return z + w;
-        default: return w - z;
-        }
-    }
-
-    static ClipVertex interpolate_clip(const ClipVertex& a, const ClipVertex& b, float t) {
-        ClipVertex result{};
-        for (std::size_t i = 0; i < 4; ++i) result.clip[i] = a.clip[i] + (b.clip[i] - a.clip[i]) * t;
-        result.u = a.u + (b.u - a.u) * t;
-        result.v = a.v + (b.v - a.v) * t;
-        for (std::size_t i = 0; i < 3; ++i) result.color[i] = a.color[i] + (b.color[i] - a.color[i]) * t;
-        return result;
-    }
 
     std::size_t clip_polygon(const Polygon& polygon, std::array<ClipVertex, 16>& output_vertices) const {
         std::array<ClipVertex, 16> input{};
@@ -1690,82 +1656,15 @@ struct Gpu3D::Impl {
             const auto& source = render_vertices()[polygon.index[i]];
             input[i] = {source.clip, source.u, source.v, source.color};
         }
-        if ((polygon.attr & (1U << 12)) == 0U) {
-            bool any_beyond_far = false;
-            for (std::size_t i = 0; i < count; ++i) {
-                if (plane_distance(input[i], 5) < 0.0F) any_beyond_far = true;
-            }
-            if (any_beyond_far) return 0;
-        }
-        const int last_plane = (polygon.attr & (1U << 12)) != 0U ? 6 : 5;
-        for (int plane = 0; plane < last_plane; ++plane) {
-            std::array<ClipVertex, 16> next{};
-            std::size_t next_count = 0;
-            if (count == 0) return 0;
-            auto previous = input[count - 1U];
-            bool previous_inside = plane_distance(previous, plane) >= 0.0F;
-            for (std::size_t i = 0; i < count; ++i) {
-                const auto current = input[i];
-                const bool current_inside = plane_distance(current, plane) >= 0.0F;
-                if (current_inside != previous_inside && next_count < next.size()) {
-                    // Keep the inside endpoint as the interpolation origin:
-                    // reversing it changes rounding before the 28.4 projection.
-                    const auto& inside = previous_inside ? previous : current;
-                    const auto& outside = previous_inside ? current : previous;
-                    const auto axis = static_cast<std::size_t>(plane / 2);
-                    const bool positive = (plane & 1) != 0;
-                    const float inside_w = positive ? inside.clip[3] : -inside.clip[3];
-                    const float outside_w = positive ? outside.clip[3] : -outside.clip[3];
-                    const float divisor = (outside_w - inside_w) -
-                                          (outside.clip[axis] - inside.clip[axis]);
-                    if (std::abs(divisor) > 1.0e-20F) {
-                        const float ratio = (inside.clip[axis] - inside_w) / divisor;
-                        auto vertex = interpolate_clip(inside, outside, ratio);
-                        vertex.clip[axis] = positive ? vertex.clip[3] : -vertex.clip[3];
-                        next[next_count++] = vertex;
-                    }
-                }
-                if (current_inside && next_count < next.size()) next[next_count++] = current;
-                previous = current;
-                previous_inside = current_inside;
-            }
-            input = next;
-            count = next_count;
-        }
-        output_vertices = input;
-        return count;
+        return gpu3d_detail::clip_raster_polygon(input, count, polygon.attr, output_vertices);
     }
 
     template <typename VertexType>
     ScreenVertex to_screen(const VertexType& vertex, std::uint32_t viewport) const {
-        ScreenVertex result{};
-        const auto w = vertex.clip[3];
-        if (std::abs(w) < 1.0e-20F) return result;
-        const auto inv_w = 1.0F / w;
-        const float x1 = static_cast<float>(viewport & 0xffU);
-        const float y1 = static_cast<float>((viewport >> 8) & 0xffU);
-        // Viewport endpoints are inclusive; retain the byte-wrapped difference
-        // before adding one so a full-width viewport spans all 256 pixels.
-        const float width = static_cast<float>(static_cast<std::uint8_t>(((viewport >> 16) & 0xffU) - (viewport & 0xffU))) + 1.0F;
-        const float height = static_cast<float>(static_cast<std::uint8_t>(((viewport >> 24) & 0xffU) - ((viewport >> 8) & 0xffU))) + 1.0F;
-        const auto ndc_x = vertex.clip[0] * inv_w;
-        const auto ndc_y = vertex.clip[1] * inv_w;
-        const float y_base = y1 > 191.0F ? y1 - 255.0F : y1;
-        result.x = x1 + (ndc_x + 1.0F) * width * 0.5F;
-        result.y = 192.0F - (y_base + (ndc_y + 1.0F) * height * 0.5F);
-        result.x *= static_cast<float>(tgt_.scale);
-        result.y *= static_cast<float>(tgt_.scale);
-        result.z = vertex.clip[2] * inv_w;
-        result.inv_w = inv_w;
-        result.u_over_w = vertex.u * inv_w;
-        result.v_over_w = vertex.v * inv_w;
-        for (std::size_t i = 0; i < 3; ++i) result.color_over_w[i] = vertex.color[i] * inv_w;
-        return result;
+        return gpu3d_detail::project_raster_screen(vertex.clip, vertex.u, vertex.v, vertex.color,
+                                                   viewport, tgt_.scale);
     }
 
-    static float edge_function(const ScreenVertex& a, const ScreenVertex& b, float x, float y) {
-        return (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
-    }
 
     std::uint16_t edge_color(std::uint8_t id) const {
         const auto color_index = static_cast<std::uint32_t>(id >> 3);
@@ -2174,53 +2073,12 @@ struct Gpu3D::Impl {
                          bool is_translucent_polygon,
                          const ScreenVertex& a, const ScreenVertex& b, const ScreenVertex& c,
                          int y_begin, int y_end) {
-        const auto area = edge_function(a, b, c.x, c.y);
-        if (std::abs(area) < 1.0e-12F) return;
-        const bool front = area < 0.0F;
-        const bool surface_enabled = front ? (polygon.attr & (1U << 7)) != 0U
-                                           : (polygon.attr & (1U << 6)) != 0U;
-        if (!surface_enabled) return;
-        const auto min_x = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
-        const auto max_x = std::min(tgt_.width - 1, static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
-        const auto min_y = std::max(y_begin, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
-        const auto max_y = std::min(y_end - 1, static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
-        if (max_x < min_x || max_y < min_y) return;
-        const auto alpha_attr = static_cast<std::uint8_t>((polygon.attr >> 16) & 31U);
-        const bool wireframe = alpha_attr == 0U;
-        for (int y = min_y; y <= max_y; ++y) {
-            for (int x = min_x; x <= max_x; ++x) {
-                const float px = static_cast<float>(x) + 0.5F;
-                const float py = static_cast<float>(y) + 0.5F;
-                const auto e0 = edge_function(b, c, px, py);
-                const auto e1 = edge_function(c, a, px, py);
-                const auto e2 = edge_function(a, b, px, py);
-                float w0 = e0 / area;
-                float w1 = e1 / area;
-                float w2 = e2 / area;
-                if (w0 < -1.0e-6F || w1 < -1.0e-6F || w2 < -1.0e-6F) continue;
-                const auto edge_weight = std::min({w0, w1, w2});
-                if (wireframe && edge_weight > 0.02F) continue;
-                const auto inv_w = w0 * a.inv_w + w1 * b.inv_w + w2 * c.inv_w;
-                if (std::abs(inv_w) < 1.0e-20F) continue;
-                const auto inv = 1.0F / inv_w;
-                const auto u = (w0 * a.u_over_w + w1 * b.u_over_w + w2 * c.u_over_w) * inv;
-                const auto v = (w0 * a.v_over_w + w1 * b.v_over_w + w2 * c.v_over_w) * inv;
-                std::array<float, 3> vertex_color{};
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    vertex_color[channel] = (w0 * a.color_over_w[channel] +
-                        w1 * b.color_over_w[channel] + w2 * c.color_over_w[channel]) * inv;
-                }
-                const auto ndc_z = w0 * a.z + w1 * b.z + w2 * c.z;
-                const auto z_depth = static_cast<std::uint32_t>(std::floor(
-                    std::clamp((ndc_z + 1.0F) * 0.5F, 0.0F, 1.0F) * 4194303.0F)) << 2;
-                const auto depth = (swap_mode & 2U) != 0U
-                    ? static_cast<std::uint32_t>(std::clamp(
-                        static_cast<int>(std::floor(inv * 4096.0F)), 0, 0x00ffffff))
-                    : z_depth;
-                write_fragment<-1, Capture>(polygon, shading, is_translucent_polygon, front, x, y,
-                               vertex_color, u, v, depth);
-            }
-        }
+        gpu3d_detail::traverse_wire_triangle(a, b, c, polygon.attr, (swap_mode & 2U) != 0U,
+            tgt_.width, y_begin, y_end, [&](const gpu3d_detail::RasterFragment& fragment) {
+                write_fragment<-1, Capture>(polygon, shading, is_translucent_polygon,
+                    fragment.front, fragment.x, fragment.y, fragment.color,
+                    fragment.u, fragment.v, fragment.depth);
+            });
     }
 
     // Depth test, shading and blending for one fragment (shared by both rasterizers).
@@ -2275,23 +2133,13 @@ struct Gpu3D::Impl {
                     depth, polygon.attr, front_facing);
     }
 
-    // Scanline polygon fill. Vertices live on a 28.4 fixed-point grid; each edge
-    // tracks its exact intersection with every scanline (integer DDA with a
-    // ceiling convention), attributes advance per scanline along the edge, and a
-    // span interpolates linearly between its left and right edge values, one step
-    // per pixel from the first covered pixel. Perspective correction divides the
-    // interpolated u/w, v/w and colour/w by the interpolated 1/w per pixel.
-    // Created only for multithreaded rendering, then reused without per-frame
-    // allocation. Inline rendering needs just one caller-owned scratch polygon.
-    std::unique_ptr<std::array<PreparedPolygon, kPolygonLimit>> band_polygons;
-
     PreparedPolygon* prepared_polygons() {
         return full_storage ? vertex_storage.full->band_polygons->data() : band_polygons->data();
     }
 
     void resize_geometry_storage(bool enlarged) {
         if (enlarged == full_storage) return;
-        band_polygons.reset(); // scratch only; it is regenerated before each pass
+        band_polygons.reset();
         if (enlarged) {
             auto next = std::make_unique<FullGeometry>();
             std::copy(vertex_storage.classic.begin(), vertex_storage.classic.end(), next->vertices.data());
@@ -2326,114 +2174,11 @@ struct Gpu3D::Impl {
             enhanced_output_valid = false;
         }
     }
+    // Created only for multithreaded rendering, then reused without per-frame
+    // allocation. Inline rendering needs just one caller-owned scratch polygon.
+    std::unique_ptr<std::array<PreparedPolygon, kPolygonLimit>> band_polygons;
 
-    struct RasterEdge {
-        std::int64_t x = 0;
-        std::int64_t x_step = 0;
-        std::int64_t numerator = 0;
-        std::int64_t denominator = 1;
-        std::int64_t error = 0;
-        int y = 0;
-        int height = 0;
-        std::array<float, 7> value{};
-        std::array<float, 7> step{};
-    };
 
-    static bool floor_div_mod(std::int64_t numerator, std::int64_t denominator,
-                              std::int64_t& quotient, std::int64_t& remainder) {
-        if (denominator <= 0) return false;
-        quotient = numerator / denominator;
-        remainder = numerator % denominator;
-        if (remainder < 0) {
-            --quotient;
-            remainder += denominator;
-        }
-        return true;
-    }
-
-    static int ceil_fixed(std::int64_t value) {
-        std::int64_t quotient = 0;
-        std::int64_t remainder = 0;
-        floor_div_mod(value + 15, 16, quotient, remainder);
-        return static_cast<int>(quotient);
-    }
-
-    RasterVertex to_raster_vertex(const ClipVertex& vertex, std::uint32_t viewport) const {
-        const float w = vertex.clip[3] != 0.0F ? vertex.clip[3] : 0.00000001F;
-        const float x1 = static_cast<float>(viewport & 0xffU);
-        const float y1 = static_cast<float>((viewport >> 8) & 0xffU);
-        const float width = static_cast<float>(static_cast<std::uint8_t>(
-            ((viewport >> 16) & 0xffU) - (viewport & 0xffU))) + 1.0F;
-        const float height = static_cast<float>(static_cast<std::uint8_t>(
-            ((viewport >> 24) & 0xffU) - ((viewport >> 8) & 0xffU))) + 1.0F;
-        const float x01 = (vertex.clip[0] + w) / (2.0F * w);
-        const float y01 = (vertex.clip[1] + w) / (2.0F * w);
-        const float z01 = (vertex.clip[2] + w) / (2.0F * w);
-        const float screen_x = x01 * width + x1;
-        const float screen_y = 192.0F - (y01 * height + (y1 > 191.0F ? y1 - 255.0F : y1));
-        constexpr float kLimit = 1.0e6F;
-        RasterVertex result;
-        // Quantize after scaling: the DDA still uses 16 subpixels per output
-        // pixel, so coverage and attribute steps share the scaled row units.
-        result.x = static_cast<std::int32_t>(std::clamp(16.0F * (screen_x * tgt_.scale), -kLimit, kLimit));
-        result.y = static_cast<std::int32_t>(std::clamp(16.0F * (screen_y * tgt_.scale), -kLimit, kLimit));
-        result.attribute = {1.0F / w, z01, vertex.u / w, vertex.v / w,
-                            vertex.color[0] / w, vertex.color[1] / w, vertex.color[2] / w};
-        return result;
-    }
-
-    static bool make_edge(const RasterVertex& top, const RasterVertex& bottom, RasterEdge& edge) {
-        edge = {};
-        edge.y = ceil_fixed(top.y);
-        edge.height = ceil_fixed(bottom.y) - edge.y;
-        edge.x = ceil_fixed(top.x);
-        const auto end_x = ceil_fixed(bottom.x);
-        if (edge.height == 0 && end_x == edge.x) {
-            edge.x_step = 1;
-            edge.value = top.attribute;
-            return true;
-        }
-
-        const std::int64_t dy = static_cast<std::int64_t>(bottom.y) - top.y;
-        const std::int64_t dx = static_cast<std::int64_t>(bottom.x) - top.x;
-        if (dy != 0) {
-            // At each integer row, represent the exact intersection as q + r/D
-            // pixels, with 0 <= r < D. Coverage starts at its ceiling.
-            const std::int64_t denominator = 16 * dy;
-            const std::int64_t intersection = static_cast<std::int64_t>(top.x) * dy +
-                dx * (16 * static_cast<std::int64_t>(edge.y) - top.y);
-            std::int64_t quotient = 0;
-            std::int64_t fraction = 0;
-            if (!floor_div_mod(intersection, denominator, quotient, edge.error) ||
-                !floor_div_mod(dx, dy, edge.x_step, fraction)) return false;
-            edge.denominator = denominator;
-            edge.numerator = 16 * fraction;
-            edge.x = quotient + (edge.error != 0);
-        } else {
-            edge.x_step = end_x - edge.x;
-        }
-
-        const float y_prestep = static_cast<float>(static_cast<std::int64_t>(edge.y) * 16 - top.y) / 16.0F;
-        const float per_line = 1.0F / (static_cast<float>(dy != 0 ? dy : 1) / 16.0F);
-        for (std::size_t i = 0; i < edge.value.size(); ++i) {
-            const float slope = per_line * (bottom.attribute[i] - top.attribute[i]);
-            edge.value[i] = top.attribute[i] + y_prestep * slope;
-            edge.step[i] = slope;
-        }
-        return true;
-    }
-
-    static void step_edge(RasterEdge& edge) {
-        const bool was_fractional = edge.error != 0;
-        edge.error += edge.numerator;
-        const bool carry = edge.error >= edge.denominator;
-        if (carry) edge.error -= edge.denominator;
-        edge.x += edge.x_step + static_cast<int>(carry) +
-                  static_cast<int>(edge.error != 0) - static_cast<int>(was_fractional);
-        ++edge.y;
-        --edge.height;
-        for (std::size_t i = 0; i < edge.value.size(); ++i) edge.value[i] += edge.step[i];
-    }
 
     // Diagnose raw causes, then permit only a single partial fragment over
     // opaque history. Shadow/wire and ambiguous multilayer pixels stay software.
@@ -2503,15 +2248,9 @@ struct Gpu3D::Impl {
         const bool fog_enabled = (polygon.attr & (1U << 15U)) != 0U;
         const bool w_depth = (swap_mode & 2U) != 0U;
         while (width >= 4) {
-            __m128 a0 = low, a1 = _mm_add_ps(a0, low_step);
-            __m128 a2 = _mm_add_ps(a1, low_step), a3 = _mm_add_ps(a2, low_step);
-            __m128 b0 = high, b1 = _mm_add_ps(b0, high_step);
-            __m128 b2 = _mm_add_ps(b1, high_step), b3 = _mm_add_ps(b2, high_step);
-            // Save the sequential state before transposing attributes to pixels.
-            if (width > 4) {
-                low = _mm_add_ps(a3, low_step);
-                high = _mm_add_ps(b3, high_step);
-            }
+            __m128 a0, a1, a2, a3, b0, b1, b2, b3;
+            gpu3d_detail::raster_four_samples(low, low_step, width > 4, a0, a1, a2, a3);
+            gpu3d_detail::raster_four_samples(high, high_step, width > 4, b0, b1, b2, b3);
             _MM_TRANSPOSE4_PS(a0, a1, a2, a3);
             const __m128 w = _mm_div_ps(one, a0);
             __m128i depths;
@@ -2622,22 +2361,12 @@ struct Gpu3D::Impl {
                    const RasterEdge& left, const RasterEdge& right) {
         const int y = left.y;
         if (y < 0 || y >= tgt_.height) return;
-        int x = static_cast<int>(left.x);
-        int width = static_cast<int>(right.x) - x;
-        if (width <= 0) return;
-        std::array<float, 7> value = left.value;
-        const float inverse_width = 1.0F / static_cast<float>(width);
-        std::array<float, 7> delta{};
-        for (std::size_t i = 0; i < delta.size(); ++i)
-            delta[i] = (right.value[i] - left.value[i]) * inverse_width;
-        if (x < 0) {
-            const float skipped = static_cast<float>(-x);
-            for (std::size_t i = 0; i < value.size(); ++i) value[i] += delta[i] * skipped;
-            width += x;
-            x = 0;
-        }
-        if (x + width > tgt_.width) width = tgt_.width - x;
-        if (width <= 0) return;
+        gpu3d_detail::RasterSpan span;
+        if (!gpu3d_detail::prepare_raster_span(left, right, tgt_.width, span)) return;
+        int& x = span.x;
+        int& width = span.width;
+        auto& value = span.value;
+        const auto& delta = span.delta;
 #if DSR_X86_SPANS
         if constexpr (Batch && !Capture) {
             if (width >= 4) {
@@ -2666,7 +2395,7 @@ struct Gpu3D::Impl {
             write_fragment<Format, Capture, true>(polygon, shading, is_translucent_polygon, front_facing,
                            x, y, color, value[2] * w, value[3] * w, depth);
             if (width > 1) {
-                for (std::size_t i = 0; i < value.size(); ++i) value[i] += delta[i];
+                gpu3d_detail::advance_raster_values(value, delta);
             }
         }
     }
@@ -2691,87 +2420,31 @@ struct Gpu3D::Impl {
         draw_span_specialized<-1, Capture, Batch>(polygon, shading, is_translucent_polygon, front_facing, left, right);
     }
 
-    bool prepare_raster_polygon(const Polygon& polygon,
-                                const std::array<ClipVertex, 16>& clipped,
-                                PreparedPolygon& prepared) const {
-        const auto count = prepared.count;
-        auto& verts = prepared.raster;
-        if (count < 3U || count > verts.size()) return false;
-        for (std::size_t i = 0; i < count; ++i) verts[i] = to_raster_vertex(clipped[i], polygon.viewport);
-        const auto begin = verts.begin();
-        const auto end = begin + static_cast<std::ptrdiff_t>(count);
-        const std::size_t last = count - 1U;
-        double facing = static_cast<double>(verts[0].y + verts[last].y) * (verts[0].x - verts[last].x) +
-                        static_cast<double>(verts[1].y + verts[0].y) * (verts[1].x - verts[0].x) +
-                        static_cast<double>(verts[2].y + verts[1].y) * (verts[2].x - verts[1].x);
-        for (std::size_t j = 2; j < last; ++j)
-            facing += static_cast<double>(verts[j + 1U].y + verts[j].y) * (verts[j + 1U].x - verts[j].x);
-        const bool back_facing = facing < 0.0;
-        if (((polygon.attr & (1U << (back_facing ? 6 : 7)))) == 0U) return false;
-        prepared.front_facing = !back_facing;
-        // The edge walker needs clockwise vertices starting at the topmost (then
-        // leftmost) one: reverse front-facing polygons, then rotate.
-        if (!back_facing) std::reverse(begin, end);
-        for (std::size_t guard = 0; guard < count; ++guard) {
-            bool above = false;
-            for (std::size_t i = 1; i < count; ++i) above = above || verts[0].y > verts[i].y;
-            if (!above) break;
-            std::rotate(begin, begin + 1, end);
-        }
-        for (std::size_t guard = 0; guard < count &&
-             verts[0].y == verts[1].y && verts[0].x > verts[1].x; ++guard)
-            std::rotate(begin, begin + 1, end);
-        return true;
-    }
-
     template<bool Capture>
     void raster_polygon(const Polygon& polygon, PolygonShading& shading,
                         bool is_translucent_polygon, const PreparedPolygon& prepared,
                         int y_begin, int y_end) {
-        const auto& verts = prepared.raster;
-        const auto count = prepared.count;
-        std::size_t left_vertex = count;
-        std::size_t right_vertex = 0;
-        RasterEdge left;
-        RasterEdge right;
-        if (!make_edge(verts[0], verts[count - 1U], left) ||
-            !make_edge(verts[0], verts[1], right)) return;
-        for (std::size_t edges = 0; edges < 2U * count; ++edges) {
-            int remaining = std::min(left.height, right.height);
-            while (remaining-- > 0) {
-                // Advance even outside the band to preserve sequential float rounding.
-                if (left.y >= y_begin && left.y < y_end)
-                    draw_span<Capture>(polygon, shading, is_translucent_polygon,
-                                       prepared.front_facing, left, right, y_begin, y_end);
-                step_edge(left);
-                step_edge(right);
-            }
-            const bool finished_left = left.height == 0;
-            const bool finished_right = right.height == 0;
-            if (finished_left) --left_vertex;
-            if (finished_right) ++right_vertex;
-            if (left_vertex <= right_vertex + 1U) break;
-            if (finished_left && !make_edge(verts[left_vertex], verts[left_vertex - 1U], left)) return;
-            if (finished_right && !make_edge(verts[right_vertex], verts[right_vertex + 1U], right)) return;
-        }
+        gpu3d_detail::traverse_raster_polygon(prepared.raster, prepared.count, y_begin, y_end,
+            [&](const RasterEdge& left, const RasterEdge& right) {
+                draw_span<Capture>(polygon, shading, is_translucent_polygon,
+                                   prepared.front_facing, left, right, y_begin, y_end);
+            });
     }
     template<bool Capture>
     void raster_dot(const Polygon& polygon, PolygonShading& shading,
                     bool is_translucent_polygon, const ClipVertex& vertex,
                     int y_begin, int y_end) {
         const auto screen = to_screen(vertex, polygon.viewport);
-        const auto x = static_cast<int>(std::floor(screen.x));
-        const auto y = static_cast<int>(std::floor(screen.y));
-        if (x < 0 || x >= tgt_.width || y < 0 || y >= tgt_.height || y < y_begin || y >= y_end) return;
+        gpu3d_detail::RasterFragment fragment;
+        if (!gpu3d_detail::prepare_raster_dot(screen, vertex, (swap_mode & 2U) != 0U,
+                tgt_.width, tgt_.height, y_begin, y_end, fragment)) return;
+        const auto x = fragment.x;
+        const auto y = fragment.y;
         const auto polygon_id = static_cast<std::uint8_t>((polygon.attr >> 24) & 63U);
         const auto shaded = shade_pixel(polygon, shading, vertex.color, vertex.u, vertex.v);
         auto alpha = shaded.alpha;
         if (((polygon.attr >> 16) & 31U) == 0U) alpha = 31U;
-        const auto depth = (swap_mode & 2U) != 0U
-            ? static_cast<std::uint32_t>(std::clamp(
-                static_cast<int>(std::floor(vertex.clip[3] * 4096.0F)), 0, 0x00ffffff))
-            : static_cast<std::uint32_t>(std::floor(
-                std::clamp((screen.z + 1.0F) * 0.5F, 0.0F, 1.0F) * 4194303.0F)) << 2;
+        const auto depth = fragment.depth;
         const auto index = static_cast<std::size_t>(y) * tgt_.width + static_cast<std::size_t>(x);
         auto& destination = tgt_.fb[index];
         const auto depth_delta = depth > destination.depth
@@ -2879,11 +2552,12 @@ struct Gpu3D::Impl {
             return;
         }
         if (((polygon.attr >> 16) & 31U) != 0U) {
-            if (!prepare_raster_polygon(polygon, clipped, prepared)) return;
+            if (!gpu3d_detail::prepare_raster_polygon(clipped.data(), count, polygon.viewport,
+                    polygon.attr, tgt_.scale, prepared.raster, prepared.front_facing)) return;
             int first_row = tgt_.height;
             int end_row = 0;
             for (std::size_t i = 0; i < count; ++i) {
-                const int row = ceil_fixed(prepared.raster[i].y);
+                const int row = gpu3d_detail::raster_ceil_fixed(prepared.raster[i].y);
                 first_row = std::min(first_row, row);
                 end_row = std::max(end_row, row);
             }
@@ -3318,6 +2992,16 @@ std::array<std::uint32_t, 4> gpu3d_detail::Gpu3DTestAccess::framebuffer_pixel(
         (static_cast<std::uint32_t>(pixel.is_translucent_polygon) << 2U) |
         (static_cast<std::uint32_t>(pixel.facing) << 3U)};
 }
+std::array<std::uint32_t, 4> gpu3d_detail::Gpu3DTestAccess::scaled_framebuffer_pixel(
+    const Gpu3D& gpu, unsigned index) {
+    const auto& pixel = gpu.impl_->hires_fb[index];
+    return {pack_pixel(pixel.r, pixel.g, pixel.b, pixel.alpha), pixel.depth,
+        pixel.polygon_id | (static_cast<std::uint32_t>(pixel.translucent_polygon_id) << 8U),
+        static_cast<std::uint32_t>(pixel.fog) | (static_cast<std::uint32_t>(pixel.stencil) << 1U) |
+        (static_cast<std::uint32_t>(pixel.is_translucent_polygon) << 2U) |
+        (static_cast<std::uint32_t>(pixel.facing) << 3U)};
+}
+
 
 std::array<std::uint8_t, 4> gpu3d_detail::Gpu3DTestAccess::shade_pixel(
     Gpu3D& gpu, const Gpu3DPolygon& polygon, const std::array<float, 3>& color, float u, float v) {
