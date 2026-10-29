@@ -42,6 +42,58 @@ struct Texture {
     }
     static const std::uint8_t* palette(const void*, int) { return nullptr; }
 };
+// Synthetic wire cases: clip A=(-765,381,0)/256, B=(-741,381,0)/256,
+// C=(-765,357,0)/256, with W=3. For W=7 and 11, X/Y are
+// Q4.12 multiplied by floor(W*4096/3)/4096, then truncated to Q4.12.
+// All vertices have U=5, 9, or 13 respectively; V and RGB vary.
+void wire_scene(Gpu3D& gpu, Texture& texture, int id, int changed_column = -1) {
+    constexpr int w[] = {3, 7, 11};
+    constexpr int u[] = {5, 9, 13};
+    constexpr std::array<Vertex, 3> vertices{{
+        {-12240, 6096, 0}, {-11856, 6096, 0}, {-12240, 5712, 0}}};
+    constexpr std::array<unsigned, 3> colors{{0x7fff, 0x5f7d, 0x73df}};
+    constexpr std::array<unsigned, 3> v{{0, 16, 32}};
+    for (unsigned i = 0; i < 16 * 8; ++i) {
+        const auto c = 0x8000U | ((i * 3U) & 31U) |
+            (((i * 7U) & 31U) << 5U) | (((i * 11U) & 31U) << 10U);
+        const auto value = (static_cast<int>(i % 16) == changed_column) ? (c ^ 0x7fffU) : c;
+        texture.data[2*i] = static_cast<std::uint8_t>(value);
+        texture.data[2*i+1] = static_cast<std::uint8_t>(value >> 8);
+    }
+    Access::attach_texture_source(gpu, {&texture, &Texture::lookup, &Texture::palette});
+    gpu.io_write(0x04000354U, 0x7fffU, 32);
+    gpu.io_write(0x04000060U, 1U, 32);
+    command(gpu, 0x2a, {(7U << 26) | (1U << 20)}); // direct-color 16x8, no wrapping
+    command(gpu, 0x60, {0xffff0000U});
+    command(gpu, 0x10, {0});
+    const auto xy = static_cast<std::uint32_t>(w[id] * 4096 / 3);
+    command(gpu, 0x16, {xy,0,0,0, 0,xy,0,0, 0,0,4096,0,
+                        0,0,0,static_cast<std::uint32_t>(w[id] * 4096)});
+    command(gpu, 0x29, {0xc0U});
+    command(gpu, 0x40, {0});
+    for (unsigned i = 0; i < 3; ++i) {
+        command(gpu, 0x20, {colors[i]});
+        command(gpu, 0x22, {static_cast<std::uint32_t>(u[id] * 16) | (v[i] << 16)});
+        const auto p = vertices[i];
+        command(gpu, 0x23, {static_cast<std::uint16_t>(p.x) |
+            (static_cast<std::uint32_t>(static_cast<std::uint16_t>(p.y)) << 16),
+            static_cast<std::uint16_t>(p.z)});
+    }
+    command(gpu, 0x41);
+    command(gpu, 0x50, {0});
+    gpu.run(100000); gpu.vblank_start(); gpu.render_start();
+    const auto geometry = gpu.geometry_view();
+    if (geometry.vertex_count != 3) { std::cerr << "missing synthetic wire vertices\n"; std::exit(1); }
+    for (unsigned i = 0; i < 3; ++i) {
+        const auto& p = vertices[i];
+        const std::array<float, 4> expected{{static_cast<float>((p.x * static_cast<int>(xy)) >> 12) / 4096.0F,
+            static_cast<float>((p.y * static_cast<int>(xy)) >> 12) / 4096.0F, 0.0F, static_cast<float>(w[id])}};
+        if (geometry.vertices[i].clip != expected) {
+            std::cerr << "unexpected synthetic wire clip coordinates, case " << id << '\n';
+            std::exit(1);
+        }
+    }
+}
 // Input IDs: 0-15 signed fractional slopes; 16-27 six clip planes in
 // both vertex orders; 28-31 horizontal extrema/integer and half pixels;
 // 32-35 coincident vertices/lines; 36-39 one-pixel/subpixel triangles;
@@ -295,6 +347,37 @@ int main(int argc, char** argv) {
                 label != "clip" || ei != id || a != h.a || b != h.b) {
                 std::cerr << "clip golden mismatch case=" << id << '\n'; return 1;
             }
+        }
+    }
+    for (int id=0; id<3; ++id) for (int threads : {0,6})
+    for (int scale : {1,2}) for (int capture : {0,1}) {
+        Texture texture; Gpu3D gpu; gpu.set_render_threads(threads);
+        gpu.set_output_scale(scale); gpu.set_capture_opaque_only(capture != 0);
+        wire_scene(gpu, texture, id);
+        const auto h = snapshot(gpu, scale, capture != 0);
+        if (generate) output << "wire " << id << ' ' << threads << ' ' << scale << ' '
+                             << capture << ' ' << std::hex << h.a << ' ' << h.b << std::dec << '\n';
+        else {
+            std::string label; int ei, et, es, ec; std::uint64_t a,b;
+            if (!(expected >> label >> ei >> et >> es >> ec >> std::hex >> a >> b >> std::dec) ||
+                label != "wire" || ei != id || et != threads || es != scale ||
+                ec != capture || a != h.a || b != h.b) {
+                std::cerr << "wire golden mismatch case=" << id << " threads=" << threads
+                          << " scale=" << scale << " capture=" << capture << " actual="
+                          << std::hex << h.a << ' ' << h.b << '\n'; return 1;
+            }
+        }
+        if (id == 0 && threads == 0 && capture == 0) {
+            Texture changed; Gpu3D control; control.set_output_scale(scale);
+            wire_scene(control, changed, id, 5);
+            const auto altered = snapshot(control, scale, false);
+            if (h.a == altered.a && h.b == altered.b) {
+                std::cerr << "wire texture column 5 is not observable, scale=" << scale << '\n';
+                return 1;
+            }
+            if (generate) std::cout << "wire column 5 observable scale=" << scale
+                << " base=" << std::hex << h.a << ':' << h.b << " changed="
+                << altered.a << ':' << altered.b << std::dec << '\n';
         }
     }
     std::string extra; if (!generate && expected >> extra) { std::cerr << "extra fixture records\n"; return 1; }

@@ -29,6 +29,13 @@ The caller owns destination buffers, shading, texture sampling, depth and stenci
 
 At scale `s` (1–4), target width is `256*s`, height is `192*s`; row bounds and all screen coordinates use scaled pixels. Native and scaled outputs are separate targets. Inline and banded outputs must match exactly, including auxiliary fields.
 
+Full enhanced geometry changes the caller's storage and polygon selection, not
+this raster interface: the caller retains hardware-limited Classic output and
+manages the separate enhanced output and its fallback. Both paths pass the
+same clipped-vertex, viewport, scale and attribute contract to the raster
+operations. The expanded polygon list does not change guest-visible hardware
+counts or permit changing the pinned Classic fixture outputs.
+
 ## Validation and limits
 
 The golden fixture test captures 131 pre-refactor scenes in 2,096 full-output snapshots across two scheduling modes, four scales and two capture modes, plus 12 ordered clip-output goldens. `dsr_raster_boundary_tests` separately checks direct interface behavior, including BOX_TEST helpers, clipping mutation/count, projection thresholds, viewport quantization and wire/dot depth and coverage. These are project outputs, not hardware truth; preserve them without regeneration. They constrain sampled behavior only. The integration owner separately runs existing GPU3D tests and the pinned ladder; passing these does not resolve provenance or prove general hardware accuracy. Further independent fixtures are needed for unobserved ties, numerical thresholds and degenerate cases.

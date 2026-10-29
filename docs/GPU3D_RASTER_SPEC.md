@@ -10,6 +10,11 @@ Hardware references: GBATEK [polygon definitions and clipping](https://problemka
 
 The input is an ordered triangle or quadrilateral, including strip-assembled primitives, with homogeneous positions, vertex colors and texture coordinates, per-polygon viewport and rendering attributes, texture data and rendering state. Rasterization consumes the geometry after homogeneous clipping, retaining its ordering and interpolated vertex data. Its observable result is the 256 by 192 pixel 3D image and the associated depth, polygon identity, stencil, alpha and edge information consumed by subsequent fragment processing. Existing public interfaces and all unaffected shading, texture, depth, fog, shadow, blending, and wireframe behavior must remain intact. Compatibility means exact output, not visual similarity. Band-parallel and inline rendering must give identical complete outputs, including auxiliary buffers.
 
+Full enhanced geometry is selected and stored by the caller, which preserves
+the hardware-limited Classic output and separately manages enhanced output and
+fallback. It uses the same raster operations and numerical contract as Classic;
+expanded geometry capacity does not change guest-visible hardware counts.
+
 ## Geometry, clipping and facing
 
 Hardware supports triangles, quadrilaterals and their strips. Ordinarily counterclockwise vertices are front-facing; successive strip triangles alternate their submitted winding. Polygon attribute bits 6 and 7 enable back and front faces respectively. GBATEK describes degenerate line-segment triangles as having no face and rendering regardless of these flags; crossed and concave quadrilaterals are not valid inputs with predictable hardware results. For equal depth, the existing tests require a front-facing fragment to replace an opaque back-facing fragment, but two front-facing fragments retain the first.

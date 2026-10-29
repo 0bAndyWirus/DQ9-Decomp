@@ -1,6 +1,7 @@
 // Behavioral snapshots from the pristine pre-refactor renderer, plus interface mutation checks.
 // Hexadecimal constants preserve captured binary32 values.
 #include "dsr/gpu3d.h"
+#include "gpu3d_test.h"
 #include "rasterizer.h"
 #include "rasterizer_impl.h"
 #if defined(__x86_64__) || defined(_M_X64)
@@ -216,6 +217,113 @@ void projection_contract() {
     }
 }
 
+// Actual pristine to_screen output, in x,y,z,1/w,u/w,v/w,r/w,g/w,b/w
+// order, for the synthetic GX wire scenes in test_raster_goldens.cpp.
+// Scale 2 doubles only the first two binary32 coordinates.
+void synthetic_wire_projection() {
+    constexpr std::array<std::array<std::uint32_t, 9>, 9> expected{{
+        {{0x3f000000,0x3f000000,0,0x3eaaaaab,0x3fd55556,0,0x41a80000,0x41a80000,0x41a80000}},
+        {{0x40900000,0x3f000000,0,0x3eaaaaab,0x3fd55556,0x3eaaaaab,0x419d5556,0x4192aaab,0x417aaaab}},
+        {{0x3f000000,0x40900000,0,0x3eaaaaab,0x3fd55556,0x3f2aaaab,0x41a80000,0x41a2aaab,0x41980000}},
+        {{0x3effff00,0x3f012400,0,0x3e124925,0x3fa4924a,0,0x41100000,0x41100000,0x41100000}},
+        {{0x408ffff0,0x3f012400,0,0x3e124925,0x3fa4924a,0x3e124925,0x4106db6e,0x40fb6db8,0x40d6db6e}},
+        {{0x3effff00,0x40902480,0,0x3e124925,0x3fa4924a,0x3e924925,0x41100000,0x410b6db7,0x41024925}},
+        {{0x3f00ba00,0x3f00ba00,0,0x3dba2e8c,0x3f9745d2,0,0x40b745d2,0x40b745d2,0x40b745d2}},
+        {{0x40901740,0x3f00ba00,0,0x3dba2e8c,0x3f9745d2,0x3dba2e8c,0x40aba2e9,0x40a00000,0x4088ba2f}},
+        {{0x3f00ba00,0x40901740,0,0x3dba2e8c,0x3f9745d2,0x3e3a2e8c,0x40b745d2,0x40b1745d,0x40a5d175}}
+    }};
+    constexpr int w[] = {3,7,11}, u[] = {5,9,13};
+    constexpr int x[] = {-12240,-11856,-12240}, y[] = {6096,6096,5712};
+    constexpr unsigned rgb[] = {0x7fff,0x5f7d,0x73df};
+    for (int id = 0; id < 3; ++id) for (int scale : {1,2}) for (int i = 0; i < 3; ++i) {
+        const int f = w[id] * 4096 / 3;
+        const std::array<float,4> clip{{float((x[i]*f)>>12)/4096.0F,
+            float((y[i]*f)>>12)/4096.0F, 0, float(w[id])}};
+        std::array<float,3> color{};
+        for (int c=0;c<3;++c) {
+            const unsigned n = (rgb[i] >> (5*c)) & 31U;
+            color[c] = float(n ? 2*n+1 : 0);
+        }
+        const auto s = project_raster_screen(clip, float(u[id]), float(i), color, 0xffff0000U, scale);
+        const std::array<float,9> values{{s.x,s.y,s.z,s.inv_w,s.u_over_w,s.v_over_w,
+                                          s.color_over_w[0],s.color_over_w[1],s.color_over_w[2]}};
+        for (std::size_t j=0;j<values.size();++j) {
+            const auto want = expected[id*3+i][j] + ((scale == 2 && j < 2) ? 0x00800000U : 0U);
+            expect(bits(values[j]) == want, "synthetic wire projected screen binary32");
+        }
+    }
+}
+
+// Synthetic direct-interface samples captured from pristine raster_triangle.
+// Screen positions are (0.5,0.5), (4.5,0.5), (0.5,4.5).  The texture
+// is direct-color 8x8: column 0 red (0x801f), columns 1..7 green (0x83e0).
+struct WireSampleTexture {
+    std::array<std::uint8_t, 0x20000> data{};
+    WireSampleTexture() {
+        for (int y=0;y<8;++y) for (int x=0;x<8;++x) {
+            const unsigned color = x == 0 ? 0x801f : 0x83e0;
+            const int offset = 2 * (y*8+x);
+            data[offset] = static_cast<std::uint8_t>(color);
+            data[offset+1] = static_cast<std::uint8_t>(color >> 8);
+        }
+    }
+    static const std::uint8_t* lookup(const void* p, int slot) {
+        return slot == 0 ? static_cast<const WireSampleTexture*>(p)->data.data() : nullptr;
+    }
+};
+
+void synthetic_direct_wire_samples() {
+    constexpr int ws[] = {37,41,43,47,49};
+    // u,v,r,g,b at the first pixel center; one record per W.
+    constexpr std::array<std::array<std::uint32_t,5>,5> expected{{
+        {{0x3f800000,0x00000000,0x427c0001,0x426c0000,0x425c0001}},
+        {{0x3f7fffff,0x3e7fffff,0x426fffff,0x425fffff,0x42500000}},
+        {{0x3f800000,0x3f000000,0x42640000,0x42540000,0x4243ffff}},
+        {{0x3f7fffff,0x3f400000,0x42580000,0x42480000,0x4237ffff}},
+        {{0x3f800000,0x3f800000,0x424c0000,0x423bffff,0x422c0000}}
+    }};
+    constexpr std::array<std::array<std::uint8_t,4>,5> pixels{{
+        {{0,59,0,31}},{{60,0,0,31}},{{0,53,0,31}},{{54,0,0,31}},{{0,47,0,31}}
+    }};
+    WireSampleTexture texture;
+    dsr::Gpu3D gpu;
+    Gpu3DTestAccess::attach_texture_source(gpu, {&texture, &WireSampleTexture::lookup, nullptr});
+    gpu.io_write(0x04000060U, 1U, 32);
+    dsr::Gpu3DPolygon polygon{};
+    polygon.attr = 0xc0U;
+    polygon.texture = 7U << 26;
+    for (int id=0;id<5;++id) for (int reverse=0;reverse<2;++reverse) {
+        std::array<RasterScreenVertex,3> s{};
+        constexpr float x[] = {0.5F,4.5F,0.5F}, y[] = {0.5F,0.5F,4.5F};
+        for (int i=0;i<3;++i) {
+            s[i].x=x[i]; s[i].y=y[i]; s[i].inv_w=1.0F/ws[id];
+            s[i].u_over_w=s[i].inv_w;
+            s[i].v_over_w=(id*0.25F+i*0.125F)*s[i].inv_w;
+            for (int c=0;c<3;++c) s[i].color_over_w[c]=float(63-id*3-i*2-c*4)*s[i].inv_w;
+        }
+        if (id == 1)
+            expect(bits(s[0].inv_w) == 0x3cc7ce0cU && bits(s[0].u_over_w) == 0x3cc7ce0cU,
+                   "W=41 exact reciprocal and weighted U");
+        bool found = false;
+        const auto check = [&](const RasterFragment& fragment) {
+            if (fragment.x != 0 || fragment.y != 0) return;
+            expect(!found, "wire sample occurs once");
+            found = true;
+            const std::array<float,5> values{{fragment.u,fragment.v,fragment.color[0],
+                                               fragment.color[1],fragment.color[2]}};
+            for (std::size_t k=0;k<values.size();++k)
+                expect(bits(values[k]) == expected[id][k], "wire sampled attribute binary32");
+            expect(fragment.front == (reverse != 0) && fragment.depth == 0x007ffffcU,
+                   "wire sampled facing and depth");
+            expect(Gpu3DTestAccess::shade_pixel(gpu, polygon, fragment.color, fragment.u, fragment.v)
+                       == pixels[id], "wire sampled textured RGBA");
+        };
+        if (reverse) traverse_wire_triangle(s[0],s[2],s[1],polygon.attr,false,8,0,8,check);
+        else traverse_wire_triangle(s[0],s[1],s[2],polygon.attr,false,8,0,8,check);
+        expect(found, "wire sample is covered");
+    }
+}
+
 void wire_dot_contract() {
     const std::array<float, 3> color{{1, 1, 1}};
     const auto a = project_raster_screen({-0.03125F, -0.03125F, -0.5F, 0.75F},
@@ -273,6 +381,8 @@ int main() {
     simd_four_sample_scalar_equivalence();
 #endif
     projection_contract();
+    synthetic_wire_projection();
+    synthetic_direct_wire_samples();
     wire_dot_contract();
     box_test_contract();
 }
