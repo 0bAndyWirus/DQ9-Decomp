@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_scene_frame.h"
+#include "rasterizer_impl.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,11 +24,6 @@ class DsRasterMesh {
     using Values = std::array<float, 7>; // 1/W, Z01, U/W, V/W, RGB6/W
     struct Vertex { std::int32_t x = 0, y = 0; Values value{}; };
     using DepthPlane = std::array<double, 3>; // dZ/dX, dZ/dY, constant; NDC Z
-    struct Edge {
-        std::int64_t x = 0, error = 0, step_x = 0, numerator = 0, denominator = 1;
-        int y = 0, height = 0;
-        Values value{}, step{};
-    };
     struct Span {
         std::int64_t left_x = 0, right_x = 0;
         Values left{}, right{};
@@ -89,42 +85,6 @@ class DsRasterMesh {
                 static_cast<std::int32_t>(std::clamp(sy * 16, -1e6F, 1e6F)),
                 {1 / w, (v.clip[2] + w) / (2 * w), v.u / w, v.v / w,
                  v.color[0] / w, v.color[1] / w, v.color[2] / w}};
-    }
-    static void divide(std::int64_t n, std::int64_t d, std::int64_t& q, std::int64_t& r) {
-        q = n / d; r = n % d;
-        if (r < 0) { --q; r += d; }
-    }
-    static int ceil16(std::int64_t n) {
-        std::int64_t q, r; divide(n + 15, 16, q, r); return static_cast<int>(q);
-    }
-    static bool edge(const Vertex& top, const Vertex& bottom, Edge& e) {
-        e = {};
-        e.y = ceil16(top.y); e.height = ceil16(bottom.y) - e.y; e.x = ceil16(top.x);
-        const auto width = ceil16(bottom.x) - e.x;
-        if (e.height != 0 || width != 0) {
-            std::int64_t dy = static_cast<std::int64_t>(bottom.y) - top.y;
-            const std::int64_t dx = static_cast<std::int64_t>(bottom.x) - top.x;
-            if (dy != 0) {
-                if (dy < 0) return false;
-                divide(dx * 16 * e.y - dx * top.y + dy * top.x - 1 + dy * 16,
-                       dy * 16, e.x, e.error);
-                divide(dx * 16, dy * 16, e.step_x, e.numerator);
-                e.denominator = dy * 16;
-            } else { e.step_x = width; dy = 1; }
-            const float prestep = static_cast<float>(static_cast<std::int64_t>(e.y) * 16 - top.y) / 16;
-            const float per_line = 1 / (static_cast<float>(dy) / 16);
-            for (unsigned i = 0; i < 7; ++i) {
-                e.step[i] = per_line * (bottom.value[i] - top.value[i]);
-                e.value[i] = top.value[i] + prestep * e.step[i];
-            }
-        } else { e.step_x = 1; e.value = top.value; }
-        return true;
-    }
-    static void step(Edge& e) {
-        e.x += e.step_x; ++e.y; --e.height;
-        for (unsigned i = 0; i < 7; ++i) e.value[i] += e.step[i];
-        e.error += e.numerator;
-        if (e.error >= e.denominator) { ++e.x; e.error -= e.denominator; }
     }
     // Both orientations of a shared edge use exactly the same operands. Split
     // at every projected vertex Y as well as native rows, so a terminal triangle
@@ -221,44 +181,26 @@ public:
         std::array<dsr::Gpu3DVertex, 16> clipped{};
         const auto count = clip(frame, polygon, clipped, widescreen_enabled);
         if (count < 3 || count > 10) return false;
+        std::array<dsr::gpu3d_detail::RasterInputVertex, 10> input{};
+        for (std::size_t i = 0; i < count; ++i)
+            input[i] = {clipped[i].clip, clipped[i].u, clipped[i].v, clipped[i].color};
+        std::array<dsr::gpu3d_detail::RasterVertex, 10> raster_vertices{};
+        bool front_facing = false;
+        if (!dsr::gpu3d_detail::prepare_raster_polygon(
+                input.data(), count, polygon.viewport, polygon.attr, 1, raster_vertices, front_facing))
+            return false;
         std::array<Vertex, 10> vertices{};
-        for (std::size_t i = 0; i < count; ++i) vertices[i] = project(clipped[i], polygon.viewport);
-        const auto last = count - 1;
-        double facing = static_cast<double>(vertices[0].y + vertices[last].y) * (vertices[0].x - vertices[last].x);
-        for (std::size_t i = 0; i < last; ++i)
-            facing += static_cast<double>(vertices[i + 1].y + vertices[i].y) * (vertices[i + 1].x - vertices[i].x);
-        const bool back = facing < 0;
-        if ((polygon.attr & (1U << (back ? 6 : 7))) == 0) return false;
-        const auto begin = vertices.begin(), end = begin + count;
-        if (!back) std::reverse(begin, end);
-        for (std::size_t guard = 0; guard < count; ++guard) {
-            bool above = false;
-            for (std::size_t i = 1; i < count; ++i) above = above || vertices[0].y > vertices[i].y;
-            if (!above) break;
-            std::rotate(begin, begin + 1, end);
-        }
-        for (std::size_t guard = 0; guard < count && vertices[0].y == vertices[1].y && vertices[0].x > vertices[1].x; ++guard)
-            std::rotate(begin, begin + 1, end);
+        for (std::size_t i = 0; i < count; ++i)
+            vertices[i] = {raster_vertices[i].x, raster_vertices[i].y, raster_vertices[i].attribute};
         auto& spans = spans_;
         for (auto& span : spans) span.present = false;
-        std::size_t l = count, r = 0;
-        Edge left, right;
-        bool next_l = true, next_r = true;
-        for (std::size_t guard = 0; guard < count * 2; ++guard) {
-            if (next_l && !edge(vertices[l == count ? 0 : l], vertices[l - 1], left)) return false;
-            if (next_r && !edge(vertices[r], vertices[r + 1], right)) return false;
-            next_l = next_r = false;
-            for (int rows = std::min(left.height, right.height); rows > 0; --rows) {
-                const int y = left.y;
-                if (y >= 0 && y < 192 && left.x < right.x) {
-                    spans[y] = {left.x, right.x, left.value, right.value, true};
-                }
-                step(left); step(right);
-            }
-            if (right.height == 0) { next_r = true; ++r; }
-            if (left.height == 0) { next_l = true; --l; }
-            if (l <= r + 1) break;
-        }
+        dsr::gpu3d_detail::traverse_raster_polygon(
+            raster_vertices, count, 0, 192,
+            [&spans](const dsr::gpu3d_detail::RasterBoundary& left,
+                     const dsr::gpu3d_detail::RasterBoundary& right) {
+                if (left.x < right.x)
+                    spans[left.y] = {left.x, right.x, left.value, right.value, true};
+            });
         const auto metadata = ((polygon.attr >> 24U) & 63U) | ((polygon.attr & (1U << 15U)) != 0 ? 64U : 0U) |
                               (translucent ? 128U : 0U) | (((polygon.attr >> 16U) & 31U) << 8U);
         const auto plane = depth_plane(vertices, count);
