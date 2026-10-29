@@ -292,7 +292,12 @@ void test_rtc_guest_wire_protocol() {
     assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x53, 0x05, 0x06}));
     write(0x06, std::array<std::uint8_t, 1>{0});
     assert(read_register(0x86) == 0);
-    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x01, 0x05, 0x06}));
+    // GBATEK: 12-hour mode keeps bit 6 = PM (1 PM reads 0x41, noon 0x40).
+    assert((read_time(0xe6) == std::array<std::uint8_t, 3>{0x41, 0x05, 0x06}));
+    rtc.set_deterministic_clock(1704110400, 0); // 2024-01-01 12:00:00 UTC.
+    assert(read_time(0xe6)[0] == 0x40);
+    rtc.set_deterministic_clock(1704067200, 0); // 2024-01-01 00:00:00 UTC.
+    assert(read_time(0xe6)[0] == 0x00);
 }
 
 void test_card_rom_and_chip_id(const std::filesystem::path& rom,
