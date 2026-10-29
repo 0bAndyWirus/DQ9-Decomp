@@ -31,6 +31,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -902,19 +903,73 @@ private:
 #endif
         target.new_textures.clear();
         const auto& geometry = source.geometry;
-        if (!dq9::accepts_geometry(geometry, widescreen_camera_) || !source.opaque_only_mask ||
-            source.draw_order.opaque_count + source.draw_order.translucent_count != geometry.polygon_count) return;
+        static const bool trace_geometry_rejections = [] {
+            const char* value = std::getenv("DQ9_TRACE_GEOMETRY_REJECTIONS");
+            return value && *value && *value != '0';
+        }();
+        const auto reject = [&](const char* predicate, std::size_t index = 0) {
+            if (trace_geometry_rejections)
+                std::fprintf(stderr, "[gpu-geometry-reject] frame=%llu predicate=%s index=%zu\n",
+                             static_cast<unsigned long long>(target.source_frame), predicate, index);
+        };
+        const bool geometry_accepted = dq9::accepts_geometry(geometry, widescreen_camera_);
+        const bool mask_missing = !source.opaque_only_mask;
+        const bool order_count_mismatch =
+            source.draw_order.opaque_count + source.draw_order.translucent_count != geometry.polygon_count;
+        if (!geometry_accepted || mask_missing || order_count_mismatch) {
+            if (trace_geometry_rejections) {
+                std::size_t bad_polygon_counts = 0, bad_vertex_indices = 0, bad_order_indices = 0;
+                const bool polygons_scanned = geometry.polygons && geometry.polygon_count <= dq9::kGpuPolygonLimit;
+                if (polygons_scanned) {
+                    for (std::size_t i = 0; i < geometry.polygon_count; ++i) {
+                        const auto& polygon = geometry.polygons[i];
+                        if (polygon.count < 3 || polygon.count > 4) { ++bad_polygon_counts; continue; }
+                        for (std::size_t j = 0; j < polygon.count; ++j)
+                            bad_vertex_indices += polygon.index[j] >= geometry.vertex_count;
+                    }
+                }
+                const bool order_scanned =
+                    source.draw_order.opaque_count <= dq9::kGpuPolygonLimit &&
+                    source.draw_order.translucent_count <= dq9::kGpuPolygonLimit &&
+                    (!source.draw_order.opaque_count || source.draw_order.opaque) &&
+                    (!source.draw_order.translucent_count || source.draw_order.translucent);
+                if (order_scanned) {
+                    for (std::size_t i = 0; i < source.draw_order.opaque_count; ++i)
+                        bad_order_indices += source.draw_order.opaque[i] >= geometry.polygon_count;
+                    for (std::size_t i = 0; i < source.draw_order.translucent_count; ++i)
+                        bad_order_indices += source.draw_order.translucent[i] >= geometry.polygon_count;
+                }
+                std::fprintf(stderr,
+                    "[gpu-geometry-reject] frame=%llu full=%d enhanced_overflow=%d vertex_overflow=%d "
+                    "polygon_overflow=%d vertex_count=%zu vertex_limit=%zu polygon_count=%zu "
+                    "polygon_limit=%zu missing_mask=%d order_count_mismatch=%d opaque=%zu translucent=%zu "
+                    "polygons_scanned=%d bad_polygon_counts=%zu bad_vertex_indices=%zu "
+                    "order_scanned=%d bad_order_indices=%zu software_output=%d enhanced_output=%d software_pixels=%zu\n",
+                    static_cast<unsigned long long>(target.source_frame), widescreen_camera_,
+                    geometry.enhanced_overflow, geometry.vertex_overflow, geometry.polygon_overflow,
+                    geometry.vertex_count, widescreen_camera_ ? dq9::kGpuVertexLimit : dq9::kHardwareVertexLimit,
+                    geometry.polygon_count, widescreen_camera_ ? dq9::kGpuPolygonLimit : dq9::kHardwarePolygonLimit,
+                    mask_missing, order_count_mismatch,
+                    source.draw_order.opaque_count, source.draw_order.translucent_count,
+                    polygons_scanned, bad_polygon_counts, bad_vertex_indices, order_scanned, bad_order_indices,
+                    source.raster.output != nullptr, source.raster.enhanced_output != nullptr,
+                    source.raster.output_pixel_count);
+            }
+            return;
+        }
         for (std::size_t i = 0; i < geometry.polygon_count; ++i) {
             const auto& polygon = geometry.polygons[i];
-            if (polygon.count < 3 || polygon.count > 4) return;
+            if (polygon.count < 3 || polygon.count > 4) { reject("polygon_vertex_count", i); return; }
             for (std::size_t j = 0; j < polygon.count; ++j)
-                if (polygon.index[j] >= geometry.vertex_count) return;
+                if (polygon.index[j] >= geometry.vertex_count) { reject("vertex_index", i); return; }
         }
         target.prepare_geometry(widescreen_camera_);
         target.vertex_count = geometry.vertex_count;
         std::copy_n(geometry.vertices, geometry.vertex_count, target.vertices.begin());
         std::copy_n(source.opaque_only_mask, target.opaque_only.size(), target.opaque_only.begin());
-        if (widescreen_camera_ && !target.capture_side_software(source.raster)) return;
+        if (widescreen_camera_ && !target.capture_side_software(source.raster)) {
+            reject("side_software_capture"); return;
+        }
 #ifdef DQ9_GPU_SCENE_TESTS
         target.capture_cause_pixels.fill(0);
         if (source.raster.capture_causes)
@@ -941,7 +996,7 @@ private:
 #endif
         const auto copy_order = [&](const std::uint16_t* order, std::size_t count) {
             for (std::size_t i = 0; i < count; ++i) {
-                if (order[i] >= geometry.polygon_count) return false;
+                if (order[i] >= geometry.polygon_count) { reject("draw_order_index", i); return false; }
                 target.polygons[target.polygon_count++] = geometry.polygons[order[i]];
             }
             return true;
@@ -957,9 +1012,11 @@ private:
         target.disp3dcnt = source.disp3dcnt; target.alpha_test_ref = source.alpha_test_ref;
         target.swap_mode = geometry.swap_mode;
 #ifdef DQ9_GPU_SCENE_TESTS
-        if (source.raster.output_pixel_count != target.software_output.size()) return;
+        if (source.raster.output_pixel_count != target.software_output.size()) {
+            reject("software_output_size"); return;
+        }
         std::copy_n(source.raster.output, target.software_output.size(), target.software_output.begin());
-        if (!source.raster.capture_polygon_ids) return;
+        if (!source.raster.capture_polygon_ids) { reject("software_polygon_ids"); return; }
         std::copy_n(source.raster.capture_polygon_ids, target.software_polygon_ids.size(), target.software_polygon_ids.begin());
 #endif
         target.fallback = dq9::GpuFallback::None;

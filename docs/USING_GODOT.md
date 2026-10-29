@@ -113,6 +113,21 @@ Choose from the **Layout** list in the toolbar or settings: Vertical, Horizontal
 
 In settings, set the 3D renderer to **GPU hi-res (experimental)** and pick a scale from 2x to 6x. 3D scenes are then drawn through Godot's GPU instead of the exact software rasteriser; 2D screens are unchanged. The toolbar shows the renderer state (valid-frame and 3D-pixel percentages, or the reason it fell back to software). Press **F6** to flip between GPU and software instantly and judge the difference yourself. There is no pixel-parity claim for this path; choose **Software (exact)** if anything looks wrong.
 
+In Classic and Picture, hardware polygon overflow alone no longer forces a
+whole-frame software fallback when all 2,048 retained polygons are present and
+the vertex count is bounded. The GPU can draw that retained scene, which the
+software rasterizer also uses, not polygons discarded at the hardware limit.
+An incomplete retained list with the overflow flag still causes fallback.
+Vertex overflow, enhanced-storage overflow, invalid geometry and other
+unsupported frame features can still cause fallback. Full uses its separate
+enhanced geometry limits and retains its existing fallback behavior. Per-pixel
+hybrid fallback and the GPU path's lack of a pixel-parity guarantee remain.
+
+For geometry-fallback diagnostics, launch with
+`DQ9_TRACE_GEOMETRY_REJECTIONS=1`. The process logs source frames, overflow
+flags, counts and failed geometry checks to standard error; this is intended
+for debugging and can produce substantial output.
+
 ### HD texture replacements
 
 HD texture replacement is an optional feature of **GPU hi-res (experimental)**
