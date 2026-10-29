@@ -294,63 +294,44 @@ void reference_rl(Image& m, std::uint32_t src, std::uint32_t dst, bool vram) {
         }
     }
 }
+// GBATEK, BIOS Decompression Functions: HuffUnComp tree and 32-bit bitstream.
 void reference_huffman(Image& m, Registers& r) {
-    std::uint32_t src=r[0], dst=r[1];
-    const std::uint32_t header=m.read32(src); src+=4;
-    if ((src&0x0e000000u)==0 || ((src+(header>>8))&0x0e000000u)==0) return;
-    const std::uint8_t tree_size=m.read8(src++);
-    const std::uint32_t tree=src;
-    src+=((static_cast<std::uint32_t>(tree_size)+1u)<<1)-1u;
-    int remaining=static_cast<int>(header>>8);
-    std::uint32_t mask=0x80000000u;
-    std::uint32_t data=m.read32(src); src+=4;
-    int pos=0;
-    const std::uint8_t root=m.read8(tree);
-    std::uint8_t node=root;
-    std::uint32_t word=0;
-    unsigned byte_count=0, byte_shift=0;
-    if ((header&0x0fu)==8) {
-        while(remaining>0) {
-            if(pos==0) ++pos;
-            else pos+=((node&0x3fu)+1u)<<1;
-            const bool right=(data&mask)!=0;
-            const bool leaf=(node&(right?0x40u:0x80u))!=0;
-            node=m.read8(tree+static_cast<std::uint32_t>(pos)+(right?1u:0u));
-            if(leaf) {
-                word|=static_cast<std::uint32_t>(node)<<byte_shift;
-                ++byte_count; byte_shift+=8; pos=0; node=root;
-                if(byte_count==4) {
-                    m.write32(dst,word); dst+=4; word=0; byte_count=0; byte_shift=0; remaining-=4;
-                }
-            }
-            mask>>=1;
-            if(mask==0) { mask=0x80000000u; data=m.read32(src); src+=4; }
+    const std::uint32_t header = m.read32(r[0]);
+    const unsigned width = header & 15u;
+    const std::uint32_t tree = r[0] + 4;
+    std::uint32_t stream = tree + 2u * (static_cast<unsigned>(m.read8(tree)) + 1u);
+    std::uint32_t bits = 0;
+    unsigned available = 0;
+    auto next_bit = [&]() {
+        if (available == 0) {
+            bits = m.read32(stream);
+            stream += 4;
+            available = 32;
         }
-    } else {
-        int half_len=0, value=0;
-        while(remaining>0) {
-            if(pos==0) ++pos;
-            else pos+=((node&0x3fu)+1u)<<1;
-            const bool right=(data&mask)!=0;
-            const bool leaf=(node&(right?0x40u:0x80u))!=0;
-            node=m.read8(tree+static_cast<std::uint32_t>(pos)+(right?1u:0u));
-            if(leaf) {
-                value|=half_len==0?node:(node<<4);
-                half_len+=4;
-                if(half_len==8) {
-                    word|=static_cast<std::uint32_t>(value)<<byte_shift;
-                    ++byte_count; byte_shift+=8; half_len=0; value=0;
-                    if(byte_count==4) {
-                        m.write32(dst,word); dst+=4; word=0; byte_count=0; byte_shift=0; remaining-=4;
-                    }
-                }
-                pos=0; node=root;
-            }
-            mask>>=1;
-            if(mask==0) { mask=0x80000000u; data=m.read32(src); src+=4; }
+        const unsigned bit = bits >> 31;
+        bits <<= 1;
+        --available;
+        return bit;
+    };
+    auto symbol = [&]() {
+        std::uint32_t node = tree + 1;
+        for (;;) {
+            const std::uint8_t descriptor = m.read8(node);
+            const unsigned branch = next_bit();
+            const std::uint32_t child = (node & ~1u) + 2u * (descriptor & 63u) + 2u + branch;
+            if (descriptor & (0x80u >> branch)) return m.read8(child);
+            node = child;
         }
+    };
+    const std::uint32_t bytes = header >> 8;
+    for (std::uint32_t offset = 0; offset + 4 <= bytes; offset += 4) {
+        std::uint32_t word = 0;
+        for (unsigned shift = 0; shift < 32; shift += width)
+            word |= static_cast<std::uint32_t>(symbol()) << shift;
+        m.write32(r[1] + offset, word);
     }
 }
+
 void reference_diff8(Image& m, std::uint32_t src, std::uint32_t dst) {
     std::uint32_t size = m.read32(src) >> 8; src += 4;
     if (size == 0) return; // malformed zero-length headers are outside the BIOS contract
@@ -907,6 +888,33 @@ void test_bit_unpack(dsr::Machine& machine, std::mt19937& rng) {
     report("BitUnPack",1000,mismatch);
 }
 
+void test_huffman_vectors(dsr::Machine& machine) {
+    unsigned mismatch = 0;
+    for (unsigned width : {4u, 8u}) {
+        Image m;
+        m.write32(kSource, (4u << 8) | 0x20u | width);
+        m.write8(kSource + 4, 3);    // eight-byte tree including size byte
+        m.write8(kSource + 5, 0x80); // 0 -> first symbol; 1 -> child
+        m.write8(kSource + 6, 1);
+        m.write8(kSource + 7, 0xc0); // 10 -> second; 11 -> third
+        m.write8(kSource + 8, 2);
+        m.write8(kSource + 9, 3);
+        // GBATEK MSB-first codes: 0,10,11,0 gives 01 02 03 01.
+        // For 4-bit, 0,10,11,0,10,11,0,10 packs low nibble first:
+        // 21 13 32 21. These values are derived directly from the tree.
+        m.write32(kSource + 12, width == 8 ? 0x58000000u : 0x5ad00000u);
+        const std::uint32_t expected = width == 8 ? 0x01030201u : 0x21321321u;
+        Registers r{kSource, kDestination, 0x02008000u, 0xaabbccddu};
+        Image decoded = m;
+        Registers oracle_regs = r;
+        reference_huffman(decoded, oracle_regs);
+        if (decoded.read32(kDestination) != expected ||
+            !compare_case(machine, m, 0x13, r, reference_huffman, 4, "Huffman vector"))
+            ++mismatch;
+    }
+    report("Huffman vectors", 2, mismatch);
+}
+
 void test_huffman(dsr::Machine& machine, std::mt19937& rng) {
     unsigned mismatch=0;
     for(unsigned i=0;i<1000;++i) {
@@ -1023,6 +1031,7 @@ int run() {
     test_copy_overlap(machine);
     test_control_swis(machine);
     test_bit_unpack(machine,rng);
+    test_huffman_vectors(machine);
     test_huffman(machine,rng);
     test_callback_streams(machine,rng);
     test_lz_rl_diff(machine,rng);
