@@ -22,6 +22,9 @@ struct UserPathEnvironment {
     std::filesystem::path portable_root;
 };
 UserPaths user_paths_from_environment(const UserPathEnvironment& environment);
+// Copy missing legacy settings/data; use the legacy directory if the primary
+// config or save could not be copied and remains readable there.
+UserPaths migrate_legacy_user_paths(const UserPaths& paths);
 
 // Positive correction consumes source faster; negative correction fills an undersized queue.
 double audio_resample_correction(std::size_t backlog_frames, std::size_t target_frames, int output_rate);

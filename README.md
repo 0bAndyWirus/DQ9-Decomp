@@ -13,7 +13,7 @@
 > [!NOTE]
 > This README uses AI to help summarize and translate my ideas into readable sentences.
 
-DQ9-Decomp is a decompilation (decomp) and static recompilation research project for *Dragon Quest IX: Sentinels of the Starry Skies* (DQ9), the European Nintendo DS release. I'm working toward a native port for Linux, with Windows and Steam Deck as targets. The project also has a Godot host with experimental widescreen and HD work.
+DQ9-Remastered is a decompilation (decomp) and static recompilation research project for *Dragon Quest IX: Sentinels of the Starry Skies* (DQ9), the European Nintendo DS release. I'm working toward a native port for Linux, with Windows and Steam Deck as targets. The project also has a Godot host with experimental widescreen and HD work.
 
 > **Experimental: bring your own copy; this is not a finished port.** The public repository provides original tooling, runtime components and synthetic tests. It does **not** include game data, generated game code or compiled game builds. `tools/build_port.py` builds a local program from *your own* copy; it currently reaches the opening credits and START prompt (see [Getting started](docs/GETTING_STARTED.md)). See [Status](#status) and [Legal](#legal).
 
@@ -25,7 +25,7 @@ I want to find out whether the European version of *Dragon Quest IX* can eventua
 
 ---
 
-## What is DQ9-Decomp?
+## What is DQ9-Remastered?
 
 The repository has the pieces that don't depend on game content:
 
@@ -146,7 +146,7 @@ ctest --test-dir build/runtime --output-on-failure
 python3 -m unittest discover -s tests -v
 ```
 
-Without `DQ9_GENERATED_DIR`, CMake builds the runtime components and their tests, not a playable game. The SWI differential test uses independent formula checks by default. Its optional external-table mode needs `DQ9_BIOS_REFERENCE_SOURCE`, which points to public high-level-emulation source, never a Nintendo BIOS. Details: [Building DQ9-Decomp](docs/BUILDING.md).
+Without `DQ9_GENERATED_DIR`, CMake builds the runtime components and their tests, not a playable game. The SWI differential test uses independent formula checks by default. Its optional external-table mode needs `DQ9_BIOS_REFERENCE_SOURCE`, which points to public high-level-emulation source, never a Nintendo BIOS. Details: [Building DQ9-Remastered](docs/BUILDING.md).
 
 ## How to build a local host from your own copy
 

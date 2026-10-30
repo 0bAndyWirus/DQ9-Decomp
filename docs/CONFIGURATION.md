@@ -6,8 +6,10 @@ Unknown keys and malformed individual settings are ignored. Numeric settings suc
 
 | Platform | Config folder | Data folder (saves, screenshots) |
 | --- | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/dq9-decomp` or `~/.config/dq9-decomp` | `$XDG_DATA_HOME/dq9-decomp` or `~/.local/share/dq9-decomp` |
-| Windows | `%APPDATA%\dq9-decomp` | `%LOCALAPPDATA%\dq9-decomp` |
+| Linux | `$XDG_CONFIG_HOME/dq9-remastered` or `~/.config/dq9-remastered` | `$XDG_DATA_HOME/dq9-remastered` or `~/.local/share/dq9-remastered` |
+| Windows | `%APPDATA%\dq9-remastered` | `%LOCALAPPDATA%\dq9-remastered` (falling back to `%APPDATA%`) |
+
+For non-portable installs, the host attempts to copy missing files recursively from the legacy `dq9-decomp` config and data folders, including settings, saves and backups; the top-level debug subtree and `index.tsv` are not copied. Existing new files take precedence, and legacy files remain in place. Migration is best-effort: if the new `frontend.conf` or default `dq9.sav` is not readable after copying but the legacy file is, the host uses the corresponding legacy folder. A saved path to the old default `dq9.sav` is redirected to the selected default; custom save paths are unchanged.
 
 **Portable mode:** an empty file named `portable.txt` next to `dq9` / `dq9.exe` keeps everything beside the
 program instead of the profile folders above: settings in `portable/config/`, saves and screenshots in

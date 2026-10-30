@@ -1,4 +1,4 @@
-# DQ9-Decomp — Godot host
+# DQ9-Remastered — Godot host
 
 This Godot 4.5 host uses the `dq9_godot` GDExtension and the shared native runtime; the SDL application remains a separate build. This source project distributes no binaries or generated game code. Select an already locally available compatible image; do not copy image files or local session data into this directory or commit them.
 
@@ -21,7 +21,7 @@ overrides and optional cartridge backup settings. When it is unset the host look
 `build/gen/abi.ini` above the project folder (the file `tools/build_port.py` writes) and uses it;
 without any such file the game stalls on blank screens. The settings panel has a **Save chip** option
 (also `--backup-type NAME` after `--`) for the cartridge backup memory type. No title-specific ABI layout
-or values are included. See [Building DQ9-Decomp](../docs/BUILDING.md).
+or values are included. See [Building DQ9-Remastered](../docs/BUILDING.md).
 
 The launcher supports the seven host layouts (vertical, horizontal, top/bottom focus, single top/bottom, merged overlay); F11 toggles fullscreen and F10 opens the pause/debug panel; hold Tab to fast-forward (the pause panel's speed returns on release) and press F12 to save a PNG of both screens to `user://screenshots/`. The settings panel shows whether the ROM path exists and the current key/pad binding on each button. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.
 

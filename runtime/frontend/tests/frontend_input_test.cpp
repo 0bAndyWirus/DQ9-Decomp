@@ -15,11 +15,13 @@ int main() {
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 #if defined(_WIN32)
     SDL_setenv("APPDATA", directory.string().c_str(), 1);
+    SDL_setenv("LOCALAPPDATA", directory.string().c_str(), 1);
 #else
     SDL_setenv("XDG_CONFIG_HOME", directory.string().c_str(), 1);
+    SDL_setenv("XDG_DATA_HOME", directory.string().c_str(), 1);
 #endif
-    std::filesystem::create_directories(directory / "dq9-decomp");
-    std::ofstream(directory / "dq9-decomp/frontend.conf") <<
+    std::filesystem::create_directories(directory / "dq9-remastered");
+    std::ofstream(directory / "dq9-remastered/frontend.conf") <<
         "debug_tool=1\nframe_time_overlay=1\n";
     SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
     SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);

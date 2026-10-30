@@ -29,12 +29,34 @@ if (-not $binary) {
         if (Test-Path $path) { $binary = $path; break }
     }
 }
+if ($binary -and -not [System.IO.Path]::IsPathRooted($binary)) {
+    $binary = [System.IO.Path]::GetFullPath((Join-Path $root $binary))
+}
 if (-not $binary -or -not (Test-Path $binary)) { throw 'dq9.exe is missing. Build it first; see docs/BUILDING_WINDOWS.md (or set DQ9_EXE).' }
 if ($menu) {
     $commandArgs = @('--launcher')
 } else {
     if (-not $rom) { throw 'Select an already available compatible image with --rom PATH or DQ9_ROM, or use --menu.' }
-    if (-not $save -and -not $hasSave) { $save = Join-Path $env:APPDATA 'dq9-decomp\dq9.sav' }
+    if (-not $save -and -not $hasSave -and $env:APPDATA) {
+        # Older wrappers used Roaming AppData even when the native host used
+        # Local AppData. Let the host migrate its own legacy save first.
+        $exeDir = Split-Path ([System.IO.Path]::GetFullPath($binary)) -Parent
+        if (Test-Path -LiteralPath (Join-Path $exeDir 'portable.txt') -PathType Leaf) {
+            $nativeSave = Join-Path $exeDir 'portable\data\dq9.sav'
+            $nativeLegacy = $null
+        } else {
+            $dataBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath('LocalApplicationData') }
+            if (-not $dataBase) { $dataBase = $env:APPDATA }
+            $nativeSave = Join-Path $dataBase 'dq9-remastered\dq9.sav'
+            $nativeLegacy = Join-Path $dataBase 'dq9-decomp\dq9.sav'
+        }
+        $roamingLegacy = Join-Path $env:APPDATA 'dq9-decomp\dq9.sav'
+        if (-not (Test-Path -LiteralPath $nativeSave -PathType Leaf) -and
+            (-not $nativeLegacy -or -not (Test-Path -LiteralPath $nativeLegacy -PathType Leaf)) -and
+            (Test-Path -LiteralPath $roamingLegacy -PathType Leaf)) {
+            $save = $roamingLegacy
+        }
+    }
     $commandArgs = @('--language', $language, '--debug-tool')
 }
 if ($save) {

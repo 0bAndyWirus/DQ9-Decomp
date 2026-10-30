@@ -1,4 +1,4 @@
-# Building DQ9-Decomp on Windows x64
+# Building DQ9-Remastered on Windows x64
 
 The SDL host and Godot 4.5 GDExtension share the original native runtime. The cross-build uses Zig's MinGW-compatible Windows sysroot on Linux; native MSVC is a separate build path. A cross-link or Wine test is not a Windows hardware/gameplay test.
 
@@ -178,6 +178,8 @@ The package script stages an explicit binary/resource whitelist under ignored `b
 Launch from `<install-dir>` with `run_game.bat --menu` or `run_godot.bat --menu`, then select an existing local compatible image. Do not create a bundled image directory or copy an image beside the executable. Direct image selection uses `--rom` or `DQ9_ROM`; choose a writable save path separately. In a source checkout these wrappers live in `tools\`; PowerShell equivalents do not change system execution policy.
 
 `DQ9_SAVE`, `DQ9_EXE`, and `GODOT` select local save/executable/editor paths. Default wrapper saves use the application-data directory. Keep diagnostic saves distinct from normal saves and out of any package. The Godot wrapper performs a headless editor import when needed; this requires a writable project directory and the real editor, not an export template.
+
+The SDL wrapper defers default save selection and legacy migration to the native host (see [Configuration](CONFIGURATION.md)). If neither the current nor legacy LocalAppData save exists, it can use the historical `%APPDATA%\dq9-decomp\dq9.sav`; portable mode takes precedence. An explicit `--save` or `DQ9_SAVE` overrides the default. The Godot wrapper's save fallback is described in [Using Godot](USING_GODOT.md).
 
 `DQ9_ABI_CONFIG` selects caller-supplied local runtime metadata for both hosts; SDL also accepts `--abi-config PATH`. CPU sections use the fields in `runtime/include/dsr/abi_config.h`; supplied sections must be complete, including intentional zero fields. Omitting a CPU section disables its thread overrides with a diagnostic. Optional cartridge backup settings belong in that same private configuration. No title-specific ABI layout is bundled.
 

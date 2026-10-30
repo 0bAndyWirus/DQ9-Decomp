@@ -270,7 +270,7 @@ Compare the same synthetic scene's software reference and GPU readback. Keep
 missing alpha in the comparison footprint; do not narrow a mask to hide error.
 An affine-UV negative control must fail the perspective test. Rendering probes
 need a rendered Godot backend and the native test fixtures described in
-[Building DQ9-Decomp](BUILDING.md); a headless import is not a rendering test.
+[Building DQ9-Remastered](BUILDING.md); a headless import is not a rendering test.
 
 Nearest texture discontinuities, coplanar ties, compressed-texture boundaries,
 one-dot polygons, and alpha-zero wireframes need explicit treatment. The filled

@@ -40,6 +40,48 @@ class DebugBundleTests(unittest.TestCase):
         self.assertNotIn("old", output)
         self.assertEqual(bundle.parse_index(self.root / "absent.tsv"), [])
 
+    def test_default_index_combines_current_and_legacy(self):
+        current = self.root / "dq9-remastered" / "debug"
+        legacy = self.root / "dq9-decomp" / "debug"
+        with patch.object(bundle, "DEFAULT_DEBUG_DIR", current), patch.object(bundle, "LEGACY_DEBUG_DIR", legacy):
+            self.assertEqual(bundle.sorted_index(None), [])
+            legacy.mkdir(parents=True)
+            (legacy / "index.tsv").write_text("20261010\tshared\tlegacy\t20\n")
+            current.mkdir(parents=True)
+            (current / "index.tsv").write_text("20261011\tshared\tcurrent\t21\n")
+            (legacy / "shared").mkdir()
+            (current / "shared").mkdir()
+            self.assertEqual(bundle.select_bundle(None, "1"), current / "shared")
+            self.assertEqual(bundle.select_bundle(None, "2"), legacy / "shared")
+            self.assertEqual(bundle.select_bundle(None, "shared"), current / "shared")
+            self.assertEqual(bundle.select_bundle(legacy, "1"), legacy / "shared")
+            status, output = self.run_cli(["list"])
+            self.assertEqual(status, 0)
+            self.assertIn(str(current / "shared"), output)
+            self.assertIn(str(legacy / "shared"), output)
+
+    def test_default_selection_prefers_current_and_falls_back_to_legacy(self):
+        current = self.root / "dq9-remastered" / "debug"
+        legacy = self.root / "dq9-decomp" / "debug"
+        with patch.object(bundle, "DEFAULT_DEBUG_DIR", current), patch.object(bundle, "LEGACY_DEBUG_DIR", legacy):
+            legacy_bundle = legacy / "shared"
+            legacy_bundle.mkdir(parents=True)
+            marker = legacy_bundle / "marker.txt"
+            marker.write_text("legacy")
+            (legacy / "index.tsv").write_text("20261010\tshared\tlegacy\t20\n")
+            self.assertEqual(bundle.select_bundle(None, "shared"), legacy_bundle)
+            self.assertEqual(bundle.select_bundle(None, "1"), legacy_bundle)
+            self.assertEqual(bundle.select_bundle(None, "missing"), current / "missing")
+
+            current_bundle = current / "shared"
+            current_bundle.mkdir(parents=True)
+            (current / "index.tsv").write_text("20261010\tshared\tcurrent\t21\n")
+            self.assertEqual(bundle.select_bundle(None, "shared"), current_bundle)
+            self.assertEqual(bundle.select_bundle(None, "1"), current_bundle)
+            self.assertEqual(bundle.select_bundle(None, "2"), legacy_bundle)
+            self.assertEqual(marker.read_text(), "legacy")
+            self.assertTrue((legacy / "index.tsv").is_file())
+
     def test_comment_metadata_and_missing_file(self):
         path = self.bundle / "comment.txt"
         path.write_text("Black screen after title\nSome extra detail\nframe: 123\nticks: 90\n")

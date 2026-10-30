@@ -13,7 +13,7 @@ Use C++20 for native code and CMake for the cross-platform build description. Ke
 
 ## Consequences and evidence
 
-This provides one project build description across target toolchains; CMake's generators map to native systems. Original runtime code and synthetic tests imply no game compatibility. Current host builds and their external dependencies are documented in [Building DQ9-Decomp](../BUILDING.md); the original decision date is not a current verification record.
+This provides one project build description across target toolchains; CMake's generators map to native systems. Original runtime code and synthetic tests imply no game compatibility. Current host builds and their external dependencies are documented in [Building DQ9-Remastered](../BUILDING.md); the original decision date is not a current verification record.
 
 ## Alternatives
 

@@ -24,7 +24,7 @@ Double-click **`PLAY-GODOT.bat`**. It opens the launcher directly, including on 
 
 - **Launcher:** press **Browse** and choose your `.nds`, pick the language, then **Start**. The ROM path, language, layout, volume and key bindings are remembered in Godot's `user://settings.cfg`.
 - **Direct start:** `PLAY-GODOT.bat "C:\path\game.nds" fr` starts the game at once. The language argument is optional and defaults to `en`.
-- **Save file:** `%APPDATA%\dq9-decomp\godot.sav` when started with the batch file. It is separate from the SDL build's save.
+- **Save file:** `%APPDATA%\dq9-remastered\godot.sav` when started with the batch file. If that file is absent, an existing `%APPDATA%\dq9-decomp\godot.sav` is used instead. An explicit `--save` or `DQ9_SAVE` overrides the default. It is separate from the SDL build's save.
 
 ### Save chip
 
@@ -142,6 +142,7 @@ and subsequently decoded originals to `user://texture_dumps/<sha256>.png`.
 `user://` is Godot's per-user project data directory: typically
 `%APPDATA%\Godot\app_userdata\DQ9-Decomp` on Windows or
 `~/.local/share/godot/app_userdata/DQ9-Decomp` on Linux.
+Godot retains this legacy project-data directory name to preserve existing settings and files.
 The lowercase SHA-256 name identifies texture content and format rather than
 its VRAM address; changes such as a changed palette can produce a new name.
 Copy an image to `user://texture_overrides/<sha256>.png` and edit that copy;

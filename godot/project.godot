@@ -1,7 +1,11 @@
 config_version=5
 
 [application]
-config/name="DQ9-Decomp"
+config/name="DQ9-Remastered"
+; Preserve the previous user:// location when renaming the project.
+config/use_custom_user_dir=true
+config/custom_user_dir_name="Godot/app_userdata/DQ9-Decomp"
+config/custom_user_dir_name.linuxbsd="godot/app_userdata/DQ9-Decomp"
 run/main_scene="res://scenes/main.tscn"
 run/max_fps=60
 

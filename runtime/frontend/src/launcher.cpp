@@ -434,7 +434,7 @@ private:
     }
     void draw() {
         canvas_.clear(kBg);
-        canvas_.text(48, 28, "DQ9-Decomp - LAUNCHER", kWhite, 3);
+        canvas_.text(48, 28, "DQ9-Remastered - LAUNCHER", kWhite, 3);
         canvas_.text(48, 61, "SET UP YOUR SESSION. CHOOSE A PAGE, THEN LAUNCH.", kMuted, 1);
         for (int i = 0; i < static_cast<int>(kPages.size()); ++i)
             canvas_.button({48 + i * kTabPitch, 78, kTabPitch - 12, 44}, kPages[static_cast<std::size_t>(i)], page_ == i);
@@ -629,6 +629,11 @@ bool run_sdl_launcher(LauncherOptions& options) {
             config.frontend.layout = ScreenLayout::TopFocus;
         }
     }
+    // Older launcher versions persisted their generated default as an absolute
+    // path. Use the migrated default, while leaving custom paths untouched.
+    if (paths.data_dir.filename() == "dq9-remastered" &&
+        host::path_from_utf8(config.save_path) == paths.data_dir.parent_path() / "dq9-decomp" / "dq9.sav")
+        config.save_path = host::path_to_utf8(paths.data_dir / "dq9.sav");
     if (!options.rom_path.empty()) config.rom_path = host::path_to_utf8(options.rom_path);
     if (!options.save_path.empty()) config.save_path = host::path_to_utf8(options.save_path);
     if (frontend_detail::is_backup_type_name(options.backup_type) &&
@@ -658,7 +663,7 @@ bool run_sdl_launcher(LauncherOptions& options) {
     }
     frontend_detail::load_controller_mappings(paths.config_dir);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-    SDL_Window* window = SDL_CreateWindow("DQ9-Decomp Launcher", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+    SDL_Window* window = SDL_CreateWindow("DQ9-Remastered Launcher", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                           kW, kH, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_Renderer* renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : nullptr;
     if (!renderer && window) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);

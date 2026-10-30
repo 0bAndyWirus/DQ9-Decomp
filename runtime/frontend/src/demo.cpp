@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--frames" && i + 1 < argc) frames = std::max(0, std::atoi(argv[++i]));
     auto frontend = dsr::create_sdl_frontend();
     dsr::FrontendConfig config;
-    config.title = "DQ9-Decomp frontend demo - NON-GAME TEST PATTERN";
+    config.title = "DQ9-Remastered frontend demo - NON-GAME TEST PATTERN";
     config.window_scale = 2;
     if (!frontend->init(config)) { std::fprintf(stderr, "Unable to initialize SDL frontend\n"); return 1; }
     std::vector<std::uint32_t> top(256 * 192), bottom(256 * 192);

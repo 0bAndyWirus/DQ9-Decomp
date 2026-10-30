@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-title DQ9-Decomp - build
+title DQ9-Remastered - build
 rem BUILD-DQ9.bat ["C:\path\game.nds"] [--godot]
 rem   No argument: asks for the ROM (you can drag the file into this window).
 rem   --godot    : also builds the Godot extension and downloads the Godot 4.5 editor.
@@ -24,7 +24,7 @@ goto parse
 
 echo.
 echo  ============================================================
-echo    DQ9-Decomp  -  Windows build kit
+echo    DQ9-Remastered  -  Windows build kit
 echo    Builds a private, local copy from YOUR OWN game file.
 echo    Nothing from the game is ever uploaded or distributed.
 echo  ============================================================

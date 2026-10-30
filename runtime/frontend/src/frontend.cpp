@@ -1593,7 +1593,8 @@ UserPaths default_user_paths() {
         if (std::filesystem::is_regular_file(executable_dir / "portable.txt", error))
             environment.portable_root = executable_dir / "portable";
     }
-    return frontend_detail::user_paths_from_environment(environment);
+    return frontend_detail::migrate_legacy_user_paths(
+        frontend_detail::user_paths_from_environment(environment));
 }
 bool running_on_steam_deck() {
 #if defined(_WIN32)

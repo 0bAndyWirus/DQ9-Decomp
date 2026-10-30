@@ -1,6 +1,6 @@
 # Frequently asked questions
 
-Short answers about what DQ9-Decomp is and is not. The authoritative documents are linked from each answer: [README](../README.md), [LEGAL.md](../LEGAL.md), [Project charter](PROJECT_CHARTER.md), [Decompilation status](DECOMP_STATUS.md), [Roadmap](ROADMAP.md) and [Building](BUILDING.md).
+Short answers about what DQ9-Remastered is and is not. The authoritative documents are linked from each answer: [README](../README.md), [LEGAL.md](../LEGAL.md), [Project charter](PROJECT_CHARTER.md), [Decompilation status](DECOMP_STATUS.md), [Roadmap](ROADMAP.md) and [Building](BUILDING.md).
 
 ## Can I play Dragon Quest IX on PC using this repository?
 

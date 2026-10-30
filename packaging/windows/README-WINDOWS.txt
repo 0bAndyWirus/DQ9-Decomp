@@ -1,5 +1,5 @@
-DQ9-Decomp - Windows x64 source build kit
-=========================================
+DQ9-Remastered - Windows x64 source build kit
+=============================================
 
 No game and no binary is included. This kit contains public source and build
 scripts only. You supply your own legally obtained European multilingual .nds

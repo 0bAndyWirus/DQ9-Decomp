@@ -7,7 +7,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 int main() {
@@ -16,13 +18,13 @@ int main() {
     UserPathEnvironment environment;
     environment.home = "/tmp/dq9-test-home";
     auto paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == std::filesystem::path("/tmp/dq9-test-home/.config/dq9-decomp"));
-    assert(paths.data_dir == std::filesystem::path("/tmp/dq9-test-home/.local/share/dq9-decomp"));
+    assert(paths.config_dir == std::filesystem::path("/tmp/dq9-test-home/.config/dq9-remastered"));
+    assert(paths.data_dir == std::filesystem::path("/tmp/dq9-test-home/.local/share/dq9-remastered"));
     environment.config_home = "/custom/config";
     environment.data_home = "/custom/data";
     paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == std::filesystem::path("/custom/config/dq9-decomp"));
-    assert(paths.data_dir == std::filesystem::path("/custom/data/dq9-decomp"));
+    assert(paths.config_dir == std::filesystem::path("/custom/config/dq9-remastered"));
+    assert(paths.data_dir == std::filesystem::path("/custom/data/dq9-remastered"));
     environment.portable_root = "/games/dq9/portable";   // beats every platform root
     paths = user_paths_from_environment(environment);
     assert(paths.config_dir == std::filesystem::path("/games/dq9/portable/config"));
@@ -32,26 +34,110 @@ int main() {
     environment.appdata = "C:/dq9-test-home/AppData/Roaming";
     environment.local_appdata = "D:/dq9-test-data";
     paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == environment.appdata / "dq9-decomp");
-    assert(paths.data_dir == environment.local_appdata / "dq9-decomp");
+    assert(paths.config_dir == environment.appdata / "dq9-remastered");
+    assert(paths.data_dir == environment.local_appdata / "dq9-remastered");
     // Windows roots win over XDG/HOME, including backslash-style local roots.
     environment.appdata = R"(C:\dq9-test-home\AppData\Roaming)";
     environment.local_appdata.clear();
     paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == environment.appdata / "dq9-decomp");
+    assert(paths.config_dir == environment.appdata / "dq9-remastered");
     assert(paths.data_dir == paths.config_dir);
     environment.appdata.clear();
     environment.user_profile = "C:/dq9-test-home";
     paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == environment.user_profile / "AppData" / "Roaming" / "dq9-decomp");
+    assert(paths.config_dir == environment.user_profile / "AppData" / "Roaming" / "dq9-remastered");
     assert(paths.data_dir == paths.config_dir);
     environment.user_profile.clear();
     paths = user_paths_from_environment(environment);
-    assert(paths.config_dir == std::filesystem::path(".") / "dq9-decomp");
+    assert(paths.config_dir == std::filesystem::path(".") / "dq9-remastered");
     assert(paths.data_dir == paths.config_dir);
     paths = user_paths_from_environment({});
-    assert(paths.config_dir == std::filesystem::path(".") / "dq9-decomp");
+    assert(paths.config_dir == std::filesystem::path(".") / "dq9-remastered");
     assert(paths.data_dir == paths.config_dir);
+
+    {
+        const auto root = std::filesystem::temp_directory_path() /
+            ("dq9-migration-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        const auto old_config = root / "config" / "dq9-decomp";
+        const auto old_data = root / "data" / "dq9-decomp";
+        UserPaths migrated{root / "config" / "dq9-remastered", root / "data" / "dq9-remastered"};
+        std::filesystem::create_directories(old_config);
+        std::filesystem::create_directories(old_data / "debug");
+        std::filesystem::create_directories(old_data / "backups");
+        std::filesystem::create_directories(migrated.data_dir);
+        std::ofstream(old_config / "frontend.conf") << "legacy config";
+        std::ofstream(old_data / "dq9.sav") << "legacy save";
+        std::ofstream(old_data / "debug" / "note.txt") << "legacy note";
+        std::ofstream(old_data / "index.tsv") << "legacy index";
+        std::ofstream(old_data / "backups" / "dq9.sav.1.bak") << "legacy backup";
+        std::ofstream(migrated.data_dir / "dq9.sav") << "new save";
+        std::filesystem::create_directories(root / "linked-backups");
+        std::ofstream(root / "linked-backups" / "linked.bak") << "linked backup";
+        std::error_code symlink_error;
+        std::filesystem::create_directory_symlink(root / "linked-backups",
+                                                  old_data / "linked-backups", symlink_error);
+        std::filesystem::create_directories(old_data / "blocked");
+        std::ofstream(old_data / "blocked" / "file") << "unreachable target";
+        std::ofstream(migrated.data_dir / "blocked") << "existing file";
+        const auto contents = [](const std::filesystem::path& file) {
+            std::ifstream in(file);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        auto resolved = migrate_legacy_user_paths(migrated);
+        assert(resolved.config_dir == migrated.config_dir);
+        assert(resolved.data_dir == migrated.data_dir);
+        assert(contents(migrated.config_dir / "frontend.conf") == "legacy config");
+        assert(contents(migrated.data_dir / "dq9.sav") == "new save");
+        assert(!std::filesystem::exists(migrated.data_dir / "debug"));
+        assert(!std::filesystem::exists(migrated.data_dir / "index.tsv"));
+        assert(contents(migrated.data_dir / "backups" / "dq9.sav.1.bak") == "legacy backup");
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(migrated.data_dir))
+            assert(entry.path().filename().string().find(".dq9-migrate-") != 0);
+        if (!symlink_error) {
+            assert(std::filesystem::is_symlink(migrated.data_dir / "linked-backups"));
+            assert(contents(migrated.data_dir / "linked-backups" / "linked.bak") == "linked backup");
+        }
+        assert(contents(migrated.data_dir / "blocked") == "existing file");
+        assert(contents(old_data / "dq9.sav") == "legacy save");
+        assert(contents(old_config / "frontend.conf") == "legacy config");
+        assert(contents(old_data / "debug" / "note.txt") == "legacy note");
+        assert(contents(old_data / "index.tsv") == "legacy index");
+        assert(contents(old_data / "backups" / "dq9.sav.1.bak") == "legacy backup");
+        std::ofstream(migrated.config_dir / "frontend.conf") << "new config";
+        std::filesystem::remove(migrated.data_dir / "dq9.sav");
+        migrate_legacy_user_paths(migrated);
+        assert(contents(migrated.config_dir / "frontend.conf") == "new config");
+        assert(contents(migrated.data_dir / "dq9.sav") == "legacy save");
+        assert(contents(old_data / "dq9.sav") == "legacy save");
+        // A non-directory destination and a non-directory legacy parent must
+        // not cause migration to throw, including in headless use.
+        const auto blocked_root = root / "inaccessible";
+        std::filesystem::create_directories(blocked_root);
+        std::filesystem::create_directories(blocked_root / "dq9-decomp");
+        std::ofstream(blocked_root / "dq9-decomp" / "frontend.conf") << "legacy config";
+        std::ofstream(blocked_root / "dq9-decomp" / "dq9.sav") << "legacy save";
+        std::ofstream(blocked_root / "dq9-remastered") << "not a directory";
+        std::ofstream(root / "missing-parent") << "not a directory";
+        resolved = migrate_legacy_user_paths({blocked_root / "dq9-remastered",
+                                               root / "missing-parent" / "dq9-remastered"});
+        assert(resolved.config_dir == blocked_root / "dq9-decomp");
+        assert(resolved.data_dir == root / "missing-parent" / "dq9-remastered");
+        assert(contents(resolved.config_dir / "frontend.conf") == "legacy config");
+        resolved = migrate_legacy_user_paths({migrated.config_dir, blocked_root / "dq9-remastered"});
+        assert(resolved.config_dir == migrated.config_dir);
+        assert(resolved.data_dir == blocked_root / "dq9-decomp");
+        assert(contents(resolved.data_dir / "dq9.sav") == "legacy save");
+        assert(contents(blocked_root / "dq9-remastered") == "not a directory");
+        const auto conflict_root = root / "conflict";
+        std::filesystem::create_directories(conflict_root / "dq9-decomp");
+        std::filesystem::create_directories(conflict_root / "dq9-remastered" / "dq9.sav");
+        std::ofstream(conflict_root / "dq9-decomp" / "dq9.sav") << "intact legacy";
+        resolved = migrate_legacy_user_paths({migrated.config_dir, conflict_root / "dq9-remastered"});
+        assert(resolved.data_dir == conflict_root / "dq9-decomp");
+        assert(contents(resolved.data_dir / "dq9.sav") == "intact legacy");
+        assert(std::filesystem::is_directory(conflict_root / "dq9-remastered" / "dq9.sav"));
+        std::filesystem::remove_all(root);
+    }
 
     for (const auto& size : {std::pair{256, 192}, std::pair{256, 384}, std::pair{768, 1152}, std::pair{1518, 864}}) {
         const auto controls = debug_control_rects(size.first, size.second);

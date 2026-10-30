@@ -117,7 +117,7 @@ def configure_log() -> Path:
     global _LOG
     _LOG = ROOT / "build" / "build-log.txt"
     _LOG.parent.mkdir(parents=True, exist_ok=True)
-    _LOG.write_text("DQ9-Decomp build log (local file, may contain local paths; do not share publicly)\n", encoding="utf-8")
+    _LOG.write_text("DQ9-Remastered build log (local file, may contain local paths; do not share publicly)\n", encoding="utf-8")
     return _LOG
 
 

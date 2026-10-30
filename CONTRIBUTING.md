@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in DQ9-Decomp, a research project on the European release of *Dragon Quest IX: Sentinels of the Starry Skies*. Read [LEGAL.md](LEGAL.md) and the [project charter](docs/PROJECT_CHARTER.md) first: the data boundary is the most important rule here.
+Thanks for your interest in DQ9-Remastered, a research project on the European release of *Dragon Quest IX: Sentinels of the Starry Skies*. Read [LEGAL.md](LEGAL.md) and the [project charter](docs/PROJECT_CHARTER.md) first: the data boundary is the most important rule here.
 
 ## Welcome contributions
 

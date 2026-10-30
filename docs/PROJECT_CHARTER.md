@@ -2,7 +2,7 @@
 
 ## Purpose
 
-DQ9-Decomp develops original research tooling and native runtime services for the European multilingual release of *Dragon Quest IX: Sentinels of the Starry Skies*. Public deliverables are sources, tests, and documentation, not game data or binaries. Linux desktop, Windows, and SteamOS / Steam Deck are host targets.
+DQ9-Remastered develops original research tooling and native runtime services for the European multilingual release of *Dragon Quest IX: Sentinels of the Starry Skies*. Public deliverables are sources, tests, and documentation, not game data or binaries. Linux desktop, Windows, and SteamOS / Steam Deck are host targets.
 
 ## Host targets
 

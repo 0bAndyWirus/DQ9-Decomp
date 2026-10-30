@@ -1,4 +1,4 @@
-# DQ9-Decomp local capture oracle
+# DQ9-Remastered local capture oracle
 
 These Python tools drive a caller-supplied DeSmuME CLI with capture hooks or a
 GDB-enabled CLI. The installer carries no emulator source; anchors are supplied

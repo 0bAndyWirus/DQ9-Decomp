@@ -10,7 +10,7 @@ from .emitter import emit_file
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Translate a DQ9-Decomp CPU manifest into native C++")
+    parser = argparse.ArgumentParser(description="Translate a DQ9-Remastered CPU manifest into native C++")
     parser.add_argument("--manifest", required=True, help="JSON recompiler manifest")
     parser.add_argument("--out", required=True, help="generated C++ output directory")
     parser.add_argument("--extra-entries", help="text file of 'module_id addr thumb' entries")

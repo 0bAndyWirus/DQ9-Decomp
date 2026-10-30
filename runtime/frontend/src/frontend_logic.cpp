@@ -2,9 +2,11 @@
 #include "ui_logic.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -108,10 +110,83 @@ UserPaths user_paths_from_environment(const UserPathEnvironment& environment) {
         paths.data_dir = !environment.data_home.empty() ? environment.data_home :
             (!environment.home.empty() ? environment.home / ".local" / "share" : std::filesystem::path("."));
     }
-    paths.config_dir /= "dq9-decomp";
-    paths.data_dir /= "dq9-decomp";
+    paths.config_dir /= "dq9-remastered";
+    paths.data_dir /= "dq9-remastered";
     return paths;
 }
+UserPaths migrate_legacy_user_paths(const UserPaths& paths) {
+    const auto copy_missing_file = [](const std::filesystem::path& source,
+                                      const std::filesystem::path& target) {
+        std::error_code error;
+        if (std::filesystem::exists(target, error) || error) return;
+        // An exclusively created staging directory keeps a failed copy from
+        // appearing as a valid save. Publishing via a hard link never replaces
+        // a file created concurrently by another process.
+        static std::atomic<unsigned long long> sequence{0};
+        std::filesystem::path staging;
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            staging = target.parent_path() /
+                (".dq9-migrate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+                 + "-" + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            if (std::filesystem::create_directory(staging, error)) break;
+            if (error) return;
+            staging.clear();
+        }
+        if (staging.empty()) return;
+        const auto temporary = staging / "file";
+        if (std::filesystem::copy_file(source, temporary, error))
+            std::filesystem::create_hard_link(temporary, target, error);
+        std::filesystem::remove_all(staging, error);
+    };
+    for (const auto& destination : {paths.config_dir, paths.data_dir}) {
+        // Portable mode already uses stable config/data directories.
+        if (destination.filename() != "dq9-remastered") continue;
+        const auto legacy = destination.parent_path() / "dq9-decomp";
+        std::error_code error;
+        if (!std::filesystem::is_directory(legacy, error)) continue;
+        auto it = std::filesystem::recursive_directory_iterator(
+            legacy, std::filesystem::directory_options::skip_permission_denied, error);
+        const auto end = std::filesystem::recursive_directory_iterator();
+        while (it != end) {
+            const auto relative = it->path().lexically_relative(legacy);
+            if (relative == "debug" || relative == "index.tsv") {
+                it.disable_recursion_pending();
+            } else {
+                const auto target = destination / relative;
+                const auto status = it->symlink_status(error);
+                if (!error && std::filesystem::is_symlink(status)) {
+                    // Preserve directory links rather than creating empty directories
+                    // or traversing links that may form cycles.
+                    std::filesystem::create_directories(target.parent_path(), error);
+                    if (!error) std::filesystem::copy_symlink(it->path(), target, error);
+                } else if (!error && std::filesystem::is_directory(status)) {
+                    std::filesystem::create_directories(target, error);
+                    if (error) it.disable_recursion_pending();
+                } else if (!error && std::filesystem::is_regular_file(status)) {
+                    std::filesystem::create_directories(target.parent_path(), error);
+                    if (!error) copy_missing_file(it->path(), target);
+                }
+            }
+            error.clear();
+            it.increment(error);
+        }
+    }
+    auto resolved = paths;
+    const auto retain_legacy_if_missing = [](std::filesystem::path& directory, const char* filename) {
+        if (directory.filename() != "dq9-remastered") return;
+        const auto legacy = directory.parent_path() / "dq9-decomp";
+        const auto readable_file = [](const std::filesystem::path& file) {
+            std::error_code error;
+            return std::filesystem::is_regular_file(file, error) && bool(std::ifstream(file, std::ios::binary));
+        };
+        if (!readable_file(directory / filename) && readable_file(legacy / filename))
+            directory = legacy;
+    };
+    retain_legacy_if_missing(resolved.config_dir, "frontend.conf");
+    retain_legacy_if_missing(resolved.data_dir, "dq9.sav");
+    return resolved;
+}
+
 
 ScreenRects layout_rects(ScreenLayout layout, int width, int height, bool integer_scaling) {
     ScreenRects r{{0, 0, 0, 0}, {0, 0, 0, 0}, width, height};

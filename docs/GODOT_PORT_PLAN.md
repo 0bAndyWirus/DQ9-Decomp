@@ -49,4 +49,4 @@ running game need not reach the reloaded state; a stronger continuity gate
 requires a matched in-game save/load scenario with inputs that demonstrably
 converge on the same state.
 
-Godot and godot-cpp are external development dependencies, not bundled. Configure their paths for the local installation; see [Building DQ9-Decomp](BUILDING.md). Packages and generated game builds remain local-only and must never be uploaded.
+Godot and godot-cpp are external development dependencies, not bundled. Configure their paths for the local installation; see [Building DQ9-Remastered](BUILDING.md). Packages and generated game builds remain local-only and must never be uploaded.

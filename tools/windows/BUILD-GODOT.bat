@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title DQ9-Decomp - build the Godot version
+title DQ9-Remastered - build the Godot version
 rem BUILD-GODOT.bat
 rem Run BUILD-DQ9.bat first: this reuses its generated code, builds the Godot extension
 rem (dq9_godot DLL) and downloads the Godot 4.5 editor with a pinned SHA-512 check.
@@ -8,7 +8,7 @@ set "ROOT=%~dp0"
 if not exist "%ROOT%tools\build_port.py" set "ROOT=%~dp0..\.."
 echo.
 echo  ============================================================
-echo    DQ9-Decomp  -  Godot version
+echo    DQ9-Remastered  -  Godot version
 echo    Guide: docs\USING_GODOT.md
 echo  ============================================================
 echo.

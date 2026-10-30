@@ -93,7 +93,7 @@ order-sensitive synthetic blending with deterministic random masks and colors.
 
 A skipped-band mutation must fail independently of the inline reference. An overlapping-band mutation must expose unsafe ownership through a race detector or an order-sensitive fixture. Moving edges before the barrier, removing shading invalidation, or fast-forwarding DDA arithmetic must not silently pass the relevant fixture.
 
-Use CTest as documented in [Building DQ9-Decomp](BUILDING.md). Local game-image comparisons need separately supplied inputs and baselines; they are not part of this public document or evidence of compatibility. Keep those images, saves, traces, generated sources, and resulting binaries private.
+Use CTest as documented in [Building DQ9-Remastered](BUILDING.md). Local game-image comparisons need separately supplied inputs and baselines; they are not part of this public document or evidence of compatibility. Keep those images, saves, traces, generated sources, and resulting binaries private.
 
 ## Performance reporting
 
