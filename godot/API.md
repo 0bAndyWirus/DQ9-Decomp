@@ -452,6 +452,11 @@ GPU target without Picture's clip-X correction, widening the field of view once.
 Full is experimental, changes guest state and requires separate replay/parity
 baselines. Entering or leaving Full is a next-launch choice, not a live change.
 Switching between Off and Picture is live unless a Full transition is pending.
+Picture and Full retain up to 12,288 vertices and 12,288 polygons for GPU
+presentation; Off uses the hardware-sized geometry storage. Guest-visible
+counts and overflow flags and the native software raster remain hardware-limited.
+Changing the live Picture mode invalidates delayed GPU captures; presentation
+falls back while waiting for geometry from a new swap.
 Both retain native 2D and touch coordinates. Widescreen needs GPU hi-res.
 Unsupported GPU frames fall back to the native software screen; in Full the
 modified camera remains active, so fallback is not Classic and may appear
@@ -659,11 +664,14 @@ are unchanged.
 Raw capture causes and touch counts remain diagnostics of coverage, including
 depth-rejected fragments; they are not themselves the eligibility history.
 
-The worker owns the captured mask with the delayed geometry. In Off and Picture,
-it combines that mask directly with the scene's LCD engine-A `three_d_mask`. In
-Full, it first maps the captured eligibility from the full-width guest 3D raster
-to the centered native composition, then combines it with `three_d_mask`. In
-either case the compositor sees the intersection; excluded pixels stay software
+The worker owns the captured mask with the delayed geometry. Off uses the
+hardware LCD engine-A `three_d_mask`. Picture composes a separate presentation
+LCD and mask from the enhanced 3D raster at native coordinates, preserving the
+DS 2D layers and guest LCD output. In both modes captured eligibility combines
+directly with that mask. Full first maps the captured eligibility from the
+full-width guest 3D raster to the centered native composition, then combines it
+with the presentation `three_d_mask`.
+In either case the compositor sees the intersection; excluded pixels stay software
 and native-resolution even at scale3. Single-layer colour surfaces preserve the
 sorted sequence and reuse the span conversion/arrays of their opaque surfaces.
 Because eligible pixels have at most one partial touch, the opaque screen
@@ -673,11 +681,11 @@ metadata viewport; it also runs on otherwise-effect-free frames.
 
 The shared metadata viewport applies opaque fog/edge effects. Partial clear/fog
 alpha is supported through the display mask: the post pass restores rear-plane
-RGB6/A5 from `CLEAR_COLOR` before effects. Whole-frame software fallback remains
-for W-buffering, bitmap clears, overflowing/invalid geometry and unavailable/
-over-budget textures, plus warmup/disabled states; never for translucency or
-shadows alone. W depth is reciprocal interpolated clip-W, not affine vertex Z,
-so a vertex-only W-as-Z mapping is not correct. This path remains Z-buffered.
+RGB6/A5 from `CLEAR_COLOR` before effects. W-buffered scenes use reciprocal
+interpolated clip-W, quantized per fragment, in the colour and metadata passes.
+Whole-frame software fallback remains for bitmap clears, W-buffered transparent
+clears with non-maximum clear depth, overflowing/invalid geometry and unavailable/
+over-budget textures, plus warmup/disabled states; never for translucency or shadows alone.
 For diagnostics,
 `DqGpuScene.get_raw_texture()/get_raw_mask_texture()` expose the unprocessed
 color pass when `color_valid` is true, even if final presentation must fall back.

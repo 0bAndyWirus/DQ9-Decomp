@@ -33,6 +33,7 @@ public:
     void set_hd_texture_dump_enabled(bool enabled);
     bool get_hd_texture_dump_enabled() const { return hd_texture_dump_enabled_; }
     void apply_frame(const dq9::GpuSceneFrame& frame);
+    void invalidate_frame();
     godot::Ref<godot::Texture2D> get_texture() const;
     godot::Ref<godot::Texture2D> get_mask_texture() const;
     godot::Ref<godot::Texture2D> get_side_software_texture() const;
@@ -102,11 +103,14 @@ private:
 #ifdef DQ9_GPU_SCENE_TESTS
     std::array<std::uint32_t, 256 * 192> reference_output_{};
     std::array<std::uint8_t, 256 * 192> reference_polygon_ids_{};
-    std::array<std::uint32_t, 3> reference_registers_{};
+    std::array<std::uint32_t, 4> reference_registers_{};
     std::array<std::uint64_t, 2> reference_snapshot_counts_{};
     std::array<std::uint32_t, 2> reference_alpha_counts_{};
     std::array<std::uint32_t, 5> reference_cause_pixels_{};
     std::array<std::array<std::uint32_t, 6>, 8> reference_top_polygons_{};
+    bool hardware_vertex_overflow_ = false, hardware_polygon_overflow_ = false;
+    bool enhanced_overflow_ = false;
+    std::size_t enhanced_only_retained_ = 0, enhanced_only_emitted_ = 0;
 #endif
     struct MaterialKey {
         dsr::gpu3d_detail::TextureKey texture;

@@ -9,6 +9,7 @@ class SyntheticMachine extends Node:
 	var bottom: Texture2D
 	var presentation_top: Texture2D
 	var presentation_bottom: Texture2D
+	var presentation_valid := false
 	var hd_textures := false
 	var texture_dump := false
 	func set_hd_textures_enabled(enabled: bool) -> void: hd_textures = enabled
@@ -17,6 +18,7 @@ class SyntheticMachine extends Node:
 	func get_bottom_texture() -> Texture2D: return bottom
 	func get_presentation_top_texture() -> Texture2D: return presentation_top if presentation_top else top
 	func get_presentation_bottom_texture() -> Texture2D: return presentation_bottom if presentation_bottom else bottom
+	func has_presentation_frame() -> bool: return presentation_valid
 
 
 class SyntheticHost extends "res://scripts/main.gd":
@@ -45,6 +47,12 @@ func _solid(color: Color) -> ImageTexture:
 	var image := Image.create(256, 192, false, Image.FORMAT_RGBA8)
 	image.fill(color)
 	return ImageTexture.create_from_image(image)
+
+func _expect(condition: bool, label: String, details: String) -> bool:
+	if not condition:
+		push_error("%s: %s" % [label, details])
+	return condition
+
 
 func _check(image: Image, host: Control, gpu: bool, label: String) -> bool:
 	var rects: Array[Rect2] = [host.top_rect.get_global_rect(), host.bottom_rect.get_global_rect()]
@@ -115,7 +123,7 @@ func _paused_overlay_probe(host: Control, expected_texture: Texture2D, expected_
 	var color := root.get_texture().get_image().get_pixelv(pixel)
 	var matches := absf(color.r - expected_color.r) < 1.1 / 255.0 and absf(color.g - expected_color.g) < 1.1 / 255.0 and absf(color.b - expected_color.b) < 1.1 / 255.0
 	if host._single_nodes[0].texture != expected_texture or host.bottom_rect.texture != expected_texture or shape != expected_shape or not matches:
-		push_error("%s: shape=%d color=%s, expected shape=%d color=%s" % [label, shape, color, expected_shape, expected_color])
+		push_error("%s: overlay texture matches=%s bottom texture matches=%s shape=%d color=%s, expected shape=%d color=%s" % [label, host._single_nodes[0].texture == expected_texture, host.bottom_rect.texture == expected_texture, shape, color, expected_shape, expected_color])
 		return false
 	return true
 
@@ -134,14 +142,14 @@ func _run() -> void:
 	var renderer: OptionButton = pages._controls.renderer_gpu3d
 	var scale_control: OptionButton = pages._controls.gpu3d_scale
 	var widescreen: OptionButton = pages._controls.widescreen_mode
-	ok = renderer.item_count == 2 and renderer.selected == 0 and ok
-	ok = scale_control.item_count == 5 and scale_control.selected == 1 and scale_control.disabled and ok
-	ok = widescreen.item_count == 3 and widescreen.selected == 0 and not widescreen.disabled and ok
+	ok = _expect(renderer.item_count == 2 and renderer.selected == 0, "initial renderer", "count=%d selected=%d" % [renderer.item_count, renderer.selected]) and ok
+	ok = _expect(scale_control.item_count == 5 and scale_control.selected == 1 and scale_control.disabled, "initial scale", "count=%d selected=%d disabled=%s" % [scale_control.item_count, scale_control.selected, scale_control.disabled]) and ok
+	ok = _expect(widescreen.item_count == 3 and widescreen.selected == 0 and not widescreen.disabled, "initial widescreen", "count=%d selected=%d disabled=%s" % [widescreen.item_count, widescreen.selected, widescreen.disabled]) and ok
 	# Software must not create an extra drawable, even when a producer publishes.
 	stub.set_scale(3)
 	stub.publish(host)
 	await _settle()
-	ok = ok and host.gpu3d_rect == null
+	ok = _expect(host.gpu3d_rect == null, "software layer", "gpu3d_rect=%s" % host.gpu3d_rect) and ok
 	ok = _check(root.get_texture().get_image(), host, false, "software") and ok
 	for scale in [2, 3, 6]:
 		stub.set_scale(scale)
@@ -161,7 +169,7 @@ func _run() -> void:
 	# Frame fallback removes the layer, instead of showing a stale GPU frame.
 	host.set_gpu3d_frame(null, null)
 	await _settle()
-	ok = host.gpu3d_rect == null and ok
+	ok = _expect(host.gpu3d_rect == null, "fallback layer", "gpu3d_rect=%s" % host.gpu3d_rect) and ok
 	ok = _check(root.get_texture().get_image(), host, false, "fallback") and ok
 	# The single-screen shape is composited above the top GPU layer.
 	host._set_layout(7)
@@ -171,7 +179,7 @@ func _run() -> void:
 	var overlay: Rect2 = host._single_nodes[0].get_global_rect()
 	var overlay_pixel := Vector2i(overlay.get_center())
 	var actual := single_image.get_pixelv(overlay_pixel)
-	ok = absf(actual.r - BOTTOM.r) < 1.1 / 255.0 and absf(actual.g - BOTTOM.g) < 1.1 / 255.0 and ok
+	ok = _expect(absf(actual.r - BOTTOM.r) < 1.1 / 255.0 and absf(actual.g - BOTTOM.g) < 1.1 / 255.0, "single overlay", "color=%s expected=%s" % [actual, BOTTOM]) and ok
 	# A cropped source must not multiply by the unrelated texel at local UV.
 	var patterned := Image.create(256, 192, false, Image.FORMAT_RGBA8)
 	patterned.fill(TOP)
@@ -182,18 +190,18 @@ func _run() -> void:
 	await _settle()
 	var cropped_point := Vector2i(overlay.position + overlay.size * Vector2(0.2, 0.5))
 	actual = root.get_texture().get_image().get_pixelv(cropped_point)
-	ok = absf(actual.r - BOTTOM.r) < 1.1 / 255.0 and absf(actual.g - BOTTOM.g) < 1.1 / 255.0 and ok
+	ok = _expect(absf(actual.r - BOTTOM.r) < 1.1 / 255.0 and absf(actual.g - BOTTOM.g) < 1.1 / 255.0, "cropped overlay", "color=%s expected=%s" % [actual, BOTTOM]) and ok
 	host.bottom_rect.texture = _solid(BOTTOM)
 	host.settings.single_screen_shapes[0].source = Rect2(0, 0, 256, 192)
 	host._layout_screens()
 	var local: Vector2 = host.top_rect.get_global_transform().affine_inverse() * overlay.get_center()
-	ok = host._single_shape_at(local) == 0 and ok
+	ok = _expect(host._single_shape_at(local) == 0, "single shape", "shape=%d" % host._single_shape_at(local)) and ok
 	host.settings.single_screen_shapes.append({"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "color_key":BOTTOM})
 	host._layout_screens()
-	ok = host._single_shape_at(local) == 0 and ok
+	ok = _expect(host._single_shape_at(local) == 0, "keyed overlapping shape", "shape=%d" % host._single_shape_at(local)) and ok
 	await _settle()
 	actual = root.get_texture().get_image().get_pixelv(overlay_pixel)
-	ok = absf(actual.r - BOTTOM.r) < 1.1 / 255.0 and ok
+	ok = _expect(absf(actual.r - BOTTOM.r) < 1.1 / 255.0, "keyed overlay", "color=%s expected=%s" % [actual, BOTTOM]) and ok
 	var adjacent := Image.create(256, 192, false, Image.FORMAT_RGBA8)
 	adjacent.fill(BOTTOM)
 	adjacent.set_pixel(1, 0, TOP)
@@ -202,7 +210,7 @@ func _run() -> void:
 	host._layout_screens()
 	var first: Vector2 = host.top_rect.get_global_transform().affine_inverse() * (overlay.position + overlay.size * Vector2(0.49, 0.5))
 	var second: Vector2 = host.top_rect.get_global_transform().affine_inverse() * (overlay.position + overlay.size * Vector2(0.51, 0.5))
-	ok = host._single_shape_at(first) == 0 and host._single_shape_at(second) == 1 and ok
+	ok = _expect(host._single_shape_at(first) == 0 and host._single_shape_at(second) == 1, "adjacent shape hit tests", "first=%d second=%d" % [host._single_shape_at(first), host._single_shape_at(second)]) and ok
 	# Two GPU subpixels within one DS pixel must make independent key decisions.
 	# The lower shape supplies a distinct color wherever the upper shape keys out.
 	var under := Color8(20, 190, 40)
@@ -271,7 +279,7 @@ func _run() -> void:
 	var edge_point := Vector2(edge_pixel) + Vector2(0.5, 0.5)
 	var edge_local: Vector2 = host.top_rect.get_global_transform().affine_inverse() * edge_point
 	var edge_color := keyed_image.get_pixelv(edge_pixel)
-	ok = host._single_shape_at(edge_local) == 1 and absf(edge_color.g - under.g) > 0.1 and ok
+	ok = _expect(host._single_shape_at(edge_local) == 1 and absf(edge_color.g - under.g) > 0.1, "linear visible edge", "shape=%d color=%s under=%s" % [host._single_shape_at(edge_local), edge_color, under]) and ok
 	# Fractional crops must display the same nearest texel used for hit testing.
 	host.settings.nearest = true
 	host._apply_filter()
@@ -303,20 +311,20 @@ func _run() -> void:
 	host._layout_screens()
 	stub.publish(host, false)
 	await _settle()
-	ok = bool((host._single_nodes[0].material as ShaderMaterial).get_shader_parameter("use_gpu")) and ok
+	ok = _expect(bool((host._single_nodes[0].material as ShaderMaterial).get_shader_parameter("use_gpu")), "overlay GPU enabled", "use_gpu=%s" % (host._single_nodes[0].material as ShaderMaterial).get_shader_parameter("use_gpu")) and ok
 	stub.publish(host, true)
 	_click(overlay.get_center(), true)
 	await process_frame
-	ok = host._touching and ok
+	ok = _expect(host._touching, "overlay touch press", "touching=%s" % host._touching) and ok
 	_click(overlay.get_center(), false)
 	await process_frame
-	ok = not host._touching and ok
+	ok = _expect(not host._touching, "overlay touch release", "touching=%s" % host._touching) and ok
 	host._set_layout(0)
 	stub.publish(host, false)
 	host.settings.renderer_gpu3d = 0
 	host._apply_gpu3d_settings()
 	await _settle()
-	ok = host.gpu3d_rect == null and ok
+	ok = _expect(host.gpu3d_rect == null, "software restored layer", "gpu3d_rect=%s" % host.gpu3d_rect) and ok
 	ok = _check(root.get_texture().get_image(), host, false, "software restored") and ok
 	# Re-enable and verify the GPU child does not intercept touch routing.
 	host.settings.renderer_gpu3d = 1
@@ -325,39 +333,43 @@ func _run() -> void:
 	var center := host.bottom_rect.get_global_rect().get_center()
 	_click(center, true)
 	await process_frame
-	ok = host._touching and ok
+	ok = _expect(host._touching, "GPU touch press", "touching=%s" % host._touching) and ok
 	_click(center, false)
 	await process_frame
-	ok = not host._touching and ok
+	ok = _expect(not host._touching, "GPU touch release", "touching=%s" % host._touching) and ok
 	# Existing settings click routing remains intact with the new child present.
+	var settings_button_found := false
 	for button in host.find_children("*", "Button", true, false):
 		if button.text == "Start / Settings":
+			settings_button_found = true
 			_click(button.get_global_rect().get_center(), true)
 			await process_frame
 			_click(button.get_global_rect().get_center(), false)
 			await process_frame
-			ok = host.settings_panel.visible and ok
+			ok = _expect(host.settings_panel.visible, "settings click", "visible=%s" % host.settings_panel.visible) and ok
+	ok = _expect(settings_button_found, "settings click", "Start / Settings button not found") and ok
 	# Earlier render cases leave the scale at 6; make this a real change.
 	host.settings.gpu3d_scale = 5
 	pages.refresh()
 	scale_control.select(4)
 	scale_control.item_selected.emit(4)
-	ok = host.settings.gpu3d_scale == 6 and host.persist_count == 1 and ok
+	ok = _expect(host.settings.gpu3d_scale == 6 and host.persist_count == 1, "scale change", "scale=%s persists=%d" % [host.settings.gpu3d_scale, host.persist_count]) and ok
 	renderer.select(0)
 	renderer.item_selected.emit(0)
-	ok = host.settings.renderer_gpu3d == 0 and host.gpu3d_rect == null and scale_control.disabled and ok
+	ok = _expect(host.settings.renderer_gpu3d == 0 and host.gpu3d_rect == null and scale_control.disabled, "renderer off", "renderer=%s layer=%s scale_disabled=%s" % [host.settings.renderer_gpu3d, host.gpu3d_rect, scale_control.disabled]) and ok
 	renderer.select(1)
 	renderer.item_selected.emit(1)
-	ok = host.settings.renderer_gpu3d == 1 and is_instance_valid(host.gpu3d_rect) and not scale_control.disabled and host.persist_count == 3 and ok
+	ok = _expect(host.settings.renderer_gpu3d == 1 and is_instance_valid(host.gpu3d_rect) and not scale_control.disabled and host.persist_count == 3, "renderer on", "renderer=%s layer_valid=%s scale_disabled=%s persists=%d" % [host.settings.renderer_gpu3d, is_instance_valid(host.gpu3d_rect), scale_control.disabled, host.persist_count]) and ok
 	# A widened opaque producer tests side visibility and native mask alignment.
 	host.settings_panel.hide()
 	host._set_layout(0)
 	var wide_image := Image.create(1024, 576, false, Image.FORMAT_RGBA8)
 	wide_image.fill(Stub.LEFT)
 	var wide_texture := ImageTexture.create_from_image(wide_image)
+	var persists_before := host.persist_count
 	widescreen.select(1)
 	widescreen.item_selected.emit(1)
-	ok = host.settings.widescreen_mode == 1 and host.persist_count == 5 and ok
+	ok = _expect(host.settings.widescreen_mode == 1 and host.persist_count - persists_before == 2, "Picture selection", "mode=%s persistence delta=%d" % [host.settings.widescreen_mode, host.persist_count - persists_before]) and ok
 	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
 	# A new ratio and an engine-A screen swap must relayout every layout,
 	# not just Horizontal. Check against the native screen rectangles.
@@ -481,23 +493,27 @@ func _run() -> void:
 	host.settings.integer_scale = false
 	host._apply_filter()
 	host._layout_screens()
+	persists_before = host.persist_count
 	widescreen.select(0)
 	widescreen.item_selected.emit(0)
-	ok = host.settings.widescreen_mode == 0 and host.persist_count == 7 and host.top_frame.clip_contents and ok
+	ok = _expect(host.settings.widescreen_mode == 0 and host.persist_count - persists_before == 2 and host.top_frame.clip_contents, "Off selection", "mode=%s persistence delta=%d clipped=%s" % [host.settings.widescreen_mode, host.persist_count - persists_before, host.top_frame.clip_contents]) and ok
 	# Picture is live, while entering or leaving Full defers until restart.
 	var fake_machine := SyntheticMachine.new()
 	fake_machine.top = host.top_rect.texture
 	fake_machine.bottom = host.bottom_rect.texture
 	host.machine = fake_machine
-	host._set_widescreen_mode(1)
-	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 1 and ok
-	host._set_widescreen_mode(2)
 	pages.refresh(true, host._active_widescreen_mode)
-	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 2 and pages._wide_note.text.contains("Restart") and ok
+	widescreen.select(1)
+	widescreen.item_selected.emit(1)
+	ok = _expect(host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 1, "live Picture", "active=%d requested=%s note=%s" % [host._active_widescreen_mode, host.settings.widescreen_mode, pages._wide_note.text]) and ok
+	widescreen.select(2)
+	widescreen.item_selected.emit(2)
+	ok = _expect(host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 2 and pages._wide_note.text.contains("Restart the game"), "pending Full", "active=%d requested=%s note=%s" % [host._active_widescreen_mode, host.settings.widescreen_mode, pages._wide_note.text]) and ok
 	host._active_widescreen_mode = 2
-	host._set_widescreen_mode(0)
 	pages.refresh(true, host._active_widescreen_mode)
-	ok = host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and pages._wide_note.text.contains("Restart") and ok
+	widescreen.select(0)
+	widescreen.item_selected.emit(0)
+	ok = _expect(host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and pages._wide_note.text.contains("Restart the game"), "pending exit from Full", "active=%d requested=%s note=%s" % [host._active_widescreen_mode, host.settings.widescreen_mode, pages._wide_note.text]) and ok
 	# Full supplies a native-position 2D/presentation texture and a native-
 	# position eligibility mask, even though the 3D raster spans the wide
 	# texture. The asymmetric occluder and off-centre 3D color boundary make
@@ -530,6 +546,7 @@ func _run() -> void:
 	for top in [true, false]:
 		var software_color := TOP if top else BOTTOM
 		for mode in [1, 2]:
+			fake_machine.presentation_valid = mode == 2
 			host._active_widescreen_mode = mode
 			host.set_gpu3d_frame(full_gpu_texture, full_mask_texture, top)
 			await _settle()
@@ -549,7 +566,7 @@ func _run() -> void:
 				host.set_gpu3d_frame(null, null, top)
 				await _settle()
 				full_capture = root.get_texture().get_image()
-				ok = host.gpu3d_rect == null and ok
+				ok = _expect(host.gpu3d_rect == null, "Full fallback layer", "gpu3d_rect=%s" % host.gpu3d_rect) and ok
 				ok = _screen_probe(host, full_capture, top, Vector2(0.2, 0.5), occluder, "Full fallback native 2D") and ok
 				ok = _screen_probe(host, full_capture, top, Vector2(0.48, 0.5), software_color, "Full fallback software") and ok
 	# Raw wide eligibility and software raster have their own wide UV, not the
@@ -597,6 +614,12 @@ func _run() -> void:
 					push_error("Off changed at " + sample[3])
 					ok = false
 	host._active_widescreen_mode = 2
+	fake_machine.presentation_valid = false
+	host.set_gpu3d_frame(wide_texture, _solid(Color.BLACK), false)
+	ok = _expect(host.top_rect.texture == fake_machine.top and host.bottom_rect.texture == fake_machine.bottom, "invalid presentation fallback", "top_matches=%s bottom_matches=%s" % [host.top_rect.texture == fake_machine.top, host.bottom_rect.texture == fake_machine.bottom]) and ok
+	fake_machine.presentation_valid = true
+	host._update_gpu3d_composite()
+	ok = _expect(host.top_rect.texture == fake_machine.presentation_top and host.bottom_rect.texture == fake_machine.presentation_bottom, "valid presentation textures", "top_matches=%s bottom_matches=%s" % [host.top_rect.texture == fake_machine.presentation_top, host.bottom_rect.texture == fake_machine.presentation_bottom]) and ok
 	# No emulated frame arrives while paused: presentation switches must update
 	# both the displayed overlay and the texture used for its color-key hit test.
 	var paused_under := Color8(20, 190, 40)
@@ -623,17 +646,22 @@ func _run() -> void:
 	host._apply_gpu3d_settings()
 	await _settle()
 	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused GPU enabled") and ok
-	var hd_toggle: CheckButton = pages._controls.hd_textures
+	var hd_toggle := pages._controls.hd_textures as CheckButton
 	var dump_toggle := host.find_child("TextureDump", true, false) as CheckButton
-	ok = hd_toggle != null and dump_toggle != null and not hd_toggle.button_pressed and not dump_toggle.button_pressed and ok
-	if hd_toggle and dump_toggle:
+	ok = _expect(hd_toggle != null, "HD texture control", "control=%s" % hd_toggle) and ok
+	ok = _expect(dump_toggle != null, "texture dump control", "control=%s" % dump_toggle) and ok
+	if hd_toggle:
+		ok = _expect(not hd_toggle.button_pressed, "initial HD texture toggle", "pressed=%s" % hd_toggle.button_pressed) and ok
 		hd_toggle.button_pressed = true
-		ok = host.settings.hd_textures and fake_machine.hd_textures and ok
-		dump_toggle.button_pressed = true
-		ok = fake_machine.texture_dump and ok
+		ok = _expect(host.settings.hd_textures and fake_machine.hd_textures, "HD textures enabled", "setting=%s machine=%s" % [host.settings.hd_textures, fake_machine.hd_textures]) and ok
 		hd_toggle.button_pressed = false
+		ok = _expect(not host.settings.hd_textures and not fake_machine.hd_textures, "HD textures disabled", "setting=%s machine=%s" % [host.settings.hd_textures, fake_machine.hd_textures]) and ok
+	if dump_toggle:
+		ok = _expect(not dump_toggle.button_pressed, "initial texture dump toggle", "pressed=%s" % dump_toggle.button_pressed) and ok
+		dump_toggle.button_pressed = true
+		ok = _expect(fake_machine.texture_dump, "texture dump enabled", "machine=%s" % fake_machine.texture_dump) and ok
 		dump_toggle.button_pressed = false
-		ok = not host.settings.hd_textures and not fake_machine.hd_textures and not fake_machine.texture_dump and ok
+		ok = _expect(not fake_machine.texture_dump, "texture dump disabled", "machine=%s" % fake_machine.texture_dump) and ok
 	host.machine = null
 	fake_machine.free()
 	host._set_widescreen_mode(0)
@@ -643,12 +671,12 @@ func _run() -> void:
 		host._gpu3d_stats = {"valid": i < 112}
 		host._observe_gpu3d_frame()
 	host._gpu3d_stats = {"valid": true, "gpu_pixels": 93, "gpu_pixel_share": 0.93}
-	ok = host._gpu3d_status_text().contains("valid 93%") and host._gpu3d_status_text().contains("3D pixels 93%") and ok
+	ok = _expect(host._gpu3d_status_text().contains("valid 93%") and host._gpu3d_status_text().contains("3D pixels 93%"), "GPU status ratio", host._gpu3d_status_text()) and ok
 	# A small nonzero mask can round to 0%; it is still an active producer.
 	host._gpu3d_stats = {"valid": true, "gpu_pixels": 1, "gpu_pixel_share": 0.00001}
-	ok = host._gpu3d_status_text().contains("active") and ok
+	ok = _expect(host._gpu3d_status_text().contains("active"), "GPU status small mask", host._gpu3d_status_text()) and ok
 	host._gpu3d_stats = {"valid": false, "fallback": "w-buffer"}
-	ok = host._gpu3d_status_text().contains("fallback: w-buffer") and ok
+	ok = _expect(host._gpu3d_status_text().contains("fallback: w-buffer"), "GPU status fallback", host._gpu3d_status_text()) and ok
 	print("%s: GPU composite %d layout/scale/swap cases, %d pixels, software/fallback/touch/settings" % ["PASS" if ok else "FAIL", _cases, _pixels])
 	host.free()
 	stub.free()

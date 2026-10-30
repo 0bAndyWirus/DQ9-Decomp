@@ -110,16 +110,31 @@ func _paused_widescreen_switch() -> void:
 	var off_size: Vector2 = machine.get_gpu3d_texture().get_size()
 	machine.set_gpu3d_widescreen_enabled(true)
 	await _settle()
+	check(_scene() == scene, "paused Picture retains the live scene")
 	var picture := _mesh_vertices(scene)
 	var picture_size: Vector2 = machine.get_gpu3d_texture().get_size()
 	check(not off.is_empty() and picture != off, "paused Picture rebuilds retained frame geometry")
 	check(picture_size.x > off_size.x and picture_size.y == off_size.y, "paused Picture widens viewport")
 	check(int(machine.get_gpu3d_stats().frame) == frame, "paused Picture keeps the same guest frame")
+	# A mode change bumps the worker epoch; refreshing the retained frame must
+	# still rebuild it while paused, including for HD texture setting changes.
+	for child in scene.get_node("Gpu3DViewport").get_children():
+		if child is MeshInstance3D and child.mesh:
+			child.mesh.clear_surfaces()
+	machine.set_hd_textures_enabled(not machine.get_hd_textures_enabled())
+	check(_mesh_vertices(scene) == picture, "paused HD toggle refreshes the retained frame after a mode change")
+	machine.set_hd_textures_enabled(not machine.get_hd_textures_enabled())
 	machine.set_gpu3d_widescreen_enabled(false)
 	await _settle()
-	check(_mesh_vertices(scene) == off and machine.get_gpu3d_texture().get_size() == off_size,
-		"paused Off restores retained frame geometry and viewport")
+	check(_scene() == scene, "paused Off retains the live scene")
+	check(_mesh_vertices(scene).is_empty() and machine.get_gpu3d_texture() == null,
+		"paused Off releases Picture geometry and falls back to software")
 	check(int(machine.get_gpu3d_stats().frame) == frame, "paused Off keeps the same guest frame")
+	machine.set_gpu3d_widescreen_enabled(true)
+	machine.set_gpu3d_widescreen_enabled(false)
+	await _settle()
+	check(_scene() == scene and _mesh_vertices(scene).is_empty() and machine.get_gpu3d_texture() == null,
+		"rapid paused toggles do not restore released Picture geometry")
 
 func _polygon_coverage(scene: Node) -> Dictionary:
 	var effects: SubViewport = scene.get_node("Gpu3DEffects")
@@ -410,26 +425,53 @@ func _run() -> void:
 		var reason: String = stats.get("fallback", "disabled")
 		fallback_counts[reason] = int(fallback_counts.get(reason, 0)) + 1
 		check(int(stats.get("decoded_this_frame", 0)) <= 256, "texture budget at frame %d" % (frame - 1))
-		if not paused_switch_checked and bool(stats.get("valid", false)) and int(stats.get("mesh_polygon_count", 0)) > 0:
-			await _paused_widescreen_switch()
-			paused_switch_checked = true
 		var range_key := _range_key(frame - 1)
 		if not range_key.is_empty(): await _sample_range(frame - 1, range_key)
 		if checkpoints.has(frame - 1):
 			await _capture(frame - 1, 1)
 			await _capture(frame - 1, 3)
 			await _capture(frame - 1, 6)
+		# The probe invalidates the retained GPU frame, so run it only after
+		# all measurements for this publication have finished.
+		if not paused_switch_checked and bool(stats.get("valid", false)) and int(stats.get("mesh_polygon_count", 0)) > 0:
+			await _paused_widescreen_switch()
+			paused_switch_checked = true
 	check(paused_switch_checked, "paused widescreen test encountered a valid nonempty GPU frame")
+	# Publish under the old epoch, then switch modes before _process can
+	# consume it. The new software frame must not retain the previous scene.
+	var stale_scene := _scene()
+	var cached_before: int = machine.get_gpu3d_stats().get("textures_cached", 0)
+	machine.step_frames(2, 0, -1, -1, false)
+	machine.set_gpu3d_widescreen_enabled(true)
+	await machine.frame_ready
+	check(_scene() == stale_scene and machine.get_gpu3d_texture() == null
+		and machine.get_gpu3d_raw_texture() == null
+		and not bool(machine.get_gpu3d_stats().get("valid", false)),
+		"old-epoch publication invalidates the previous scene")
+	check(int(machine.get_gpu3d_stats().get("textures_cached", 0)) == cached_before,
+		"rejecting an old-epoch publication retains the texture cache")
+	machine.set_gpu3d_widescreen_enabled(false)
+	check(machine.get_gpu3d_texture() == null and machine.get_gpu3d_raw_texture() == null,
+		"paused mode toggle does not redraw the rejected publication")
+	machine.step_frames(2, 0, -1, -1, false)
+	await machine.frame_ready
 	# Dropped ring publications must not lose new texture payloads. Synchronous
 	# multi-frame stepping replaces several unconsumed slots before one upload.
 	machine.step_frames(8, 0, -1, -1, false)
 	await machine.frame_ready
 	check(int(machine.get_gpu3d_stats().get("textures_cached", 0)) > 0, "texture cache survives replaced frame slots")
 	var software_before: PackedByteArray = machine.get_top_image().get_data()
+	var released_scene: WeakRef = weakref(_scene())
 	machine.set_gpu3d_enabled(false)
 	check(_scene() == null and machine.get_gpu3d_texture() == null and machine.get_gpu3d_mask_texture() == null, "disable releases Godot GPU scene and overlay resources")
+	check(released_scene.get_ref() == null, "disable destroys the old scene immediately while paused")
 	check(machine.get_top_image().get_data() == software_before, "toggle leaves software pixels unchanged")
 	machine.set_gpu3d_enabled(true)
+	check(_scene() == null and machine.get_gpu3d_texture() == null,
+		"reenabling while paused does not restore a stale scene")
+	await process_frame
+	check(_scene() == null and machine.get_gpu3d_texture() == null,
+		"paused processing does not recreate the scene without a new frame")
 	machine.step_frames(2, 0, -1, -1, false)
 	await machine.frame_ready
 	check(int(machine.get_gpu3d_stats().get("textures_cached", 0)) > 0, "reenable epoch rebuilds texture cache instead of trusting stale acknowledgements")

@@ -22,6 +22,16 @@ uniform float span_margin = 0.0;
 uniform bool clear_plane = false;
 // Width of the wide target relative to the native 4:3 screen.
 uniform float side_native_width_ratio = 1.0;
+uniform bool w_buffer = false;
+varying float ds_clip_w;
+
+// Perspective interpolation of clip W gives 1 / interpolate(1 / W),
+// the same reciprocal interpolant used by the software span rasterizer.
+float ds_fragment_depth(float hardware_depth) {
+	if (!w_buffer || clear_plane) { return hardware_depth; }
+	float depth = clamp(floor(ds_clip_w * 4096.0), 0.0, 16777215.0);
+	return 1.0 - depth / 16777215.0;
+}
 varying vec3 ds_vertex_color;
 
 vec4 ds_position(vec3 clip_xyz, float clip_w, int vertex_metadata, vec3 depth_plane) {

@@ -112,8 +112,9 @@ public:
     //   line_3d is the 3D engine's 256-pixel output for line y (may be
     //   nullptr if 3D is disabled), format defined by Gpu3D::line().
     void attach_gpu3d(Gpu3D* gpu3d);
-    // Enable the Full-mode presentation buffers; disabled accessors alias native output.
-    void set_enhanced_presentation(bool enabled);
+    // Enable separate enhanced presentation buffers. Full remaps the 3D source;
+    // Picture samples it at native coordinates. Disabled accessors alias native output.
+    void set_enhanced_presentation(bool enabled, bool full = true);
     // Owner-thread-only Full viewport scale, clamped to the host's 1..6 range.
     void set_presentation_scale(int scale);
     void render_line(int y);

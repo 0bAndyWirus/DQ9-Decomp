@@ -470,6 +470,44 @@ void test_enhanced_presentation_mask_preserves_hardware_output() {
     fake_enhanced_enabled = false;
 }
 
+void test_picture_presentation_native_coordinates() {
+    dsr::Gpu2D gpu;
+    dsr::Gpu3D fake_gpu3d;
+    gpu.attach_gpu3d(&fake_gpu3d);
+    gpu.set_enhanced_presentation(true, false);
+    gpu.set_presentation_scale(3);
+    set_power(gpu, 0x8207U);
+    set_bg_palette(gpu, 0U, 0x7c00U);
+    fake_3d_line.fill(0U);
+    fake_enhanced_3d_line.fill(0U);
+    fake_enhanced_3d_line[1] = (31U << 24U) | 63U;
+    fake_enhanced_3d_line[2] = (16U << 24U) | 63U;
+    fake_enhanced_enabled = true;
+    gpu.io_write(kA, (1U << 16U) | (1U << 8U) | (1U << 3U), 32);
+    gpu.render_line(0);
+    assert(gpu.three_d_mask()[1] == 0U);
+    assert(gpu.presentation_three_d_mask()[0] == 0U);
+    assert(gpu.presentation_three_d_mask()[1] == 1U);
+    assert(gpu.presentation_three_d_mask()[2] == 0U);
+    assert(pixel(gpu.screen_top(), 1U) == 0xff0000ffU);
+    assert(pixel(gpu.presentation_top(), 1U) == 0xffff0000U);
+    gpu.io_write(kA + 0x50U, 0x2000U, 16); // Enable backdrop as a forced 3D blend target.
+    gpu.render_line(0);
+    assert(gpu.presentation_three_d_mask()[1] == 0U);
+    assert(gpu.presentation_three_d_mask()[2] == 0U);
+    assert(pixel(gpu.presentation_top(), 2U) == 0xff830073U);
+    assert(pixel(gpu.presentation_bottom(), 1U) == pixel(gpu.screen_bottom(), 1U));
+    set_power(gpu, 0x0207U);
+    gpu.render_line(0);
+    assert(pixel(gpu.presentation_bottom(), 1U) == 0xffff0000U);
+    assert(pixel(gpu.screen_bottom(), 1U) == 0xff0000ffU);
+    gpu.set_enhanced_presentation(false);
+    assert(gpu.presentation_top() == gpu.screen_top());
+    assert(gpu.presentation_bottom() == gpu.screen_bottom());
+    assert(gpu.presentation_three_d_mask() == gpu.three_d_mask());
+    fake_enhanced_enabled = false;
+}
+
 void test_full_presentation_centered_raster() {
     dsr::Gpu2D gpu;
     dsr::Gpu3D fake_gpu3d;
@@ -1829,6 +1867,7 @@ int main(int argc, char** argv) {
         {"mode6_3d_enable", test_mode_six_does_not_force_bg0_3d},
         {"presentation_buffers", test_presentation_buffers_follow_full_mode},
         {"enhanced_mask", test_enhanced_presentation_mask_preserves_hardware_output},
+        {"picture_native_raster", test_picture_presentation_native_coordinates},
         {"full_centered_raster", test_full_presentation_centered_raster},
         {"text", test_text_bg_and_palette_write_rules},
         {"affine", test_affine_rotation},

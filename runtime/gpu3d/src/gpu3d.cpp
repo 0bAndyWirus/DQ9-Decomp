@@ -3129,6 +3129,11 @@ void Gpu3D::reset() { impl_->reset(); }
 void Gpu3D::set_enhanced_geometry(bool enabled) {
     if (enabled) impl_->resize_geometry_storage(true);
     impl_->enhanced_geometry = enabled;
+    // Prepared bands are disposable render scratch, even when the live
+    // submission or displayed list still requires enlarged geometry storage.
+    if (!enabled && impl_->full_storage) impl_->vertex_storage.full->band_polygons.reset();
+    // Oversized lists cannot be truncated here: they may still be rendered or
+    // referenced by an in-progress primitive. Retire them at a later swap.
     if (!enabled && impl_->vertex_count <= kVertexLimit && impl_->polygon_count <= kPolygonLimit &&
         impl_->render_vertex_count <= kVertexLimit && impl_->render_polygon_count <= kPolygonLimit)
         impl_->resize_geometry_storage(false);

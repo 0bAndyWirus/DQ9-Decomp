@@ -14,10 +14,12 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_always, shadows_disab
 
 void vertex() {
 	POSITION = ds_position(VERTEX, UV2.x, int(UV2.y), CUSTOM1.rgb);
+	ds_clip_w = UV2.x;
 	ds_vertex_color = span_mesh ? CUSTOM0.rgb : COLOR.rgb;
 }
 
 void fragment() {
+	DEPTH = ds_fragment_depth(FRAGCOORD.z);
 	vec4 shade = ds_shade(UV, ds_vertex_color);
 	// Alpha zero is wireframe in the DS. The caller must skip/route those polygons.
 	if (shade.a == 0.0 || (alpha_test_enabled && shade.a < float(alpha_test_ref))) { discard; }

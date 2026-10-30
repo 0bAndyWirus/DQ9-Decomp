@@ -17,6 +17,14 @@ void require(bool condition, const char* message) {
 }
 
 void test_storage() {
+    require(!dq9::enhanced_geometry_enabled(false, false, false) &&
+            !dq9::enhanced_geometry_enabled(false, true, false) &&
+            !dq9::enhanced_geometry_enabled(false, false, true),
+            "Off and disabled GPU do not enlarge geometry");
+    require(dq9::enhanced_geometry_enabled(false, true, true) &&
+            dq9::enhanced_geometry_enabled(true, false, false) &&
+            dq9::enhanced_geometry_enabled(true, true, true),
+            "Picture and Full use enhanced geometry independently of Full camera");
     dq9::GpuSceneFrame frame;
     require(frame.vertices.size() == 6144 && frame.polygons.size() == 2048,
             "classic storage starts at hardware limits");
@@ -27,12 +35,12 @@ void test_storage() {
             "repeated classic preparation retains storage");
     frame.prepare_geometry(true);
     require(frame.vertices.size() == 12288 && frame.polygons.size() == 12288,
-            "Full storage uses enhanced limits");
+            "Picture and Full storage uses enhanced limits");
     vertices = frame.vertices.data();
     polygons = frame.polygons.data();
     frame.prepare_geometry(true);
     require(frame.vertices.data() == vertices && frame.polygons.data() == polygons,
-            "repeated Full preparation retains storage");
+            "repeated enhanced preparation retains storage");
     frame.prepare_geometry(false);
     require(frame.vertices.size() == 6144 && frame.polygons.size() == 2048 &&
             frame.vertices.capacity() == 6144 && frame.polygons.capacity() == 2048,
@@ -51,13 +59,13 @@ void test_geometry_acceptance() {
     require(!dq9::accepts_geometry(view, false) && dq9::accepts_geometry(view, true),
             "classic rejects excess polygons independently");
     view.vertex_count = 12288; view.polygon_count = 12288;
-    require(dq9::accepts_geometry(view, true), "Full limits are inclusive");
+    require(dq9::accepts_geometry(view, true), "Picture and Full limits are inclusive");
     view.vertex_count = 12289;
     require(!dq9::accepts_geometry(view, true), "Full rejects excess vertices");
     view.vertex_count = 12288; view.polygon_count = 12289;
     require(!dq9::accepts_geometry(view, true), "Full rejects excess polygons");
-    // Exercise every combination independently of the count checks. Full
-    // ignores both hardware flags, but neither mode accepts enhanced overflow.
+    // Exercise every combination independently of the count checks. Picture and
+    // Full ignore hardware flags, but neither accepts enhanced overflow.
     view.vertex_count = 1; view.polygon_count = 2048;
     for (unsigned flags = 0; flags < 8; ++flags) {
         view.vertex_overflow = (flags & 1U) != 0;
@@ -66,7 +74,7 @@ void test_geometry_acceptance() {
         require(dq9::accepts_geometry(view, false) == ((flags & 5U) == 0),
                 "classic accepts polygon overflow only without other overflow");
         require(dq9::accepts_geometry(view, true) == ((flags & 4U) == 0),
-                "Full ignores hardware flags but rejects enhanced overflow");
+                "enhanced modes ignore hardware flags but reject enhanced overflow");
     }
     view = {};
     view.polygon_overflow = true;
@@ -156,6 +164,24 @@ void test_ring_recycling() {
     require(!slots[0]->gpu_valid && slots[0]->fallback == dq9::GpuFallback::Warmup &&
             slots[0]->epoch == 8 && slots[0]->vertex_count == 0 && slots[0]->side_software.empty(),
             "reset restarts warmup and clears recycled metadata and side payload");
+    // A new mode must not reuse the old capture even if it occupied a ring slot.
+    delay.begin_step();
+    auto& picture = delay.capture_target();
+    picture.prepare_geometry(dq9::enhanced_geometry_enabled(false, true, true));
+    picture.source_frame = 20;
+    picture.epoch = 8;
+    picture.gpu_valid = true;
+    delay.publish(slots[0], displayed, 8);
+    delay.begin_step();
+    delay.publish(slots[1], displayed, 8);
+    require(slots[1]->gpu_valid && slots[1]->source_frame == 20 &&
+            slots[1]->vertices.size() == dq9::kGpuVertexLimit,
+            "Picture publishes its own enhanced capture after warmup");
+    delay.reset();
+    delay.begin_step();
+    delay.publish(slots[1], displayed, 9);
+    require(!slots[1]->gpu_valid && slots[1]->epoch == 9 && slots[1]->source_frame == 0,
+            "return to Off cannot present the previous Picture capture");
 }
 void test_full_opaque_eligibility_remap() {
     std::array<std::uint8_t, 256 * 192> mask{};

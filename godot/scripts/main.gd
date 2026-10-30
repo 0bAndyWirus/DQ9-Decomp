@@ -877,7 +877,7 @@ func _update_gpu3d_composite() -> void:
 		_layout_wide_screen = wide_screen
 		_layout_screens()
 	if machine and is_instance_valid(top_rect) and is_instance_valid(bottom_rect):
-		var use_presentation := _active_widescreen_mode == 2 and int(settings.renderer_gpu3d) != 0 and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null and machine.has_method("get_presentation_top_texture")
+		var use_presentation: bool = _active_widescreen_mode != 0 and int(settings.renderer_gpu3d) != 0 and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null and machine.has_method("has_presentation_frame") and machine.has_presentation_frame() and machine.has_method("get_presentation_top_texture") and machine.has_method("get_presentation_bottom_texture")
 		top_rect.texture = machine.get_presentation_top_texture() if use_presentation else machine.get_top_texture()
 		bottom_rect.texture = machine.get_presentation_bottom_texture() if use_presentation else machine.get_bottom_texture()
 		for node in _single_nodes:

@@ -35,7 +35,8 @@ struct RenderFrame {
     std::uint32_t disp3dcnt = 0;
     std::uint32_t alpha_test_ref = 0;
     std::uint64_t vram_generation = 0;
-    // Engine A coordinates, independent of POWCNT1 screen swap.
+    // Presentation engine A mask (native mask when presentation is disabled),
+    // in native LCD coordinates, independent of POWCNT1 screen swap.
     const std::uint8_t* three_d_mask = nullptr;
     // Optional 3D-raster coordinates; null when capture is disabled/not ready.
     // AND with the matching LCD's three_d_mask before GPU compositing.
