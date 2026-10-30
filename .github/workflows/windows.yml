@@ -330,6 +330,9 @@ jobs:
           Copy-Item tools/windows/PLAY-GODOT.bat $cold
           Copy-Item tools/run_godot.ps1 $coldTools
           Set-Content -Encoding ascii (Join-Path $project 'project.godot') '[application]'
+          $fixtureAssets = Join-Path $project 'assets\fonts'
+          New-Item -ItemType Directory -Force $fixtureAssets | Out-Null
+          Set-Content -Encoding ascii (Join-Path $fixtureAssets 'font.ttf.import') 'path="res://.godot/imported/font.fontdata"'
           foreach ($dll in @('dq9_godot.windows.template_release.x86_64.dll', 'dsr_session.dll')) {
             Set-Content -Encoding ascii (Join-Path $bin $dll) 'ROM-free fixture, not a DLL'
           }
@@ -341,6 +344,7 @@ jobs:
           #include <stdio.h>
           #include <stdlib.h>
           #include <string.h>
+          #include <direct.h>
           int main(int argc, char **argv) {
               FILE *record = fopen(getenv("GODOT_FIXTURE_RECORD"), "ab");
               if (!record) return 30;
@@ -348,13 +352,22 @@ jobs:
                   fprintf(record, "%s%s", i == 1 ? "" : "|", argv[i]);
               fputc('\n', record);
               fclose(record);
-              for (int i = 1; i < argc; ++i) {
-                  if (strcmp(argv[i], "--headless") == 0 ||
-                      strcmp(argv[i], "--editor") == 0 ||
-                      strcmp(argv[i], "--import") == 0) {
-                      fputs("Cold launch must not invoke an editor or import.\n", stderr);
-                      return 31;
-                  }
+              if (argc == 7 && strcmp(argv[1], "--headless") == 0 &&
+                  strcmp(argv[2], "--path") == 0 &&
+                  strcmp(argv[3], getenv("GODOT_FIXTURE_PROJECT")) != 0 &&
+                  strcmp(argv[4], "--editor") == 0 &&
+                  strcmp(argv[5], "--import") == 0 &&
+                  strcmp(argv[6], "--quit") == 0) {
+                  char path[4096];
+                  snprintf(path, sizeof(path), "%s/.godot", argv[3]);
+                  if (_mkdir(path)) return 35;
+                  snprintf(path, sizeof(path), "%s/.godot/imported", argv[3]);
+                  if (_mkdir(path)) return 36;
+                  snprintf(path, sizeof(path), "%s/.godot/imported/font.fontdata", argv[3]);
+                  FILE *asset = fopen(path, "wb");
+                  if (!asset) return 37;
+                  fclose(asset);
+                  return 0;
               }
               if (argc != 11 ||
                   strcmp(argv[1], "--path") != 0 ||
@@ -384,10 +397,14 @@ jobs:
           $cache = Join-Path $project '.godot'
           if (Test-Path $cache) { throw 'Cold fixture unexpectedly has a Godot cache' }
           $savedGodotEnv = @{}
-          foreach ($name in @('GODOT', 'DQ9_SAVE', 'GODOT_FIXTURE_RECORD', 'GODOT_FIXTURE_PROJECT', 'GODOT_FIXTURE_ROM')) {
+          foreach ($name in @('GODOT', 'DQ9_SAVE', 'TEMP', 'TMP', 'GODOT_FIXTURE_RECORD', 'GODOT_FIXTURE_PROJECT', 'GODOT_FIXTURE_ROM')) {
             $savedGodotEnv[$name] = [Environment]::GetEnvironmentVariable($name)
           }
           try {
+            $tempBrackets = Join-Path $cold 'temp [brackets]'
+            New-Item -ItemType Directory -Force -Path $tempBrackets | Out-Null
+            $env:TEMP = $tempBrackets
+            $env:TMP = $tempBrackets
             $env:GODOT = $coldExe
             $env:DQ9_SAVE = $coldSave
             $env:GODOT_FIXTURE_RECORD = $coldRecord
@@ -396,9 +413,11 @@ jobs:
             $r = Invoke-Entry $coldBat ('"' + $rom + '" de')
             Assert-Equal $r.Code 7 'real cold Godot propagated status'
             Assert-Match $r.Text 'status 7' 'real cold Godot failure message'
-            Assert-Equal ([IO.File]::ReadAllLines($coldRecord).Length) 1 'cold Godot launch count'
-            Assert-Equal (Read-Record $coldRecord) "--path|$project|--|--language|de|--save|$coldSave|--autostart|--rom|$rom" 'cold Godot native arguments'
-            if (Test-Path $cache) { throw 'Normal Godot launch must not require or create an extension cache' }
+            $coldCalls = [IO.File]::ReadAllLines($coldRecord)
+            Assert-Equal $coldCalls.Length 2 'cold Godot import and launch count'
+            Assert-Match $coldCalls[0] '^--headless\|--path\|.+dq9-godot-import-.+\|--editor\|--import\|--quit$' 'cold Godot scratch import arguments'
+            if (-not $coldCalls[0].Contains('temp [brackets]')) { throw 'Scratch import did not use bracketed TEMP' }
+            Assert-Equal $coldCalls[1] "--path|$project|--|--language|de|--save|$coldSave|--autostart|--rom|$rom" 'cold Godot native arguments'
 
             $env:GODOT = Join-Path $cold 'missing Godot !.exe'
             $r = Invoke-Entry $coldBat ('"' + $rom + '" de')
@@ -410,8 +429,8 @@ jobs:
             $r = Invoke-Entry $coldBat ('"' + $rom + '" de')
             Assert-Equal $r.Code 1 'unstartable Godot executable status'
             Assert-Match $r.Text 'Could not start Godot executable' 'unstartable Godot executable message'
-            Assert-Equal ([IO.File]::ReadAllLines($coldRecord).Length) 1 'failed starts must not invoke native Godot'
-            if (Test-Path $cache) { throw 'Failed starts must not create an extension cache' }
+            Assert-Equal ([IO.File]::ReadAllLines($coldRecord).Length) 2 'failed starts must not invoke native Godot'
+            if (-not (Test-Path (Join-Path $cache 'imported\font.fontdata'))) { throw 'Imported asset missing from project cache' }
           } finally {
             foreach ($name in $savedGodotEnv.Keys) {
               [Environment]::SetEnvironmentVariable($name, $savedGodotEnv[$name])

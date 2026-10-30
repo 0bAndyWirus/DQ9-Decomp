@@ -14,7 +14,13 @@ godot --path godot
 godot --path godot -- --rom "$DQ9_ROM" --save user://dq9.sav --language en --autostart
 ```
 
-Select a local image using `--rom`, `DQ9_ROM` when no saved path exists, or Browse. `--rom` overrides the saved selection. The launcher remembers paths, language, layout, filter/scaling, volume and input bindings in `user://settings.cfg`. The save defaults to `user://dq9.sav`.
+Select a local image using `--rom`, `DQ9_ROM` when no saved path exists, or Browse. `--rom` overrides the saved selection. The launcher remembers paths, language, presentation, volume and input bindings in `user://settings.cfg`. `--save` or `DQ9_SAVE` can specify a save path; the legacy default is `user://dq9.sav`. `--save` takes precedence over `DQ9_SAVE`.
+
+The title screen offers **Continue**, **New Game**, **Settings**, a save-slot manager and **Quit**. Slots are separate cartridge saves, not emulator save states. Slot data and metadata live under `user://save_slots`; the manager can import and export saves and delete slots after confirmation. An existing legacy save can be registered without copying it: deleting that slot removes its metadata, not the original save file. Keep saves and exported copies private.
+
+The Godot launcher uses the **Celestial Observatory** theme. In Settings, **Menu music** controls launcher music independently of **Volume** (game audio), while **UI sound effects** controls menu interaction sounds separately. Under Display, **Reduced menu motion** reduces launcher animation, and **Live launcher background** toggles the live game background. The live background uses your configured local ROM and a separate temporary save, not your gameplay save.
+
+Settings are shared between the launcher and pause menu. The **Classic** preset selects vertical layout, nearest filtering, non-integer scaling, software 3D, 3× GPU scale, widescreen Off and HD textures off. **Enhanced** uses the same layout and scaling, but selects GPU hi-res at 3× and Picture widescreen. Changing a preset field makes the selection **Custom**. **Full** widescreen is experimental and changes the guest camera, so it is selected for the next launch rather than switched in a running session. It requires separate replay/parity baselines from Classic. Picture mode changes presentation without changing guest state.
 
 `DQ9_ABI_CONFIG` selects caller-supplied local runtime metadata for guest-thread
 overrides and optional cartridge backup settings. When it is unset the host looks for
@@ -23,7 +29,7 @@ without any such file the game stalls on blank screens. The settings panel has a
 (also `--backup-type NAME` after `--`) for the cartridge backup memory type. No title-specific ABI layout
 or values are included. See [Building DQ9-Remastered](../docs/BUILDING.md).
 
-The launcher supports the seven host layouts (vertical, horizontal, top/bottom focus, single top/bottom, merged overlay); F11 toggles fullscreen and F10 opens the pause/debug panel; hold Tab to fast-forward (the pause panel's speed returns on release) and press F12 to save a PNG of both screens to `user://screenshots/`. The settings panel shows whether the ROM path exists and the current key/pad binding on each button. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.
+During play, Escape or the Select+Start chord opens the pause menu. Developer controls and the existing function-key shortcuts remain available in its Developer tab. F11 toggles fullscreen; hold Tab to fast-forward and press F12 to save PNGs of both screens to `user://screenshots/`. In merged overlay, Alt-left-drag moves the bottom display and Alt-right-drag resizes it; normal clicks remain DS touch input. The DS buttons use `ds_*` InputMap actions; defaults are Z/X for A/B, A/S for X/Y, Enter/Backspace, arrows, E/Q and SDL-style gamepad buttons. Select a binding in settings then press a key or gamepad button/axis. Mouse/touch input maps through the visible bottom-screen rectangle.
 
 ## Development and tests
 

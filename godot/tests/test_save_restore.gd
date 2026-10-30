@@ -32,9 +32,15 @@ func _run() -> void:
 	_store(save, _bytes(0x11)); _store(older, _bytes(0x22)); _store(newer, _bytes(0x33)); _store(mismatch, _bytes(0x44, 512))
 	scene = load("res://scenes/main.tscn").instantiate(); root.add_child(scene)
 	await process_frame
-	scene.settings.save_path = save; scene.settings.backup_type = "eeprom64k"
-	scene._ui.save.text = save
-	scene._ui.chip.select(scene.Logic.BACKUP_TYPES.find("eeprom64k"))
+	# Isolate the slots exercised by this test from the launcher's default store.
+	scene.slot_store = load("res://scripts/save_slots.gd").new(directory.path_join("slots"))
+	var original: Dictionary = scene.slot_store.migrate_legacy(save, "Restore test")
+	assert(original.error.is_empty())
+	var unrelated: Dictionary = scene.slot_store.create_slot("Unrelated")
+	assert(unrelated.error.is_empty())
+	var unrelated_path: String = scene.slot_store.get_slot(unrelated.id).path
+	scene._select_slot(original.id)
+	scene.settings.backup_type = "eeprom64k"
 	assert(not scene.settings.rom_path.is_empty(), "Pass --rom <local image>")
 	scene._start_game()
 	assert(scene.machine != null)
@@ -46,8 +52,8 @@ func _run() -> void:
 	assert(not scene.machine.restore_save(newer).is_empty(), "A paused started session must refuse direct restore")
 	assert(_read(save) == _bytes(0x11))
 	# Edited settings must not redirect a running session's restore or convert its chip.
-	scene._ui.save.text = directory.path_join("unrelated.sav")
-	scene._ui.chip.select(scene.Logic.BACKUP_TYPES.find("flash512k"))
+	scene._select_slot(unrelated.id)
+	scene.settings.backup_type = "flash512k"
 	# Capacity refusal must leave both persisted state and the live game unchanged.
 	var old_id: int = scene.machine.get_instance_id()
 	scene._restore_backup(mismatch)
@@ -68,7 +74,7 @@ func _run() -> void:
 	assert(_read(newer) == _bytes(0x33), "Restore source must remain unchanged")
 	assert(scene.machine != null and scene.machine.get_instance_id() != old_id, "Restore must restart, never replace live cartridge bytes")
 	assert(scene.machine.get_save_capacity() == 65536)
-	assert(not FileAccess.file_exists(directory.path_join("unrelated.sav")))
+	assert(not FileAccess.file_exists(unrelated_path))
 	scene.machine.set_paused(true)
 	scene.pause_panel.hide()
 	scene._toggle_pause()
@@ -78,8 +84,8 @@ func _run() -> void:
 	assert(root.get_texture().get_image().save_png(screenshot) == OK)
 	scene._stop_game()
 	assert(_read(save) == _bytes(0x33), "Closing after restart must preserve restored bytes")
-	scene._ui.save.text = save
-	scene._ui.chip.select(scene.Logic.BACKUP_TYPES.find("eeprom64k"))
+	scene._select_slot(original.id)
+	scene.settings.backup_type = "eeprom64k"
 	scene._restore_backup(older)
 	assert(scene.machine == null, "A stopped restore must stay stopped")
 	assert(_read(save) == _bytes(0x22))

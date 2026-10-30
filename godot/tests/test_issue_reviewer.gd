@@ -88,21 +88,22 @@ func _run() -> void:
 	DirAccess.copy_absolute(args[1], normal_save)
 	app.settings.rom_path = args[0]; app.settings.save_path = normal_save; app.settings.language = "en"
 	app.settings.backup_type = "auto"
-	var entry: Button
-	for button in app.settings_panel.find_children("*", "Button", true, false):
-		if button.text == "Issue reviewer… (F7)": entry = button
-	await _click(entry)
-	_expect(app.issue_reviewer.visible, "launcher entry routed by a synthetic click")
 	_key(KEY_F7)
 	for frame in 3: await process_frame
-	_expect(not app.issue_reviewer.visible and app.settings_panel.visible, "F7 closes reviewer and returns to launcher")
+	_expect(app.issue_reviewer.visible, "F7 opens reviewer from launcher")
+	_key(KEY_F7)
+	for frame in 3: await process_frame
+	_expect(not app.issue_reviewer.visible and app.launcher.visible, "F7 closes reviewer and returns to launcher")
+	var entry: Button
 	app._start_game()
 	for frame in 8: await process_frame
 	_key(KEY_F10)
 	for frame in 3: await process_frame
 	_expect(app.pause_panel.visible, "F10 debug panel preserved")
+	app._ui.pause_tabs.current_tab = 1
+	await process_frame
 	for button in app.pause_panel.find_children("*", "Button", true, false):
-		if button.text == "Issue reviewer…": entry = button
+		if button.text == "Tickets… (F7)": entry = button
 	await _click(entry)
 	_expect(app.issue_reviewer.visible and app.machine.is_paused(), "F10 reviewer button routed and normal game paused")
 	var list_button: Button

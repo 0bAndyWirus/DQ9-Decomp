@@ -258,9 +258,27 @@ local test output; do not upload them or the ROM. These commands are checks to
 run, not evidence of verification on a particular platform.
 
 
+## Launcher save slots
+
+`SaveSlots` stores slot metadata in `user://save_slots/<id>/slot.json` and
+slot-owned cartridge data in `save.sav` in that directory. The manager creates,
+imports, exports and deletes slots with UI confirmation; these are cartridge
+saves, not save states. `migrate_legacy(path, name)` registers the existing save
+path in place without copying or modifying it. Deleting a legacy slot removes
+its metadata, not the referenced file.
+
+`create_slot(name)`, `migrate_legacy(path, name)` and `import_slot(path, name)`
+return dictionaries containing `id` and `error`. `export_slot(id, path)`,
+`delete_slot(id)` and `update_playtime(id, seconds)` return an error string;
+`list_slots()` and `get_slot(id)` retrieve metadata. `backup_rows(id, machine)`
+and `create_manager(machine = null)` support the manager; its
+`slot_selected(id, path)` and `restore_requested(id, backup_path)` signals leave
+launch and native backup restore to the host. Restore is still governed by the
+fresh-session, capacity and flush requirements above.
+
 ## Issue reviewer and status store
 
-The launcher and F10 debug menu expose **Issue reviewer…**; F7 opens/closes it.
+The launcher and Developer controls expose **Issue reviewer…**; F7 opens/closes it.
 `scripts/issue_store.gd` lists `$XDG_DATA_HOME/dq9-remastered/debug`
 (default `~/.local/share/dq9-remastered/debug`), the legacy
 `$XDG_DATA_HOME/dq9-decomp/debug` root, and Godot `user://debug`. Existing
@@ -342,11 +360,17 @@ The launcher defaults to **Software (exact)**. Settings `renderer_gpu3d` (`0` so
 `1` GPU hi-res experimental), `gpu3d_scale` (`2`..`6`, default `3`) and
 `widescreen_mode` (`0` Off, `1` Picture, `2` Full; default Off) persist in
 `user://settings.cfg`. Software mode creates no GPU overlay node.
+The live launcher background uses a separate, disposable attract machine. When
+the GPU producer is available it presents 3D at the configured `gpu3d_scale`,
+independently of the gameplay renderer choice; otherwise it uses smoothly
+filtered software output. This affects presentation only, not the gameplay
+machine or its save.
 Picture widens GPU 3D presentation without changing guest state; game-side
 culling can cause pop-in. Full also widens the guest camera and uses the wide
 GPU target without Picture's clip-X correction, widening the field of view once.
-Full changes guest state and requires separate replay/parity baselines. Switching
-between Off and Picture is live; entering or leaving Full requires restarting.
+Full is experimental, changes guest state and requires separate replay/parity
+baselines. Entering or leaving Full is a next-launch choice, not a live change.
+Switching between Off and Picture is live unless a Full transition is pending.
 Both retain native 2D and touch coordinates. Widescreen needs GPU hi-res.
 Unsupported GPU frames fall back to the native software screen; in Full the
 modified camera remains active, so fallback is not Classic and may appear

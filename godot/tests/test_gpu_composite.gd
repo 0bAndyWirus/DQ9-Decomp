@@ -130,9 +130,13 @@ func _run() -> void:
 	root.add_child(stub)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_output))
 	var ok := true
-	ok = host._ui.gpu_renderer.item_count == 2 and host._ui.gpu_renderer.selected == 0 and ok
-	ok = host._ui.gpu_scale.item_count == 5 and host._ui.gpu_scale.selected == 1 and host._ui.gpu_scale.disabled and ok
-	ok = host._ui.gpu_widescreen.item_count == 3 and host._ui.gpu_widescreen.selected == 0 and not host._ui.gpu_widescreen.disabled and ok
+	var pages = host._ui.settings_pages
+	var renderer: OptionButton = pages._controls.renderer_gpu3d
+	var scale_control: OptionButton = pages._controls.gpu3d_scale
+	var widescreen: OptionButton = pages._controls.widescreen_mode
+	ok = renderer.item_count == 2 and renderer.selected == 0 and ok
+	ok = scale_control.item_count == 5 and scale_control.selected == 1 and scale_control.disabled and ok
+	ok = widescreen.item_count == 3 and widescreen.selected == 0 and not widescreen.disabled and ok
 	# Software must not create an extra drawable, even when a producer publishes.
 	stub.set_scale(3)
 	stub.publish(host)
@@ -333,23 +337,26 @@ func _run() -> void:
 			_click(button.get_global_rect().get_center(), false)
 			await process_frame
 			ok = host.settings_panel.visible and ok
-	host._ui.gpu_scale.select(4)
-	host._ui.gpu_scale.item_selected.emit(4)
+	# Earlier render cases leave the scale at 6; make this a real change.
+	host.settings.gpu3d_scale = 5
+	pages.refresh()
+	scale_control.select(4)
+	scale_control.item_selected.emit(4)
 	ok = host.settings.gpu3d_scale == 6 and host.persist_count == 1 and ok
-	host._ui.gpu_renderer.select(0)
-	host._ui.gpu_renderer.item_selected.emit(0)
-	ok = host.settings.renderer_gpu3d == 0 and host.gpu3d_rect == null and host._ui.gpu_scale.disabled and ok
-	host._ui.gpu_renderer.select(1)
-	host._ui.gpu_renderer.item_selected.emit(1)
-	ok = host.settings.renderer_gpu3d == 1 and is_instance_valid(host.gpu3d_rect) and not host._ui.gpu_scale.disabled and host.persist_count == 3 and ok
+	renderer.select(0)
+	renderer.item_selected.emit(0)
+	ok = host.settings.renderer_gpu3d == 0 and host.gpu3d_rect == null and scale_control.disabled and ok
+	renderer.select(1)
+	renderer.item_selected.emit(1)
+	ok = host.settings.renderer_gpu3d == 1 and is_instance_valid(host.gpu3d_rect) and not scale_control.disabled and host.persist_count == 3 and ok
 	# A widened opaque producer tests side visibility and native mask alignment.
 	host.settings_panel.hide()
 	host._set_layout(0)
 	var wide_image := Image.create(1024, 576, false, Image.FORMAT_RGBA8)
 	wide_image.fill(Stub.LEFT)
 	var wide_texture := ImageTexture.create_from_image(wide_image)
-	host._ui.gpu_widescreen.select(1)
-	host._ui.gpu_widescreen.item_selected.emit(1)
+	widescreen.select(1)
+	widescreen.item_selected.emit(1)
 	ok = host.settings.widescreen_mode == 1 and host.persist_count == 4 and ok
 	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
 	# A new ratio and an engine-A screen swap must relayout every layout,
@@ -421,8 +428,8 @@ func _run() -> void:
 	host.settings.integer_scale = false
 	host._apply_filter()
 	host._layout_screens()
-	host._ui.gpu_widescreen.select(0)
-	host._ui.gpu_widescreen.item_selected.emit(0)
+	widescreen.select(0)
+	widescreen.item_selected.emit(0)
 	ok = host.settings.widescreen_mode == 0 and host.persist_count == 5 and host.top_frame.clip_contents and ok
 	# Picture is live, while entering or leaving Full defers until restart.
 	var fake_machine := SyntheticMachine.new()

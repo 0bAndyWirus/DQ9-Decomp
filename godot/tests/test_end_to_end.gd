@@ -44,23 +44,21 @@ func _run() -> void:
 	app=load("res://scenes/main.tscn").instantiate(); root.add_child(app)
 	await process_frame
 	await process_frame
-	check(app.settings_panel.visible,"Menu appears")
+	check(app.launcher.visible,"Launcher appears")
 	await capture("menu")
-	app._pick_path(app._ui.rom,"*.nds,*.rom")
+	app.launcher.show_wizard()
 	await process_frame
-	var dialog: FileDialog=app.get_child(app.get_child_count()-1)
+	await click(app.launcher._browse)
+	await process_frame
+	var dialog: FileDialog=app.launcher._dialog
 	check(dialog.visible and dialog.file_mode==FileDialog.FILE_MODE_OPEN_FILE,"ROM FileDialog")
 	await capture("rom_picker")
 	dialog.file_selected.emit(app.settings.rom_path)
+	dialog.hide()
 	await process_frame
-	app._pick_path(app._ui.save,"*.sav",true)
-	await process_frame
-	dialog=app.get_child(app.get_child_count()-1)
-	check(dialog.visible and dialog.file_mode==FileDialog.FILE_MODE_SAVE_FILE,"Save FileDialog")
-	await capture("save_picker")
-	dialog.file_selected.emit(app.settings.save_path)
-	await process_frame
-	await click(button("Start"))
+	check(not app.settings.rom_path.is_empty(),"ROM selection accepted")
+	app._show_launcher()
+	await click(app.launcher._continue)
 	check(app.machine != null,"Start click creates native machine")
 	if app.machine==null: quit(1); return
 	await create_timer(2).timeout
@@ -92,19 +90,23 @@ func _run() -> void:
 		OS.execute("xdotool",["mouseup","1"])
 		await process_frame
 	# Exercise binding through actual Input.parse_input_event dispatch.
-	app.rebinding_action="ds_a"
+	app._show_settings()
+	var pages = app._ui.settings_pages
+	pages._begin_binding("ds_a")
 	var rebound:=InputEventKey.new(); rebound.physical_keycode=KEY_C; rebound.keycode=KEY_C; rebound.pressed=true
 	Input.parse_input_event(rebound); await process_frame
-	check(app.rebinding_action.is_empty() and InputMap.action_has_event("ds_a",rebound),"Keyboard rebind")
+	check(pages._binding_action.is_empty() and InputMap.action_has_event("ds_a",rebound),"Keyboard rebind")
 	rebound.pressed=false; Input.parse_input_event(rebound)
-	app.rebinding_action="ds_b"
+	pages._begin_binding("ds_b")
 	var joy:=InputEventJoypadButton.new(); joy.button_index=JOY_BUTTON_A; joy.pressed=true
 	Input.parse_input_event(joy); await process_frame
-	check(app.rebinding_action.is_empty() and InputMap.action_has_event("ds_b",joy),"Joypad rebind")
+	check(pages._binding_action.is_empty() and InputMap.action_has_event("ds_b",joy),"Joypad rebind")
 	var cfg := ConfigFile.new(); cfg.load("user://settings.cfg")
 	check(cfg.get_value("bindings","ds_b",[])[0].kind=="button","Joypad binding persisted")
 	joy.pressed=false; Input.parse_input_event(joy)
 	Logic.reset_bindings()
+	app._hide_settings()
+	app._toggle_pause()
 	for i in Logic.BUTTON_ACTIONS.size():
 		var pad := InputMap.action_get_events(Logic.BUTTON_ACTIONS[i])[1] as InputEventJoypadButton
 		pad.pressed=true; Input.parse_input_event(pad)
@@ -115,8 +117,11 @@ func _run() -> void:
 	# Replay the supplied local input under both language selections.
 	for lang in ["en","fr"]:
 		print("QA_RESTART ",lang)
-		app._show_settings(); app._ui.lang.select(app.LANGS.find(lang))
-		await click(button("Start"))
+		app._stop_game()
+		app._show_settings()
+		pages._controls.language.item_selected.emit(app.LANGS.find(lang))
+		app._hide_settings()
+		await click(app.launcher._continue)
 		app.machine.stop()
 		# Reload stopped for deterministic frame zero: Start's realtime worker may
 		# already have completed one frame before the test can stop it.
@@ -188,6 +193,8 @@ func _run() -> void:
 	var frozen:int=app.machine.get_stats().frame
 	await create_timer(0.3).timeout
 	check(app.machine.get_stats().frame==frozen,"Pause freezes frame")
+	app._ui.pause_tabs.current_tab = 1
+	await process_frame
 	await click(button("Step one frame"))
 	check(app.machine.get_stats().frame==frozen+1,"Step advances one")
 	await capture("audio_stats")
@@ -208,9 +215,9 @@ func _run() -> void:
 	app._persist()
 	var stored:=Logic.load_settings("user://settings.cfg")
 	check(stored.language=="fr" and stored.layout==6 and stored.overlay_rect==app._overlay_rect,"Settings persist")
-	app._stop_game(); check(app.machine==null and app.settings_panel.visible,"Close game")
-	app.settings.rom_path="/nonexistent/qa.nds"; app._start_game()
-	check(app.machine==null and not app._ui.error.text.is_empty(),"ROM error message")
+	app._stop_game(); check(app.machine==null and app.launcher.visible,"Close game")
+	app.settings.rom_path="/nonexistent/qa.nds"; await app._start_game()
+	check(app.machine==null and app.launcher.visible and not app.launcher._status.text.is_empty(),"ROM error shown in launcher")
 	await capture("invalid_rom")
 	app.free()
 	print("E2E failures=",failures)

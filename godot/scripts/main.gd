@@ -5,8 +5,27 @@ const BUTTON_ACTIONS := Logic.BUTTON_ACTIONS
 const BUTTON_BITS := Logic.BUTTON_BITS
 const DebugBundle = preload("res://scripts/debug_bundle.gd")
 const IssueReviewer = preload("res://scripts/issue_reviewer.gd")
+const IssueStore = preload("res://scripts/issue_store.gd")
+const Launcher = preload("res://scripts/launcher.gd")
+const SaveSlots = preload("res://scripts/save_slots.gd")
+const RomArt = preload("res://scripts/rom_art.gd")
+const SettingsPages = preload("res://scripts/settings_pages.gd")
+const Attract = preload("res://scripts/attract_background.gd")
 const LANGS := ["en","fr","de","es","it"]
 var settings: Dictionary
+var launcher: Control
+var attract: Node
+var _attract_generation := 0
+var _attract_allowed := false
+var _attract_config := ""
+var _closing := false
+var slot_store = SaveSlots.new()
+var slot_manager: Control
+var slot_inspector: Node
+var active_slot := ""
+var slot_started_ms := 0
+var _migration_checked := false
+var _explicit_save := false
 var machine: Node
 var layout := 0
 var _user_speed := 1.0          # speed chosen in the pause panel; fast-forward (hold Tab) overrides it
@@ -38,7 +57,6 @@ var bottom_frame: PanelContainer
 var status_label: Label
 var pause_panel: PanelContainer
 var pause_note: TextEdit
-var rebinding_action := ""
 var _chord_latched := false
 var _touching := false
 var _overlay_drag := false
@@ -98,6 +116,7 @@ func _update_widescreen_note() -> void:
 
 
 func _ready() -> void:
+	get_tree().auto_accept_quit = false
 	get_window().title = "DQ9-Remastered"
 	# A clean command-line checkout has no editor-generated extension_list.cfg.
 	if not ClassDB.class_exists("DqMachine"):
@@ -109,16 +128,23 @@ func _ready() -> void:
 	_build_ui()
 	get_window().size = Vector2i(1280,800) * int(settings.window_scale)
 	if not settings.rom_path.is_empty() and _ui.get("autostart", false): _start_game()
-	else: _show_settings()
+	else: _show_launcher()
 
 func _parse_args() -> void:
 	var args := OS.get_cmdline_user_args()
 	if settings.rom_path.is_empty():
 		settings.rom_path = OS.get_environment("DQ9_ROM")
+	var save_env := OS.get_environment("DQ9_SAVE")
+	if not save_env.is_empty():
+		settings.save_path = save_env
+		_explicit_save = true
 	for i in args.size():
 		match args[i]:
 			"--rom": if i+1 < args.size(): settings.rom_path = args[i+1]
-			"--save": if i+1 < args.size(): settings.save_path = args[i+1]
+			"--save":
+				if i+1 < args.size():
+					settings.save_path = args[i+1]
+					_explicit_save = true
 			"--language": if i+1 < args.size(): settings.language = args[i+1].to_lower()
 			"--backup-type": if i+1 < args.size(): settings.backup_type = args[i+1].to_lower()
 			"--autostart": _ui.autostart = true
@@ -161,18 +187,31 @@ func _build_ui() -> void:
 	var settings_overlay := Control.new()
 	settings_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	settings_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	settings_overlay.z_index = 10
+	settings_overlay.z_index = 11
 	add_child(settings_overlay)
+	var settings_dim := ColorRect.new()
+	settings_dim.color = Color(0.01, 0.02, 0.04, 0.78)
+	settings_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	settings_dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	settings_overlay.add_child(settings_dim)
+	settings_dim.hide()
 	settings_panel = _make_settings()
 	settings_overlay.add_child(settings_panel)
+	settings_panel.visibility_changed.connect(func(): settings_dim.visible = settings_panel.visible)
 	settings_panel.hide()
 	var pause_overlay := Control.new()
 	pause_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	pause_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pause_overlay.z_index = 10
 	add_child(pause_overlay)
+	var pause_dim := ColorRect.new()
+	pause_dim.color = Color(0.02, 0.03, 0.06, 0.55)
+	pause_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	pause_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pause_overlay.add_child(pause_dim)
 	pause_panel = _make_pause()
 	pause_overlay.add_child(pause_panel)
+	pause_panel.visibility_changed.connect(func(): pause_dim.visible = pause_panel.visible)
 	pause_panel.hide()
 	var reviewer_overlay := Control.new()
 	reviewer_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -189,6 +228,31 @@ func _build_ui() -> void:
 	issue_reviewer.return_requested.connect(_return_to_normal_game)
 	issue_reviewer.closed.connect(_close_issue_reviewer)
 	issue_reviewer.preferences_changed.connect(func(value): settings.issue_show_auto = value; _persist())
+	launcher = Launcher.new()
+	launcher.z_index = 5
+	add_child(launcher)
+	attract = Attract.new()
+	add_child(attract)
+	attract.frame_ready.connect(launcher.set_live_frame)
+	attract.gpu_frame_ready.connect(launcher.set_live_gpu_frame)
+	attract.live_started.connect(func(): launcher.set_music_mode(true))
+	attract.live_stopped.connect(func(): launcher.clear_live_frame(); launcher.set_music_mode(false))
+	launcher.set_menu_music_volume(float(settings.menu_music_volume))
+	launcher.set_ui_sfx_volume(float(settings.ui_sfx_volume))
+	launcher.set_reduced_motion(bool(settings.menu_reduced_motion))
+	launcher.rom_selected.connect(_launcher_rom_selected)
+	launcher.wizard_completed.connect(_launcher_wizard_completed)
+	launcher.continue_requested.connect(_continue_slot)
+	launcher.new_game_requested.connect(_new_game)
+	launcher.settings_requested.connect(_show_settings)
+	launcher.slots_requested.connect(_show_slot_manager)
+	launcher.quit_requested.connect(func(): _quit_app.call_deferred())
+	launcher.back_requested.connect(func(): launcher.show_title())
+	# GUI hit testing follows tree order, not CanvasItem z_index.
+	move_child(pause_overlay, -1)
+	move_child(settings_overlay, -1)
+	move_child(reviewer_overlay, -1)
+	launcher.hide()
 	get_viewport().size_changed.connect(_layout_screens)
 	get_viewport().size_changed.connect(_fit_panels)
 	_fit_panels()
@@ -201,123 +265,165 @@ func _screen_frame(title: String) -> PanelContainer:
 	var image := TextureRect.new(); image.name="Texture"; image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE; image.stretch_mode=TextureRect.STRETCH_SCALE; image.texture_filter=CanvasItem.TEXTURE_FILTER_NEAREST; frame.add_child(image)
 	return frame
 
+func _show_launcher() -> void:
+	_attract_allowed = not bool(_ui.get("autostart", false))
+	if slot_manager:
+		slot_manager.queue_free()
+		slot_manager = null
+	if slot_inspector:
+		slot_inspector.free()
+		slot_inspector = null
+	if not _migration_checked:
+		_migration_checked = true
+		if not _explicit_save and slot_store.list_slots().is_empty() and FileAccess.file_exists(settings.save_path):
+			slot_store.migrate_legacy(settings.save_path)
+	var slots: Array = slot_store.list_slots()
+	launcher.set_continue_enabled(_explicit_save or not slots.is_empty())
+	launcher.set_wizard_choices(settings.language, int(settings.renderer_gpu3d))
+	_launcher_rom_selected(settings.rom_path)
+	if (slots.is_empty() and not _explicit_save) or not _rom_status(settings.rom_path)[1]:
+		launcher.show_wizard()
+	else:
+		launcher.show_title()
+	_sync_attract()
+
+func _launcher_rom_selected(path: String) -> void:
+	var status := _rom_status(path)
+	var previous_path: String = settings.rom_path
+	if not status[1]:
+		launcher.set_rom("", "", null)
+		launcher.set_status(status[0], true)
+		_attract_allowed = false
+		_attract_config = ""
+		_sync_attract()
+		return
+	_attract_allowed = not bool(_ui.get("autostart", false))
+	settings.rom_path = path
+	_ensure_abi_config()
+	var art: Dictionary = RomArt.load_rom(path, settings.language)
+	launcher.set_rom(path, str(art.title), art.texture)
+	launcher.set_status(status[0])
+	if previous_path != path:
+		_attract_config = ""
+		_sync_attract()
+
+func _launcher_wizard_completed(language: String, preset: int, slot_id: String, slot_name: String) -> void:
+	if not _rom_status(settings.rom_path)[1]:
+		launcher.set_status("Choose a valid ROM.", true)
+		return
+	if slot_id.is_empty():
+		var result: Dictionary = slot_store.create_slot(slot_name)
+		if not str(result.error).is_empty():
+			launcher.set_status(str(result.error), true)
+			return
+		slot_id = str(result.id)
+	settings.language = language
+	SettingsPages.apply_preset(settings, preset)
+	_set_layout(int(settings.layout))
+	_select_slot(slot_id)
+	_persist()
+	_show_launcher()
+
+func _select_slot(id: String) -> void:
+	var slot: Dictionary = slot_store.get_slot(id)
+	if slot.is_empty(): return
+	_explicit_save = false
+	active_slot = id
+	settings.save_path = str(slot.path)
+
+func _continue_slot() -> void:
+	if _explicit_save:
+		active_slot = ""
+		_start_game()
+		return
+	var slots: Array = slot_store.list_slots()
+	if slots.is_empty(): return
+	var selected := ""
+	for slot in slots:
+		if str(slot.path) == settings.save_path:
+			selected = str(slot.id)
+			break
+	if selected.is_empty():
+		slots.sort_custom(func(a, b): return str(a.updated) > str(b.updated))
+		selected = str(slots[0].id)
+	_select_slot(selected)
+	_persist()
+	_start_game()
+
+func _new_game() -> void:
+	launcher.set_wizard_choices(settings.language, int(settings.renderer_gpu3d))
+	launcher.show_wizard()
+
+func _show_slot_manager() -> void:
+	launcher.hide()
+	var panel := PanelContainer.new()
+	panel.theme = preload("res://scripts/ui_theme.gd").make()
+	panel.add_theme_stylebox_override("panel", preload("res://scripts/ui_theme.gd").panel())
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.z_index = 10
+	add_child(panel)
+	slot_manager = panel
+	var column := VBoxContainer.new(); panel.add_child(column)
+	var manager = slot_store.create_manager()
+	manager.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(manager)
+	manager.slot_selected.connect(func(id, _path):
+		_select_slot(id)
+		if slot_inspector: slot_inspector.free()
+		slot_inspector = null
+		if ClassDB.class_exists("DqMachine") and not settings.rom_path.is_empty():
+			var inspector: Node = ClassDB.instantiate("DqMachine")
+			add_child(inspector)
+			inspector.set_gpu3d_enabled(false)
+			if _load_save_config(inspector, _settings_save_config(false)).is_empty():
+				slot_inspector = inspector
+				manager.set_backup_machine(inspector)
+				_refresh_save_backups()
+			else: inspector.free()
+	)
+	manager.restore_requested.connect(func(id, path):
+		_select_slot(id)
+		_refresh_save_backups()
+		_confirm_restore(path)
+	)
+	manager.closed.connect(_show_launcher)
+
+func _on_setting_changed(key: String, value: Variant) -> void:
+	match key:
+		"layout": _set_layout(int(value))
+		"nearest": _apply_filter()
+		"integer_scale": _layout_screens()
+		"window_scale": get_window().size = Vector2i(1280, 800) * int(value)
+		"volume": if machine: machine.get_audio_player().volume_linear = float(value)
+		"menu_music_volume":
+			launcher.set_menu_music_volume(float(value))
+			attract.set_volume(float(value))
+		"ui_sfx_volume": launcher.set_ui_sfx_volume(float(value))
+		"menu_reduced_motion": launcher.set_reduced_motion(bool(value))
+		"launcher_live_background": _sync_attract()
+		"widescreen_mode":
+			_set_widescreen_mode(int(value))
+			_ui.settings_pages.refresh(machine != null, _active_widescreen_mode)
+		"renderer_gpu3d", "gpu3d_scale", "hd_textures":
+			_apply_gpu3d_settings()
+			if key == "gpu3d_scale": attract.set_gpu3d_settings(true, int(value))
+	_persist()
+
 func _make_settings() -> PanelContainer:
 	var panel := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.055, 0.07, 0.1, 1.0)
-	style.border_color = Color(0.3, 0.65, 0.95, 1.0)
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(10)
-	style.set_content_margin_all(14)
-	panel.add_theme_stylebox_override("panel", style)
-	# Title and the Start/Close row stay pinned; the settings sections scroll between them.
-	var outer:=VBoxContainer.new(); outer.add_theme_constant_override("separation", 6); panel.add_child(outer)
-	var title:=Label.new(); title.text="DQ9-Remastered — Start / Settings"; title.add_theme_font_size_override("font_size",26); outer.add_child(title)
-	var subtitle:=Label.new(); subtitle.text="Choose your ROM and language, then press Start."; subtitle.add_theme_color_override("font_color",Color(0.62,0.7,0.8)); outer.add_child(subtitle)
-	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; scroll.custom_minimum_size=Vector2(0,120); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(scroll)
-	var col:=VBoxContainer.new(); col.add_theme_constant_override("separation", 6); col.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(col)
-	_section(col,"Game")
-	var pathrow:=HBoxContainer.new(); col.add_child(pathrow)
-	var rom:=LineEdit.new(); rom.placeholder_text="Nintendo DS .nds ROM path"; rom.text=settings.rom_path; rom.size_flags_horizontal=Control.SIZE_EXPAND_FILL; pathrow.add_child(rom); _ui.rom=rom
-	var browse:=Button.new(); browse.text="Browse…"; browse.pressed.connect(func(): _pick_path(rom,"*.nds,*.rom")); pathrow.add_child(browse)
-	var rom_status:=Label.new(); col.add_child(rom_status); _ui.rom_status=rom_status
-	rom.text_changed.connect(func(_t): _update_rom_status(); _invalidate_save_backups())
-	_update_rom_status()
-	var saverow:=HBoxContainer.new(); col.add_child(saverow); var save:=LineEdit.new(); save.text=settings.save_path; save.placeholder_text="Save path"; save.size_flags_horizontal=Control.SIZE_EXPAND_FILL; saverow.add_child(save); _ui.save=save
-	var save_browse := Button.new(); save_browse.text="Browse…"; save_browse.pressed.connect(func(): _pick_path(save,"*.sav",true)); saverow.add_child(save_browse)
-	var lang_row:=HBoxContainer.new(); col.add_child(lang_row)
-	var lang_label:=Label.new(); lang_label.text="Language"; lang_label.custom_minimum_size.x=110; lang_row.add_child(lang_label)
-	var lang:=OptionButton.new(); lang.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-	for text in ["English","Français","Deutsch","Español","Italiano"]: lang.add_item(text)
-	lang.select(maxi(0,LANGS.find(settings.language)))
-	lang_row.add_child(lang)
-	_ui.lang=lang
-	var chip_row:=HBoxContainer.new(); col.add_child(chip_row)
-	var chip_label:=Label.new(); chip_label.text="Save chip"; chip_label.custom_minimum_size.x=110; chip_row.add_child(chip_label)
-	var chip:=OptionButton.new(); chip.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-	for text in Logic.BACKUP_LABELS: chip.add_item(text)
-	chip.select(maxi(0,Logic.BACKUP_TYPES.find(settings.backup_type)))
-	chip.tooltip_text="The cartridge's backup memory type. Auto uses the build's setting or the save file size. If the title screen says the quick save log is corrupted, choose EEPROM 64 KB."
-	chip_row.add_child(chip)
-	_ui.chip=chip
-	rom.text_submitted.connect(func(_t): _queue_save_backup_refresh())
-	save.text_changed.connect(func(_t): _invalidate_save_backups())
-	save.text_submitted.connect(func(_t): _queue_save_backup_refresh())
-	lang.item_selected.connect(func(_i): _invalidate_save_backups())
-	chip.item_selected.connect(func(_i): _invalidate_save_backups())
-	_make_save_controls(col, "Settings")
-	_section(col,"Display")
-	var options:=HBoxContainer.new(); col.add_child(options)
-	var layoutbox:=OptionButton.new()
-	for name in Logic.LAYOUTS: layoutbox.add_item(name)
-	layoutbox.selected=layout
-	layoutbox.item_selected.connect(_set_layout)
-	options.add_child(layoutbox)
-	var nearest:=CheckButton.new(); nearest.text="Nearest filter"; nearest.button_pressed=settings.nearest; nearest.toggled.connect(func(v):settings.nearest=v;_apply_filter()); options.add_child(nearest)
-	var integer:=CheckButton.new(); integer.text="Integer scaling"; integer.button_pressed=settings.integer_scale; integer.toggled.connect(func(v):settings.integer_scale=v;_layout_screens()); options.add_child(integer)
-	var scale_row:=HBoxContainer.new(); col.add_child(scale_row); var scalelabel:=Label.new(); scalelabel.text="Window scale"; scale_row.add_child(scalelabel)
-	var scale:=OptionButton.new()
-	scale.name = "WindowScale"
-	for n in [1,2,3]: scale.add_item("%dx"%n)
-	scale.select(clampi(settings.window_scale-1,0,2))
-	scale.item_selected.connect(func(i): settings.window_scale=i+1; get_window().size=Vector2i(1280,800)*(i+1))
-	scale_row.add_child(scale)
-	var renderer_row := HBoxContainer.new(); col.add_child(renderer_row)
-	var renderer_label := Label.new(); renderer_label.text = "3D renderer"; renderer_row.add_child(renderer_label)
-	var renderer := OptionButton.new()
-	renderer.add_item("Software (exact)")
-	renderer.add_item("GPU hi-res (experimental)")
-	renderer.select(int(settings.renderer_gpu3d))
-	renderer.item_selected.connect(func(i): settings.renderer_gpu3d=i; _apply_gpu3d_settings(); _persist())
-	renderer_row.add_child(renderer)
-	_ui.gpu_renderer = renderer
-	var gpu_scale_label := Label.new(); gpu_scale_label.text = "GPU scale"; renderer_row.add_child(gpu_scale_label)
-	var gpu_scale := OptionButton.new()
-	for n in range(2, 7): gpu_scale.add_item("%dx" % n)
-	gpu_scale.select(int(settings.gpu3d_scale)-2)
-	gpu_scale.disabled = int(settings.renderer_gpu3d) == 0
-	gpu_scale.item_selected.connect(func(i): settings.gpu3d_scale=i+2; _apply_gpu3d_settings(); _persist())
-	renderer_row.add_child(gpu_scale)
-	_ui.gpu_scale = gpu_scale
-	var hd_textures := CheckButton.new(); hd_textures.name = "HdTextures"
-	hd_textures.text = "HD texture replacements"; hd_textures.button_pressed = settings.hd_textures
-	hd_textures.tooltip_text = "Use replacement textures with GPU hi-res."
-	hd_textures.toggled.connect(func(v): settings.hd_textures = v; _apply_gpu3d_settings(); _persist())
-	col.add_child(hd_textures)
-	var widescreen := OptionButton.new()
-	for name in ["Off", "Picture", "Full"]: widescreen.add_item(name)
-	widescreen.select(int(settings.widescreen_mode))
-	widescreen.tooltip_text = "Picture widens presentation only; Full also widens the guest camera and requires restarting the game."
-	widescreen.item_selected.connect(_set_widescreen_mode)
-	col.add_child(widescreen)
-	_ui.gpu_widescreen = widescreen
-	var wide_note := Label.new(); wide_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; col.add_child(wide_note); _ui.widescreen_note = wide_note
-	_update_widescreen_note()
-	_section(col,"Audio")
-	var vol_row:=HBoxContainer.new(); col.add_child(vol_row)
-	var vol_label:=Label.new(); vol_label.text="Volume"; vol_label.custom_minimum_size.x=110; vol_row.add_child(vol_label)
-	var vol:=HSlider.new(); vol.min_value=0; vol.max_value=1; vol.step=0.01; vol.value=settings.volume; vol.size_flags_horizontal=Control.SIZE_EXPAND_FILL; vol.size_flags_vertical=Control.SIZE_SHRINK_CENTER; vol_row.add_child(vol)
-	var vol_value:=Label.new(); vol_value.custom_minimum_size.x=48; vol_value.horizontal_alignment=HORIZONTAL_ALIGNMENT_RIGHT; vol_value.text="%d%%"%roundi(float(settings.volume)*100.0); vol_row.add_child(vol_value)
-	vol.value_changed.connect(func(v):settings.volume=v; vol_value.text="%d%%"%roundi(v*100.0); if machine: machine.get_audio_player().volume_linear=v)
-	_section(col,"Input")
-	var rebind_title:=Label.new(); rebind_title.text="Select a button, then press a key or gamepad control to rebind it."; col.add_child(rebind_title); _ui.rebind_title=rebind_title
-	var grid:=GridContainer.new(); grid.columns=3; grid.add_theme_constant_override("h_separation",4); grid.add_theme_constant_override("v_separation",4); col.add_child(grid)
-	_ui.bind_buttons = {}
-	for action in BUTTON_ACTIONS:
-		var b:=Button.new(); b.size_flags_horizontal=Control.SIZE_EXPAND_FILL; b.pressed.connect(func():rebinding_action=action; rebind_title.text="Press a key or gamepad control for %s…"%action.trim_prefix("ds_").capitalize()); grid.add_child(b)
-		_ui.bind_buttons[action] = b
-	_refresh_binding_buttons()
-	var reset:=Button.new(); reset.text="Reset bindings"; reset.pressed.connect(func():Logic.reset_bindings(); _persist(); _refresh_binding_buttons()); col.add_child(reset)
-	var error_label := Label.new(); error_label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; error_label.add_theme_color_override("font_color",Color(1,0.45,0.4)); outer.add_child(error_label); _ui.error=error_label
-	var buttons:=HBoxContainer.new(); buttons.add_theme_constant_override("separation",8); outer.add_child(buttons)
-	var start:=Button.new(); start.name="StartGame"; start.text="Start"; start.custom_minimum_size=Vector2(220,52); start.size_flags_horizontal=Control.SIZE_EXPAND_FILL;
-	var start_style:=StyleBoxFlat.new(); start_style.bg_color=Color(0.13,0.42,0.3); start_style.set_corner_radius_all(6); start_style.set_content_margin_all(8)
-	start.add_theme_stylebox_override("normal",start_style)
-	var start_hover:=start_style.duplicate() as StyleBoxFlat; start_hover.bg_color=Color(0.17,0.52,0.37); start.add_theme_stylebox_override("hover",start_hover)
-	start.add_theme_font_size_override("font_size",20)
-	start.pressed.connect(func():settings.rom_path=rom.text;settings.save_path=save.text;settings.language=LANGS[lang.selected];settings.backup_type=Logic.BACKUP_TYPES[chip.selected];_persist();_start_game()); buttons.add_child(start)
-	var close:=Button.new(); close.text="Close"; close.pressed.connect(_hide_settings); buttons.add_child(close)
-	var reviewer := Button.new(); reviewer.text = "Issue reviewer… (F7)"; reviewer.pressed.connect(_open_issue_reviewer); buttons.add_child(reviewer)
+	panel.theme = preload("res://scripts/ui_theme.gd").make()
+	panel.add_theme_stylebox_override("panel", preload("res://scripts/ui_theme.gd").panel())
+	var pages = SettingsPages.new()
+	panel.add_child(pages)
+	pages.configure(settings, machine != null, _active_widescreen_mode)
+	pages.setting_changed.connect(_on_setting_changed)
+	pages.bindings_changed.connect(_persist)
+	pages.closed.connect(_hide_settings)
+	_ui.settings_pages = pages
+	var error := Label.new()
+	error.hide()
+	add_child(error)
+	_ui.error = error
 	return panel
 
 func _section(parent: Control, text: String) -> void:
@@ -326,81 +432,49 @@ func _section(parent: Control, text: String) -> void:
 	label.add_theme_color_override("font_color", Color(0.45, 0.7, 0.95))
 	parent.add_child(label)
 
-# [message, ok] for the ROM path currently typed in the settings panel.
+# [message, ok] for the launcher ROM selection.
 func _rom_status(path: String) -> Array:
-	if path.is_empty(): return ["No ROM selected.", false]
-	if not FileAccess.file_exists(path): return ["ROM not found at this path.", false]
+	var error: String = RomArt.validate_rom(path)
+	if not error.is_empty(): return [error, false]
 	var file := FileAccess.open(path, FileAccess.READ)
 	var megabytes := int(file.get_length() / 1048576) if file else 0
 	return ["ROM found (%d MB)." % megabytes, true]
 
-func _update_rom_status() -> void:
-	var label: Label = _ui.get("rom_status")
-	var rom: LineEdit = _ui.get("rom")
-	if label == null or rom == null: return
-	var status := _rom_status(rom.text)
-	label.text = status[0]
-	label.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6) if status[1] else Color(1.0, 0.7, 0.4))
-
-func _binding_text(action: String) -> String:
-	var key := ""
-	var pad := ""
-	for event in InputMap.action_get_events(action):
-		if event is InputEventKey and key.is_empty(): key = event.as_text_physical_keycode() if event.physical_keycode != 0 else event.as_text_keycode()
-		elif event is InputEventJoypadButton and pad.is_empty(): pad = "Pad %d" % event.button_index
-		elif event is InputEventJoypadMotion and pad.is_empty(): pad = "Axis %d%s" % [event.axis, "-" if event.axis_value < 0 else "+"]
-	var parts: Array[String] = []
-	if not key.is_empty(): parts.append(key)
-	if not pad.is_empty(): parts.append(pad)
-	return "%s  [%s]" % [action.trim_prefix("ds_").capitalize(), " · ".join(parts) if not parts.is_empty() else "unbound"]
-
-func _refresh_binding_buttons() -> void:
-	var buttons: Dictionary = _ui.get("bind_buttons", {})
-	for action in buttons: (buttons[action] as Button).text = _binding_text(action)
-	var title: Label = _ui.get("rebind_title")
-	if title: title.text = "Select a button, then press a key or gamepad control to rebind it."
 
 func _make_pause() -> PanelContainer:
 	var p:=PanelContainer.new()
-	var pstyle := StyleBoxFlat.new()
-	pstyle.bg_color = Color(0.055, 0.07, 0.1, 1.0)
-	pstyle.border_color = Color(0.3, 0.65, 0.95, 1.0)
-	pstyle.set_border_width_all(2)
-	pstyle.set_corner_radius_all(10)
-	pstyle.set_content_margin_all(14)
-	p.add_theme_stylebox_override("panel", pstyle)
-	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; p.add_child(scroll)
+	p.theme = preload("res://scripts/ui_theme.gd").make()
+	p.add_theme_stylebox_override("panel", preload("res://scripts/ui_theme.gd").panel(0.88))
+	var tabs := TabContainer.new(); p.add_child(tabs)
+	_ui.pause_tabs = tabs
+	var menu := VBoxContainer.new(); menu.name = "Pause"; menu.add_theme_constant_override("separation", 10); tabs.add_child(menu)
+	var title := Label.new(); title.text = "PAUSED"; title.add_theme_font_override("font", load("res://assets/fonts/Cinzel.ttf")); title.add_theme_font_size_override("font_size", 38); menu.add_child(title)
+	var resume := Button.new(); resume.text = "Resume"; resume.pressed.connect(_toggle_pause); menu.add_child(resume)
+	var settings_button := Button.new(); settings_button.text = "Settings"; settings_button.pressed.connect(_show_settings); menu.add_child(settings_button)
+	var tickets := Button.new(); tickets.text = "Tickets"; tickets.pressed.connect(_open_issue_reviewer); menu.add_child(tickets)
+	var close := Button.new(); close.text = "Quit to title"; close.pressed.connect(_stop_game); menu.add_child(close)
+	var quit := Button.new(); quit.text = "Quit"; quit.pressed.connect(_quit_app); menu.add_child(quit)
+	_ui.pause_resume = resume
+	var scroll := ScrollContainer.new(); scroll.name = "Developer"; scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED; tabs.add_child(scroll)
 	var c:=VBoxContainer.new(); c.add_theme_constant_override("separation",6); c.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(c)
-	var title:=Label.new(); title.text="Paused / Debug"; title.add_theme_font_size_override("font_size",26); c.add_child(title)
-	var pause:=Button.new(); pause.text="Resume / Pause"; pause.pressed.connect(func():machine.set_paused(not machine.is_paused())); c.add_child(pause)
+	var ticket_title := Label.new(); ticket_title.text = "NEW TICKET"; c.add_child(ticket_title)
+	pause_note=TextEdit.new(); pause_note.placeholder_text="Describe the problem for a new ticket"; pause_note.custom_minimum_size=Vector2(0,90); c.add_child(pause_note)
+	var note:=Button.new(); note.text="Raise ticket (note + screenshots)  [F9]"; note.pressed.connect(_save_bundle); c.add_child(note)
+	var reviewer := Button.new(); reviewer.text = "Tickets… (F7)"; reviewer.pressed.connect(_open_issue_reviewer); c.add_child(reviewer)
 	var step:=Button.new(); step.text="Step one frame"; step.pressed.connect(func():machine.set_paused(true);machine.step_once()); c.add_child(step)
 	var speeds:=OptionButton.new()
 	for label in ["0.25×","0.5×","1×","2×","Max"]: speeds.add_item(label)
 	speeds.item_selected.connect(func(i): _user_speed = [0.25,0.5,1.0,2.0,0.0][i]; machine.set_speed(_user_speed))
-	speeds.select(2)
-	c.add_child(speeds)
+	speeds.select(2); c.add_child(speeds)
 	var stats:=CheckButton.new(); stats.text="Show statistics"; stats.button_pressed=true; stats.toggled.connect(func(v):status_label.visible=v); c.add_child(stats)
 	var shot:=Button.new(); shot.text="Save screenshot"; shot.pressed.connect(_save_screenshot); c.add_child(shot)
 	var texture_dump := CheckButton.new(); texture_dump.name = "TextureDump"
 	texture_dump.text = "Dump 3D textures"; texture_dump.button_pressed = _hd_texture_dump_enabled
-	texture_dump.tooltip_text = "Dump current and encountered GPU textures until disabled."
 	texture_dump.toggled.connect(func(v): _hd_texture_dump_enabled = v; if machine and machine.has_method("set_hd_texture_dump_enabled"): machine.set_hd_texture_dump_enabled(v))
 	c.add_child(texture_dump)
 	_make_save_controls(c, "Pause")
-	pause_note=TextEdit.new(); pause_note.placeholder_text="Quick note"; pause_note.custom_minimum_size=Vector2(0,110); c.add_child(pause_note)
-	var note:=Button.new(); note.text="Save note + screenshot bundle"; note.pressed.connect(_save_bundle); c.add_child(note)
-	var reviewer := Button.new(); reviewer.text = "Issue reviewer…"; reviewer.pressed.connect(_open_issue_reviewer); c.add_child(reviewer)
-	var close:=Button.new(); close.text="Close game"; close.pressed.connect(_stop_game); c.add_child(close)
 	return p
 
-func _pick_path(line: LineEdit, filters: String, save_file := false) -> void:
-	var dialog:=FileDialog.new(); dialog.file_mode=FileDialog.FILE_MODE_SAVE_FILE if save_file else FileDialog.FILE_MODE_OPEN_FILE; dialog.access=FileDialog.ACCESS_FILESYSTEM; dialog.add_filter(filters); add_child(dialog)
-	if not line.text.is_empty():
-		var path := ProjectSettings.globalize_path(line.text)
-		dialog.current_dir = path.get_base_dir()
-		dialog.current_file = path.get_file()
-	dialog.file_selected.connect(func(path): line.text=path; _update_rom_status(); _invalidate_save_backups(); _queue_save_backup_refresh(); dialog.queue_free())
-	dialog.canceled.connect(dialog.queue_free); dialog.popup_centered_ratio(0.8)
 
 func _make_save_controls(parent: Control, prefix: String) -> void:
 	_section(parent, "Save backups")
@@ -433,11 +507,11 @@ func _ensure_abi_config() -> String:
 			print("Using ABI configuration ", abi)
 	return OS.get_environment("DQ9_ABI_CONFIG")
 
-func _settings_save_config(typed := true) -> Dictionary:
-	var rom: String = _ui.rom.text if typed else settings.rom_path
-	var save: String = _ui.save.text if typed else settings.save_path
-	var language: String = LANGS[_ui.lang.selected] if typed else settings.language
-	var chip: String = Logic.BACKUP_TYPES[_ui.chip.selected] if typed else settings.backup_type
+func _settings_save_config(_typed := true) -> Dictionary:
+	var rom: String = settings.rom_path
+	var save: String = settings.save_path
+	var language: String = settings.language
+	var chip: String = settings.backup_type
 	return {"rom_path": ProjectSettings.globalize_path(rom) if not rom.is_empty() else "",
 		"save_path": ProjectSettings.globalize_path(save) if not save.is_empty() else "",
 		"language": language, "backup_type": chip, "abi_config": _ensure_abi_config()}
@@ -460,12 +534,6 @@ func _load_save_config(target: Node, config: Dictionary) -> String:
 func _is_issue_replay() -> bool:
 	return not replay_issue.is_empty() or not replay_save_path.is_empty() or (machine != null and bool(machine.get_stats().get("replay_active", false)))
 
-func _invalidate_save_backups() -> void:
-	if machine: return
-	_backup_config = {}; _backup_capacity = 0; _backup_rows.clear()
-	_backup_context = "Refresh to list backups for the typed ROM, save path and chip."
-	_backup_message = "Settings changed. Refresh backups before restoring."
-	_update_save_views()
 
 func _queue_save_backup_refresh() -> void:
 	if _backup_refresh_pending or _restore_busy: return
@@ -648,17 +716,41 @@ func _restore_backup(path: String) -> void:
 	if error.is_empty(): _show_restore_message("Backup restored. Game restarted." if restart else "Backup restored. Game remains closed.")
 	else: _show_restore_message("Restore failed; game remains closed: " + error)
 
+func _sync_attract() -> void:
+	_attract_generation += 1
+	var generation := _attract_generation
+	var wanted: bool = _attract_allowed and bool(settings.get("launcher_live_background", true)) and bool(_rom_status(settings.rom_path)[1])
+	var config := "%s\n%s\n%s" % [settings.rom_path, settings.language, _ensure_abi_config()] if wanted else ""
+	if wanted and attract.active and _attract_config == config:
+		return
+	_attract_config = ""
+	await attract.release()
+	if generation != _attract_generation: return
+	if not wanted: return
+	attract.set_volume(float(settings.get("menu_music_volume", 0.7)))
+	attract.set_gpu3d_settings(true, int(settings.gpu3d_scale))
+	var error: String = attract.start(settings.rom_path, _ensure_abi_config(), settings.language)
+	if error.is_empty(): _attract_config = config
+	else: push_warning("Could not start launcher background: " + error)
+
+func _release_attract_for_game() -> void:
+	_attract_allowed = false
+	_attract_generation += 1
+	await attract.release()
+	_attract_config = ""
+
 func _start_game() -> void:
+	await _release_attract_for_game()
 	_ui.error.text = ""
 	if settings.rom_path.is_empty():
 		_ui.error.text = "Choose a Nintendo DS ROM before starting."
-		_show_settings()
+		_show_launcher(); launcher.show_wizard(); launcher.set_status(str(_ui.error.text), true)
 		return
 	_release_machine(false) # flush the old save and stop its worker before the replacement loads from disk
 	issue_reviewer.set_replay_state("", false)
 	if not ClassDB.class_exists("DqMachine"):
 		_ui.error.text = "Native extension unavailable. Build the Godot extension before starting a game."
-		_show_settings()
+		_show_launcher(); launcher.show_wizard(); launcher.set_status(str(_ui.error.text), true)
 		return
 	machine=ClassDB.instantiate("DqMachine")
 	add_child(machine)
@@ -677,12 +769,14 @@ func _start_game() -> void:
 		push_error(result)
 		_ui.error.text = result
 		_release_machine(false)
-		_show_settings()
+		_show_launcher(); launcher.show_wizard(); launcher.set_status(result, true)
 		return
 	_active_save_config = config
 	_start_loaded_game()
 
 func _start_loaded_game() -> void:
+	launcher.hide()
+	if not active_slot.is_empty() and not _is_issue_replay(): slot_started_ms = Time.get_ticks_msec()
 	machine.start()
 	_on_machine_frame(0)
 	if machine.has_signal("frame_ready"): machine.frame_ready.connect(_on_machine_frame)
@@ -864,6 +958,9 @@ func _release_machine(drain_audio: bool, keep_on_save_failure := false) -> bool:
 			_show_toast(warning, 15.0)
 			_ui.error.text = warning
 			push_warning("Save flush failed before closing. The final shutdown retry is best effort; the latest save data may not be on disk.")
+	if slot_started_ms > 0 and not active_slot.is_empty():
+		slot_store.update_playtime(active_slot, int((Time.get_ticks_msec() - slot_started_ms) / 1000))
+		slot_started_ms = 0
 	if closing.has_method("stop"): closing.stop()
 	machine = null; _active_save_config = {}
 	_update_widescreen_note()
@@ -882,7 +979,7 @@ func _release_machine(drain_audio: bool, keep_on_save_failure := false) -> bool:
 
 func _stop_game() -> void:
 	_release_machine(true)
-	pause_panel.hide(); _show_settings()
+	pause_panel.hide(); _show_launcher()
 
 func _open_issue_reviewer() -> void:
 	if issue_reviewer.visible:
@@ -901,9 +998,13 @@ func _close_issue_reviewer() -> void:
 	if machine:
 		# A replay stays paused until the user explicitly chooses Play from here.
 		machine.set_paused(_reviewer_was_paused)
-	else: _show_settings()
+		if _reviewer_was_paused:
+			pause_panel.show()
+			_ui.pause_resume.grab_focus()
+	else: _show_launcher()
 
 func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
+	await _release_attract_for_game()
 	if issue.is_empty(): return
 	var path: String = issue.path
 	var save_source := path.path_join("session_start.sav")
@@ -958,7 +1059,10 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	issue_reviewer.refresh()
 	if not status_error.is_empty(): issue_reviewer.show_message(status_error)
 	error = machine.start_replay(int(issue.frame), record_hashes)
-	if not error.is_empty(): _on_issue_replay_error(error)
+	if not error.is_empty():
+		_on_issue_replay_error(error)
+	else:
+		launcher.hide()
 	_queue_save_backup_refresh()
 
 func _on_issue_replay_finished(frame: int) -> void:
@@ -1105,7 +1209,7 @@ func _process(_delta: float) -> void:
 		var pressed: Array[String] = []
 		for action in BUTTON_ACTIONS:
 			if Input.is_action_pressed(action): pressed.append(action)
-		machine.set_buttons(0 if issue_reviewer.visible or is_instance_valid(_restore_dialog) or _restore_busy else Logic.button_mask(pressed))
+		machine.set_buttons(0 if issue_reviewer.visible or settings_panel.visible or pause_panel.visible or is_instance_valid(_restore_dialog) or _restore_busy else Logic.button_mask(pressed))
 
 func _input(event: InputEvent) -> void:
 	if (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed) or (event is InputEventScreenTouch and not event.pressed):
@@ -1120,12 +1224,12 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if _restore_busy or is_instance_valid(_restore_dialog): return
-	if rebinding_action != "":
-		if event is InputEventKey and event.pressed and not event.echo: _replace_binding(event); get_viewport().set_input_as_handled()
-		elif event is InputEventJoypadButton and event.pressed: _replace_binding(event); get_viewport().set_input_as_handled()
-		elif event is InputEventJoypadMotion and absf(event.axis_value) >= 0.7: _replace_binding(event); get_viewport().set_input_as_handled()
+	if settings_panel.visible and _ui.settings_pages.handle_rebind(event):
+		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_cancel") and settings_panel.visible: _hide_settings(); get_viewport().set_input_as_handled(); return
+	if event.is_action_pressed("ui_cancel") and pause_panel.visible and not issue_reviewer.visible:
+		_toggle_pause(); get_viewport().set_input_as_handled(); return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_F7:
 			_open_issue_reviewer(); get_viewport().set_input_as_handled(); return
@@ -1136,7 +1240,14 @@ func _input(event: InputEvent) -> void:
 		if event.keycode==KEY_F12 and machine: _save_screen_hotkey(); get_viewport().set_input_as_handled(); return
 		if event.keycode==KEY_F11: get_window().mode=Window.MODE_WINDOWED if get_window().mode==Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
 		elif event.keycode==KEY_F9 and machine:
-			_save_bundle()
+			# F9 raises a ticket from the pause note; with no note yet, open the
+			# pause panel so the problem can be described first.
+			if pause_note.text.strip_edges().is_empty() and (not pause_panel.visible or _ui.pause_tabs.current_tab != 1):
+				if not pause_panel.visible: _toggle_pause()
+				_ui.pause_tabs.current_tab = 1; pause_note.grab_focus()
+				_show_toast("Describe the problem, then press F9 or Raise ticket", 8.0)
+			else:
+				_save_bundle()
 			get_viewport().set_input_as_handled()
 		elif event.keycode==KEY_F10: _toggle_pause()
 		elif event.keycode==KEY_F6:
@@ -1147,22 +1258,30 @@ func _input(event: InputEvent) -> void:
 	if machine and chord and not _chord_latched: _toggle_pause()
 	_chord_latched = chord
 
-func _replace_binding(event: InputEvent) -> void:
-	InputMap.action_erase_events(rebinding_action); InputMap.action_add_event(rebinding_action,event); rebinding_action=""; _persist(); _refresh_binding_buttons()
 
 func _toggle_pause() -> void:
 	if not machine: _show_settings(); return
 	_fit_panels()
 	pause_panel.visible=not pause_panel.visible; machine.set_paused(pause_panel.visible)
-	if pause_panel.visible: _queue_save_backup_refresh()
+	if pause_panel.visible:
+		_ui.pause_resume.grab_focus()
+		_queue_save_backup_refresh()
 func _persist() -> void:
 	settings.overlay_rect = _overlay_rect
 	Logic.save_settings("user://settings.cfg", settings)
 
 func _show_settings() -> void:
-	_fit_panels(); settings_panel.show()
-	_queue_save_backup_refresh()
-func _hide_settings() -> void: settings_panel.hide(); _persist()
+	if machine and not pause_panel.visible:
+		_fit_panels(); pause_panel.show(); machine.set_paused(true)
+	_fit_panels()
+	_ui.settings_pages.refresh(machine != null, _active_widescreen_mode)
+	settings_panel.show()
+	_fit_panels.call_deferred()
+func _hide_settings() -> void:
+	settings_panel.hide()
+	_persist()
+	if pause_panel.visible: _ui.pause_resume.grab_focus()
+	elif launcher.visible: launcher.show_title()
 func _set_layout(index: int) -> void:
 	if index != layout and _touching:
 		if machine: machine.set_touch(0, 0, false)
@@ -1178,13 +1297,14 @@ func _apply_filter() -> void:
 # Centers the modal panels and keeps them inside the window (they scroll instead of overflowing).
 func _fit_panels() -> void:
 	var view := get_viewport_rect().size
-	for item in [[settings_panel, Vector2(720, 640)], [pause_panel, Vector2(520, 660)]]:
+	for item in [[settings_panel, Vector2(minf(view.x * 0.75, 1440.0), 590)], [pause_panel, Vector2(520, 660)]]:
 		var panel: PanelContainer = item[0]
 		if panel == null or not is_instance_valid(panel): continue
 		var wanted: Vector2 = item[1]
 		panel.custom_minimum_size = Vector2.ZERO
-		panel.size = Vector2(clampf(view.x - 24.0, 280.0, wanted.x), clampf(view.y - 24.0, 240.0, wanted.y))
+		panel.size = Vector2(minf(maxf(view.x - 24.0, 0.0), wanted.x), minf(maxf(view.y - 24.0, 0.0), wanted.y))
 		panel.position = ((view - panel.size) * 0.5).floor()
+		if panel == pause_panel: panel.position.x = 24.0
 
 func _layout_screens() -> void:
 	if not is_instance_valid(game_panel): return
@@ -1455,9 +1575,23 @@ func _current_frame() -> int:
 	return maxi(0, int(machine.get_stats().get("frame", 0)) - 1) if machine else 0
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		_release_machine(true)
-		get_tree().quit()
+	if what == NOTIFICATION_WM_CLOSE_REQUEST: _quit_app()
+
+func _quit_app() -> void:
+	if _closing: return
+	_closing = true
+	var tree := get_tree()
+	_attract_generation += 1
+	process_mode = Node.PROCESS_MODE_DISABLED
+	_release_machine(true)
+	if is_instance_valid(attract):
+		attract.free()
+		attract = null
+	if is_instance_valid(launcher):
+		launcher.free()
+		launcher = null
+	var drain_seconds := maxf(0.1, AudioServer.get_time_to_next_mix() * 2.0)
+	tree.create_timer(drain_seconds).timeout.connect(tree.quit)
 
 func _exit_tree() -> void:
 	_release_machine(true)

@@ -64,9 +64,7 @@ func _run() -> void:
     Logic.save_settings("user://settings.cfg", initial)
     var app = load("res://scenes/main.tscn").instantiate()
     root.add_child(app)
-    var start_button := app.find_child("StartGame", true, false) as Button
-    if start_button:
-        start_button.pressed.emit()
+    app._start_game()
     if app.machine == null:
         print("FAIL: start machine")
         quit(2)
