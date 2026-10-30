@@ -93,6 +93,28 @@ func _run() -> void:
 	_expect(app.issue_reviewer.visible, "F7 opens reviewer from launcher")
 	_key(KEY_F7)
 	for frame in 3: await process_frame
+	_expect(not app.issue_reviewer.visible and app.launcher.visible and app.machine == null, "closing reviewer without replay restores launcher")
+	_key(KEY_F7)
+	for frame in 3: await process_frame
+	# Exercise the actual launcher-origin path: the launcher must not obscure
+	# the completed visual replay, and stopping it must restore the launcher.
+	app.settings.renderer_gpu3d = 1
+	app.settings.widescreen_mode = 0
+	app.issue_reviewer.select_issue(real_issue)
+	await _click(app.issue_reviewer.controls.replay)
+	await _wait_replay(app)
+	_expect(app.replay_complete and not app.launcher.visible and app.issue_reviewer.visible, "launcher-origin software replay completes in reviewer")
+	await _click(app.issue_reviewer.controls.view)
+	await _wait_replay(app)
+	_expect(app.replay_complete and app.machine.is_paused() and app._current_frame() == target_frame, "launcher-origin visual replay pauses at target")
+	_expect(not app.launcher.visible and not app.issue_reviewer.visible and app.game_panel.is_visible_in_tree(), "visual replay is visible above launcher")
+	app._stop_game()
+	_expect(app.launcher.visible and app.machine == null, "stopping launcher-origin replay restores launcher")
+	app.settings.renderer_gpu3d = 0
+	_key(KEY_F7)
+	for frame in 3: await process_frame
+	_key(KEY_F7)
+	for frame in 3: await process_frame
 	_expect(not app.issue_reviewer.visible and app.launcher.visible, "F7 closes reviewer and returns to launcher")
 	var entry: Button
 	app._start_game()
@@ -106,17 +128,27 @@ func _run() -> void:
 		if button.text == "Tickets… (F7)": entry = button
 	await _click(entry)
 	_expect(app.issue_reviewer.visible and app.machine.is_paused(), "F10 reviewer button routed and normal game paused")
+	app.issue_reviewer.selected = {}
+	app.issue_reviewer._update_buttons()
+	_expect(app.issue_reviewer.controls.view.disabled, "View is disabled with no selected issue")
 	var list_button: Button
 	for button in app.issue_reviewer.find_children("*", "Button", true, false):
 		if button.get_meta("issue_path", "") == real_issue.path: list_button = button
 	await _click(list_button)
 	_expect(app.issue_reviewer.selected.path == real_issue.path, "list row selects detail")
 	_expect(app.issue_reviewer._warning.visible and app.issue_reviewer._state.text.contains("queued_audio_ms"), "audio solo/mute warning and audio key lines displayed")
+	_expect(app.issue_reviewer.controls.view.disabled, "View is disabled before replay completes")
+	app.issue_reviewer.set_replay_state(real_issue.path, true, false)
+	_expect(app.issue_reviewer.controls.view.disabled, "View is disabled while replay is busy")
+	app.issue_reviewer.set_replay_state(real_issue.path + "-other", false, true)
+	_expect(app.issue_reviewer.controls.view.disabled, "View is disabled when the completed replay belongs to another issue")
+	app.issue_reviewer.set_replay_state("", false, false)
 	await _click(app.issue_reviewer.controls.replay)
 	var replay_copy: String = app.replay_save_path
 	var normal_hash := FileAccess.get_sha256(normal_save)
 	_expect(replay_copy != normal_save and replay_copy != real_issue.path.path_join("session_start.sav") and FileAccess.file_exists(replay_copy), "production replay uses a temporary launch-save copy")
 	await _wait_replay(app)
+	_expect(not app.machine.get_gpu3d_enabled(), "ordinary replay stays software even when GPU view is available")
 	_expect(app.replay_complete and app._current_frame() == target_frame and app.machine.is_paused(), "production replay reaches target and pauses")
 	_expect(app.machine.get_backup_type() == "eeprom64k" and app.settings.backup_type == "auto", "production replay applies recorded chip without changing normal settings")
 	var replay_capture := base.path_join("replay-capture")
@@ -131,6 +163,7 @@ func _run() -> void:
 	_expect(store.read_status(real_issue.path).status == "testing", "replay enters testing, not auto-solved")
 	await _click(app.issue_reviewer.controls.compare)
 	var status := store.read_status(real_issue.path)
+	_expect(not app.issue_reviewer.controls.view.disabled, "View is enabled for the selected completed replay")
 	_expect(status.last_test.result_pixels_differing == 0 and status.last_test.frame == target_frame and status.last_test.build.begins_with("dq9_godot sha256:"), "comparison captures both screens and records informational pixel count/build")
 	_expect(app.issue_reviewer._comparison.text.contains("Informational"), "diff is not a pass/fail verdict")
 	var changed: Image = app.issue_reviewer._current.texture.get_image()
@@ -190,6 +223,9 @@ func _run() -> void:
 		if dialog.visible:
 			offered = true
 			await _click(dialog.get_cancel_button())
+			# A native dialog is a separate window; injected root-viewport clicks
+			# need not reach it under Xvfb. Dismiss it before subsequent UI routes.
+			if is_instance_valid(dialog) and dialog.visible: dialog.canceled.emit()
 	_expect(offered and app.issue_reviewer.visible, "cancel offers return to normal game or keep reviewing")
 	# Reload the actual Godot capture through the production route, not a hand-made
 	# metadata echo, and compare independent native output and persisted save data.
@@ -213,13 +249,57 @@ func _run() -> void:
 		_expect(app.machine != null and app.machine.get_backup_type() == "auto", "%s backup metadata defaults to Auto" % recorded)
 		_expect(app.settings.backup_type == "flash512k", "legacy replay does not change ordinary explicit setting")
 		app._release_machine(false)
-	# Full replay selects the recorded guest-widescreen mode before loading.
+	# The software path still uses the recorded guest camera, regardless of the
+	# current presentation setting. Its hashes provide a same-input reference for
+	# a fresh GPU view started with a conflicting recorded mode.
 	var full_issue := real_issue.duplicate(true)
 	full_issue.env.widescreen_mode = "2"
-	app._start_issue_replay(full_issue)
-	_expect(app.machine != null and app._active_widescreen_mode == 2, "Full issue replay selects recorded mode before load")
+	app.settings.renderer_gpu3d = 1
+	app.settings.widescreen_mode = 0
+	app._start_issue_replay(full_issue, true)
+	_expect(app.machine != null and app._active_widescreen_mode == 2 and not app.machine.get_gpu3d_enabled(), "software comparison uses recorded Full camera and disables GPU")
 	await _wait_replay(app)
-	_expect(app.replay_complete and app._current_frame() == target_frame, "Full issue replay reaches recorded frame")
+	_expect(app.replay_complete and app._current_frame() == target_frame, "Full software replay reaches recorded frame")
+	var full_hashes: PackedStringArray = app.machine.get_replay_hashes()
+	_expect(full_hashes.size() == native_rows.size(), "Full software replay records every frame hash")
+	app._release_machine(false)
+	var off_issue := real_issue.duplicate(true)
+	off_issue.env.widescreen_mode = "0"
+	app.settings.widescreen_mode = 2
+	app._start_issue_replay(off_issue, true, 2)
+	var gpu_copy: String = app.replay_save_path
+	_expect(app.machine != null and app.machine.get_gpu3d_enabled() and app._active_widescreen_mode == 2, "GPU view uses configured Full, not recorded Off")
+	_expect(gpu_copy != normal_save and gpu_copy != off_issue.path.path_join("session_start.sav") and FileAccess.file_exists(gpu_copy), "GPU view uses a fresh copied launch save")
+	await _wait_replay(app)
+	_expect(app.replay_complete and app.machine.is_paused() and app._current_frame() == target_frame, "GPU Full view reaches and pauses on target")
+	_expect(app.machine.get_replay_hashes() == full_hashes, "GPU Full view agrees frame-for-frame with recorded-Full software replay")
+	_expect(not app.issue_reviewer.visible, "completed GPU view exposes the game instead of the reviewer")
+	_expect(FileAccess.get_sha256(normal_save) == normal_hash, "GPU view leaves normal save untouched")
+	app._release_machine(false)
+	_expect(not FileAccess.file_exists(gpu_copy), "GPU view copy is removed on release")
+	# The actual button must emit the selected issue and start a new GPU replay,
+	# rather than repurposing the software machine at its completed frame.
+	app.settings.widescreen_mode = 0
+	app._open_issue_reviewer()
+	app.issue_reviewer.select_issue(real_issue)
+	app._start_issue_replay(real_issue, true)
+	await _wait_replay(app)
+	_expect(app.machine.get_replay_hashes() == native_rows and not app.machine.get_gpu3d_enabled(), "software comparison remains native-identical with GPU configured")
+	var old_copy: String = app.replay_save_path
+	_expect(app.issue_reviewer.visible and not app.issue_reviewer.controls.view.disabled, "View button visible and enabled at the paused issue")
+	var view_events: Array = []
+	app.issue_reviewer.view_requested.connect(func(issue): view_events.append(issue))
+	await _click(app.issue_reviewer.controls.view)
+	_expect(view_events.size() == 1 and view_events[0].path == real_issue.path, "View button emits the selected issue")
+	_expect(app.machine != null and app.machine.get_gpu3d_enabled() and app._active_widescreen_mode == 0, "View button starts a fresh GPU Off replay")
+	_expect(app.replay_save_path != old_copy and not FileAccess.file_exists(old_copy) and FileAccess.file_exists(app.replay_save_path), "View button replaces the software replay save copy")
+	await _wait_replay(app)
+	_expect(app.replay_complete and app.machine.is_paused() and app._current_frame() == target_frame, "button-routed GPU view pauses on the target")
+	var paused_frame: int = app._current_frame()
+	app._set_widescreen_mode(1)
+	_expect(app._active_widescreen_mode == 1 and app._current_frame() == paused_frame and app.machine.is_paused(), "Off to Picture updates the paused GPU view without advancing")
+	app._set_widescreen_mode(0)
+	_expect(app._active_widescreen_mode == 0 and app._current_frame() == paused_frame and app.machine.is_paused(), "Picture to Off updates the same paused frame")
 	app._release_machine(false)
 	_expect(FileAccess.get_file_as_bytes(fresh_save).is_empty(), "empty source save remains untouched")
 	_expect(originals == Fixture.snapshot_originals(roots), "bundle originals unchanged; only status.json written")
@@ -236,7 +316,7 @@ func _capture(app: Control, dimensions: Vector2i, path: String) -> void:
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png(path)
 	var viewport_rect := Rect2(Vector2.ZERO, Vector2(dimensions))
-	for key in ["replay", "compare", "solved", "reopen", "wontfix", "retest", "folder", "close"]:
+	for key in ["replay", "view", "compare", "solved", "reopen", "wontfix", "retest", "folder", "close"]:
 		_expect(viewport_rect.encloses(app.issue_reviewer.controls[key].get_global_rect()), "reviewer %s button inside %s viewport" % [key, dimensions])
 
 func _wait_replay(app: Control) -> void:

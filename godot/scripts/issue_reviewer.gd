@@ -3,6 +3,7 @@ extends PanelContainer
 const Store = preload("res://scripts/issue_store.gd")
 signal replay_requested(issue: Dictionary)
 signal compare_requested(issue: Dictionary)
+signal view_requested(issue: Dictionary)
 signal play_requested
 signal cancel_requested
 signal return_requested
@@ -74,6 +75,7 @@ func _ready() -> void:
 	var replay_row := HFlowContainer.new(); detail.add_child(replay_row)
 	_button("replay", "Replay to issue", replay_row, func(): replay_requested.emit(selected))
 	_button("compare", "Compare with original", replay_row, func(): compare_requested.emit(selected))
+	_button("view", "View with my GPU/widescreen settings", replay_row, func(): view_requested.emit(selected))
 	_button("play", "Play from here", replay_row, func(): play_requested.emit())
 	_button("cancel", "Cancel replay", replay_row, func(): cancel_requested.emit())
 	_button("return", "Return to normal game", replay_row, func(): return_requested.emit())
@@ -120,6 +122,9 @@ func _resize_ui() -> void:
 func open(show_auto := false) -> void:
 	_auto.set_pressed_no_signal(show_auto)
 	show(); refresh()
+	if not controls.view.disabled: controls.view.grab_focus()
+	elif not controls.replay.disabled: controls.replay.grab_focus()
+	else: controls.close.grab_focus()
 
 func refresh() -> void:
 	var all: Array[Dictionary] = store.list_issues("all", "", _auto.button_pressed)
@@ -179,7 +184,7 @@ func set_replay_state(path: String, busy: bool, complete := false) -> void:
 	if busy: _progress.value = 0; _progress_label.text = "Replaying deterministically at Max speed…"
 	elif complete:
 		_progress.value = 100
-		_progress_label.text = "Paused at the issue. Compare, Play from here with live input, or Return to normal game."
+		_progress_label.text = "Paused at the issue. Compare, view with your GPU/widescreen settings, play from here, or return to the normal game. Changing to or from Full requires a fresh replay."
 	else: _progress_label.text = "Replay cancelled. Return to normal game or select another issue." if not path.is_empty() else ""
 	_update_buttons()
 
@@ -220,6 +225,7 @@ func _update_buttons() -> void:
 	for key in ["replay", "solved", "reopen", "wontfix", "retest", "folder"]:
 		controls[key].disabled = selected.is_empty() or _busy
 	controls.compare.disabled = selected.is_empty() or _busy or not _replay_complete or selected.path != _replay_path
+	controls.view.disabled = selected.is_empty() or _busy or not _replay_complete or selected.path != _replay_path
 	controls.play.disabled = selected.is_empty() or _busy or not _replay_complete or selected.path != _replay_path
 	controls.cancel.disabled = not _busy
 	controls["return"].disabled = _replay_path.is_empty()
