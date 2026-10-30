@@ -117,6 +117,13 @@ dsr_target_compile_options(dq9_gpu_scene_frame_tests -Wall -Wextra)
 add_test(NAME dq9_gpu_scene_frame_tests COMMAND dq9_gpu_scene_frame_tests)
 set_tests_properties(dq9_gpu_scene_frame_tests PROPERTIES TIMEOUT 30)
 
+# Scene classification is independent of the Godot SDK and game data.
+add_executable(dq9_scene_rules_tests godot/tests/native/scene_rules_test.cpp)
+target_include_directories(dq9_scene_rules_tests PRIVATE godot/src)
+dsr_target_compile_options(dq9_scene_rules_tests -Wall -Wextra)
+add_test(NAME dq9_scene_rules_tests COMMAND dq9_scene_rules_tests)
+set_tests_properties(dq9_scene_rules_tests PROPERTIES TIMEOUT 30)
+
 if(DQ9_GENERATED_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/game/CMakeLists.txt")
   add_subdirectory(game)
 endif()

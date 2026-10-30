@@ -46,6 +46,11 @@ public:
         return 33'513'982.0 / Spu::kTicksPerSample;
     }
     std::uint64_t frame_count() const { return frame_count_; }
+    // Owner-thread opt-in, before the first step attempt. No cartridge is a no-op.
+    void enable_scene_file_tracking();
+    const std::string& last_card_file_path() const;
+    std::int32_t last_card_file_id() const;
+    std::int64_t last_card_file_frame() const;
     std::uint64_t ticks() const { return machine_.ticks(); }
     bool flush_save();
     // Owner-thread save inspection; no cartridge means an empty list and zero capacity.
@@ -79,6 +84,7 @@ private:
     std::size_t audio_frames_ = 0;
     std::uint64_t frame_count_ = 0;
     bool started_ = false;
+    bool scene_file_tracking_enabled_ = false;
 };
 
 } // namespace dsr

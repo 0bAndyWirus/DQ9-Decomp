@@ -357,7 +357,7 @@ func _run() -> void:
 	var wide_texture := ImageTexture.create_from_image(wide_image)
 	widescreen.select(1)
 	widescreen.item_selected.emit(1)
-	ok = host.settings.widescreen_mode == 1 and host.persist_count == 4 and ok
+	ok = host.settings.widescreen_mode == 1 and host.persist_count == 5 and ok
 	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
 	# A new ratio and an engine-A screen swap must relayout every layout,
 	# not just Horizontal. Check against the native screen rectangles.
@@ -382,6 +382,59 @@ func _run() -> void:
 				if not frame.position.is_equal_approx(expected_rect.position) or not frame.size.is_equal_approx(expected_rect.size):
 					push_error("Engine-A relayout failed for layout %d screen %d" % [test_layout, index])
 					ok = false
+	# Compare actual scene pixels with an uncropped scene in each mode.  The
+	# asymmetric texture also detects accidentally stretching the wide UV into
+	# the cropped native rectangle instead of clipping its sides.
+	host._set_layout(0)
+	wide_image.fill(Stub.LEFT)
+	wide_image.fill_rect(Rect2i(384, 0, 640, 576), Stub.RIGHT)
+	wide_texture.update(wide_image)
+	var scene_baselines := {}
+	for mode in [0, 1, 2]:
+		host._presentation_scene = "other"
+		host._active_widescreen_mode = mode
+		host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
+		await _settle()
+		scene_baselines[mode] = root.get_texture().get_image()
+	for scene in ["intro", "character_creation"]:
+		for mode in [0, 1, 2]:
+			host._presentation_scene = scene
+			host._active_widescreen_mode = mode
+			host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
+			if mode in [1, 2]:
+				if not is_equal_approx(host._layout_wide_ratio, 1.0) or not host.top_frame.clip_contents or not is_equal_approx(host.gpu3d_rect.anchor_left, -1.0 / 6.0):
+					push_error("Wide crop failed for %s mode %d" % [scene, mode])
+					ok = false
+			await _settle()
+			var scene_capture := root.get_texture().get_image()
+			var scene_screen: Rect2 = host.top_rect.get_global_rect()
+			scene_screen.position = scene_screen.position.round()
+			for sample in [
+				[Vector2(-0.1, 0.5), "left side"],
+				[Vector2(0.1, 0.5), "left native 2D"],
+				[Vector2(0.3, 0.5), "left native 3D"],
+				[Vector2(0.35, 0.5), "shifted boundary"],
+				[Vector2(0.65, 0.5), "right native 3D"],
+				[Vector2(0.9, 0.5), "right native 2D"],
+				[Vector2(1.1, 0.5), "right side"],
+			]:
+				var pixel := Vector2i(scene_screen.position + scene_screen.size * sample[0])
+				var color := scene_capture.get_pixelv(pixel)
+				# Wide crop has the same native layout and clipped backdrop as
+				# Off; Off itself must match its own "other" baseline.
+				var reference: Image = scene_baselines[0]
+				if mode in [1, 2] and sample[0].x > 0.0 and sample[0].x < 1.0:
+					var expected: Color = TOP if sample[0].x < 0.25 or sample[0].x > 0.75 else (Stub.LEFT if sample[0].x < 0.32 else Stub.RIGHT)
+					if not color.is_equal_approx(expected):
+						push_error("%s mode %d %s: got %s expected %s" % [scene, mode, sample[1], color, expected])
+						ok = false
+				elif not color.is_equal_approx(reference.get_pixelv(pixel)):
+					push_error("%s mode %d %s differs from uncropped baseline" % [scene, mode, sample[1]])
+					ok = false
+	wide_image.fill(Stub.LEFT)
+	wide_texture.update(wide_image)
+	host._presentation_scene = "other"
+	host._active_widescreen_mode = 1
 	# Restore the original visual sampling case.
 	host._set_layout(0)
 	host.set_gpu3d_frame(wide_texture, stub.mask_texture, true)
@@ -430,7 +483,7 @@ func _run() -> void:
 	host._layout_screens()
 	widescreen.select(0)
 	widescreen.item_selected.emit(0)
-	ok = host.settings.widescreen_mode == 0 and host.persist_count == 5 and host.top_frame.clip_contents and ok
+	ok = host.settings.widescreen_mode == 0 and host.persist_count == 7 and host.top_frame.clip_contents and ok
 	# Picture is live, while entering or leaving Full defers until restart.
 	var fake_machine := SyntheticMachine.new()
 	fake_machine.top = host.top_rect.texture
@@ -439,10 +492,12 @@ func _run() -> void:
 	host._set_widescreen_mode(1)
 	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 1 and ok
 	host._set_widescreen_mode(2)
-	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 2 and host._ui.widescreen_note.text.contains("Restart") and ok
+	pages.refresh(true, host._active_widescreen_mode)
+	ok = host._active_widescreen_mode == 1 and host.settings.widescreen_mode == 2 and pages._wide_note.text.contains("Restart") and ok
 	host._active_widescreen_mode = 2
 	host._set_widescreen_mode(0)
-	ok = host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and host._ui.widescreen_note.text.contains("Restart") and ok
+	pages.refresh(true, host._active_widescreen_mode)
+	ok = host._active_widescreen_mode == 2 and host.settings.widescreen_mode == 0 and pages._wide_note.text.contains("Restart") and ok
 	# Full supplies a native-position 2D/presentation texture and a native-
 	# position eligibility mask, even though the 3D raster spans the wide
 	# texture. The asymmetric occluder and off-centre 3D color boundary make
@@ -568,7 +623,7 @@ func _run() -> void:
 	host._apply_gpu3d_settings()
 	await _settle()
 	ok = _paused_overlay_probe(host, fake_machine.presentation_bottom, -1, paused_under, "paused GPU enabled") and ok
-	var hd_toggle := host.find_child("HdTextures", true, false) as CheckButton
+	var hd_toggle: CheckButton = pages._controls.hd_textures
 	var dump_toggle := host.find_child("TextureDump", true, false) as CheckButton
 	ok = hd_toggle != null and dump_toggle != null and not hd_toggle.button_pressed and not dump_toggle.button_pressed and ok
 	if hd_toggle and dump_toggle:

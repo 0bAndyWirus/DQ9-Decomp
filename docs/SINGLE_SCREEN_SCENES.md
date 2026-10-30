@@ -12,6 +12,14 @@ Godot signals are presentation-timed, not guest-frame-boundary callbacks. A
 future guest-camera consumer must apply scene changes on the owner thread at a
 guest-frame boundary, rather than changing guest camera state from the signal.
 
+Godot's presentation rules advance on every completed emulated frame, including
+frames replaced before display. Their resulting label, main-screen choice and
+darkness sample travel with the displayed frame; a fast replay paused at a
+target therefore uses the same automatic rule state as sequential presentation.
+File tracking supplies the last tracked read within each frame, not every read
+within that frame. These rules do not change the guest or make the underlying
+scene heuristics frame-exact.
+
 The battle candidate follows the live ov017 world singleton at `0x021d82e4`
 through world `+0x3718`, owner `+0x6ac` and dispatcher `+0xea8`. Overlay
 residency and valid pointer reads matter; the stale ov000 global is not proof

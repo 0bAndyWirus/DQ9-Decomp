@@ -6,6 +6,7 @@ machine (headless 3,000-frame English boot run) and are not general claims.
 
 ## Unreleased
 
+- **Godot scene presentation:** scene and main-screen confirmation advance for every emulated frame, including frames coalesced during fast replay. The displayed frame retains its own classification and darkness state; guest emulation is unchanged.
 - **Godot GPU geometry:** Classic and Picture can render the bounded hardware-retained scene when polygon RAM overflows and all 2,048 retained polygons are present, instead of falling back solely for that flag. Discarded polygons are not recovered; incomplete lists, vertex overflow and other existing safety and hybrid fallback conditions remain. Full behavior and the software renderer are unchanged; GPU rendering remains experimental without a pixel-parity guarantee.
 
 - **Godot Full compositing:** align the full-width guest 3D raster and its captured GPU eligibility with the centered native 2D composition. In Full's side regions, unsafe pixels use the matching software 3D raster when its alpha is opaque; safe pixels and pixels with non-opaque software alpha use the GPU. The latter cannot reproduce a missing DS 2D blend. Classic and Picture presentation, guest screens and frame timing are unchanged; unsupported Full frames still fall back to the software screen with the wide camera active.

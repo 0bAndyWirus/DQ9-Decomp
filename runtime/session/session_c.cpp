@@ -116,6 +116,31 @@ extern "C" uint64_t dsr_session_frame_count(const dsr_session_handle* session) {
 extern "C" uint64_t dsr_session_ticks(const dsr_session_handle* session) {
     return session ? session->session.ticks() : 0;
 }
+extern "C" int dsr_session_enable_scene_file_tracking(dsr_session_handle* session,
+                                                       char* error_out, size_t error_capacity) {
+    if (!session) {
+        set_error(error_out, error_capacity, "invalid session");
+        return 1;
+    }
+    try {
+        session->session.enable_scene_file_tracking();
+        return 0;
+    } catch (const std::exception& error) {
+        set_error(error_out, error_capacity, error.what());
+    } catch (...) {
+        set_error(error_out, error_capacity, "unknown scene tracking failure");
+    }
+    return 1;
+}
+extern "C" const char* dsr_session_last_card_file_path(const dsr_session_handle* session) {
+    return session ? session->session.last_card_file_path().c_str() : "";
+}
+extern "C" int32_t dsr_session_last_card_file_id(const dsr_session_handle* session) {
+    return session ? session->session.last_card_file_id() : -1;
+}
+extern "C" int64_t dsr_session_last_card_file_frame(const dsr_session_handle* session) {
+    return session ? session->session.last_card_file_frame() : -1;
+}
 extern "C" dsr_scene dsr_session_scene(const dsr_session_handle* session) {
     if (!session) return DSR_SCENE_OTHER;
     // These bus reads target RAM only; Machine's bus interface is non-const.
