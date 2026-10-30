@@ -77,6 +77,7 @@ var replay_issue: Dictionary = {}
 var replay_save_path := ""
 var replay_started_ms := 0
 var replay_complete := false
+var replay_gpu_view := false
 var _reviewer_was_paused := false
 var _bundle_active := false
 var _review_build_id := ""
@@ -222,6 +223,7 @@ func _build_ui() -> void:
 	reviewer_overlay.add_child(issue_reviewer)
 	issue_reviewer.hide()
 	issue_reviewer.replay_requested.connect(_start_issue_replay)
+	issue_reviewer.view_requested.connect(_view_issue)
 	issue_reviewer.compare_requested.connect(_compare_issue)
 	issue_reviewer.play_requested.connect(_play_from_issue)
 	issue_reviewer.cancel_requested.connect(_cancel_issue_replay)
@@ -834,7 +836,7 @@ func _apply_gpu3d_settings() -> void:
 		if machine.has_method("set_gpu3d_guest_widescreen"): machine.set_gpu3d_guest_widescreen(_active_widescreen_mode == 2)
 		if machine.has_method("set_hd_textures_enabled"): machine.set_hd_textures_enabled(bool(settings.hd_textures))
 		if machine.has_method("set_hd_texture_dump_enabled"): machine.set_hd_texture_dump_enabled(_hd_texture_dump_enabled)
-		if machine.has_method("set_gpu3d_enabled"): machine.set_gpu3d_enabled(enabled)
+		if machine.has_method("set_gpu3d_enabled"): machine.set_gpu3d_enabled(enabled and (replay_issue.is_empty() or replay_gpu_view))
 		# Disabling releases the producer's viewport. Re-enabling must not
 		# resurrect its cached texture/mask while the new epoch warms up.
 		if machine.has_method("get_gpu3d_texture") and machine.has_method("get_gpu3d_mask_texture"):
@@ -987,6 +989,9 @@ func _open_issue_reviewer() -> void:
 		return
 	_reviewer_was_paused = machine.is_paused() if machine else false
 	if machine and not machine.get_stats().get("replay_active", false): machine.set_paused(true)
+	# The launcher is a later GUI sibling and otherwise intercepts reviewer input.
+	# Closing the reviewer with no machine restores it through _show_launcher().
+	launcher.hide()
 	pause_panel.hide(); settings_panel.hide()
 	issue_reviewer.open(bool(settings.issue_show_auto))
 
@@ -998,12 +1003,12 @@ func _close_issue_reviewer() -> void:
 	if machine:
 		# A replay stays paused until the user explicitly chooses Play from here.
 		machine.set_paused(_reviewer_was_paused)
-		if _reviewer_was_paused:
+		if _reviewer_was_paused and not (replay_gpu_view and replay_complete):
 			pause_panel.show()
 			_ui.pause_resume.grab_focus()
 	else: _show_launcher()
 
-func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
+func _start_issue_replay(issue: Dictionary, record_hashes := false, view_mode := -1) -> void:
 	await _release_attract_for_game()
 	if issue.is_empty(): return
 	var path: String = issue.path
@@ -1030,12 +1035,15 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	_release_machine(false) # flush normal save before replacing the session
 	replay_save_path = temporary_save
 	replay_issue = issue.duplicate(true); replay_complete = false
+	replay_gpu_view = view_mode >= 0
 	machine = ClassDB.instantiate("DqMachine"); add_child(machine)
-	_active_widescreen_mode = clampi(int(environment.get("widescreen_mode", 0)), 0, 2)
+	_active_widescreen_mode = clampi(view_mode if replay_gpu_view else int(environment.get("widescreen_mode", 0)), 0, 2)
 	machine.set_widescreen_camera(_active_widescreen_mode == 2)
 	_machine_last_save_ok = true
-	# Software screenshots are the exact reference even when normal play uses GPU 3D.
-	machine.set_gpu3d_enabled(false)
+	# The default replay remains the exact software reference. A visual replay
+	# starts afresh with capture enabled, so its target frame has a warm GPU scene.
+	if replay_gpu_view: _apply_gpu3d_settings()
+	else: machine.set_gpu3d_enabled(false)
 	var backup_type: String = str(environment.get("backup_type", "auto"))
 	if backup_type not in Logic.BACKUP_TYPES: backup_type = "auto"
 	var metadata := IssueReviewer.Store.fields(issue.comment)
@@ -1073,10 +1081,30 @@ func _on_issue_replay_finished(frame: int) -> void:
 	var error: String = issue_reviewer.store.record_test(replay_issue.path, frame, null, _review_build())
 	issue_reviewer.refresh()
 	if not error.is_empty(): issue_reviewer.show_message(error)
+	if replay_gpu_view:
+		launcher.hide()
+		issue_reviewer.hide()
+		pause_panel.hide()
+		_show_toast("Paused at the issue. F7 returns to the ticket; Off/Picture can be changed in Settings.", 8.0)
+
+func _view_issue(issue: Dictionary) -> void:
+	if not machine or not replay_complete or replay_issue.is_empty() or issue.path != replay_issue.path or not machine.is_paused():
+		issue_reviewer.show_message("Replay to this issue and stay paused before viewing it.")
+		return
+	if int(settings.renderer_gpu3d) == 0:
+		issue_reviewer.show_message("Select GPU hi-res in Settings first, then return to this ticket.")
+		return
+	# Always replay from the copied launch save. This captures the target rather
+	# than advancing past it to warm the GPU, and sets Full before boot.
+	_start_issue_replay(issue, false, int(settings.widescreen_mode))
+
 
 func _compare_issue(issue: Dictionary) -> void:
 	if not machine or not replay_complete or replay_issue.is_empty() or issue.path != replay_issue.path or _current_frame() != int(issue.frame) or not machine.is_paused():
 		issue_reviewer.show_message("Replay to this issue and stay paused at its recorded frame before comparing.")
+		return
+	if replay_gpu_view:
+		issue_reviewer.show_message("Replay to issue again for the exact software comparison.")
 		return
 	var both := Image.create(256, 384, false, Image.FORMAT_RGBA8)
 	both.blit_rect(machine.get_top_image(), Rect2i(0, 0, 256, 192), Vector2i.ZERO)
@@ -1091,6 +1119,7 @@ func _play_from_issue() -> void:
 	if not machine or not replay_complete: return
 	machine.set_buttons(0); machine.set_touch(0, 0, false)
 	machine.set_speed(1.0); machine.set_paused(false)
+	launcher.hide()
 	issue_reviewer.hide()
 	# The return action remains available when the reviewer is reopened.
 
@@ -1127,7 +1156,7 @@ func _cleanup_replay_save() -> void:
 	if replay_save_path.is_empty(): return
 	DirAccess.remove_absolute(replay_save_path)
 	DirAccess.remove_absolute(replay_save_path.get_base_dir())
-	replay_save_path = ""; replay_issue = {}; replay_complete = false
+	replay_save_path = ""; replay_issue = {}; replay_complete = false; replay_gpu_view = false
 	if is_instance_valid(issue_reviewer): issue_reviewer.set_replay_state("", false)
 
 func _review_build() -> String:
@@ -1227,6 +1256,8 @@ func _input(event: InputEvent) -> void:
 	if settings_panel.visible and _ui.settings_pages.handle_rebind(event):
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed("ui_cancel") and issue_reviewer.visible:
+		_close_issue_reviewer(); get_viewport().set_input_as_handled(); return
 	if event.is_action_pressed("ui_cancel") and settings_panel.visible: _hide_settings(); get_viewport().set_input_as_handled(); return
 	if event.is_action_pressed("ui_cancel") and pause_panel.visible and not issue_reviewer.visible:
 		_toggle_pause(); get_viewport().set_input_as_handled(); return
@@ -1254,6 +1285,7 @@ func _input(event: InputEvent) -> void:
 			_toggle_gpu3d_compare()
 			get_viewport().set_input_as_handled()
 		elif event.keycode==KEY_ESCAPE and machine: _toggle_pause()
+	if issue_reviewer.visible: return
 	var chord := Input.is_action_pressed("ds_start") and Input.is_action_pressed("ds_select")
 	if machine and chord and not _chord_latched: _toggle_pause()
 	_chord_latched = chord
@@ -1262,7 +1294,9 @@ func _input(event: InputEvent) -> void:
 func _toggle_pause() -> void:
 	if not machine: _show_settings(); return
 	_fit_panels()
-	pause_panel.visible=not pause_panel.visible; machine.set_paused(pause_panel.visible)
+	pause_panel.visible = not pause_panel.visible
+	# Closing the menu during a visual replay must not advance the issue frame.
+	machine.set_paused(pause_panel.visible or (replay_gpu_view and replay_complete and _current_frame() == int(replay_issue.frame)))
 	if pause_panel.visible:
 		_ui.pause_resume.grab_focus()
 		_queue_save_backup_refresh()

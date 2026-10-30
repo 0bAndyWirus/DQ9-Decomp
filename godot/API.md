@@ -327,6 +327,15 @@ Godot bundles record the active widescreen mode; the reviewer restores Full
 before loading so its guest state is replayed correctly. Older bundles without
 this field default to Off. Full bundles require the Godot reviewer rather than
 silently replaying different guest state in SDL.
+After a replay completes, **View with my GPU/widescreen settings** is enabled
+only for the selected replayed issue. It starts a fresh GPU-enabled replay from
+the copied launch save, warming the capture pipeline before pausing on the same
+recorded frame; it never advances the original replay to obtain a GPU frame.
+GPU hi-res must be selected in Settings. Off and Picture can be changed while
+paused; entering or leaving Full changes guest state and requires a fresh replay
+with the camera selected before boot. To repeat the exact software pixel
+comparison, choose **Replay to issue** again. The reviewer emits
+`view_requested(issue: Dictionary)` for the viewing action.
 
 ROM-free tests: `tests/test_issue_store.gd`. The xvfb integration
 `tests/test_issue_reviewer.gd -- <rom> <launch-save> <inputs> <native-dq9>
