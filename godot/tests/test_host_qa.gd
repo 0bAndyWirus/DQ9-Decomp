@@ -18,7 +18,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	check(ClassDB.class_exists("DqMachine"), "Scene must load the native extension without an editor cache")
-	check(app.settings_panel.visible, "Start menu must be visible without --autostart")
+	check(app.launcher.visible and not app.settings_panel.visible, "Launcher must be visible without --autostart")
 	var toast_token: int = app._toast_token
 	app._observe_save_result(false)
 	check(app._toast.visible and app._toast.text.begins_with("SAVE NOT WRITTEN"), "Save failure must be visible")
@@ -33,21 +33,23 @@ func _run() -> void:
 	check(app._toast_token == toast_token + 3, "A new failure after recovery is visible")
 	app._observe_save_result(true)
 	app._show_toast("")
+	app.launcher.settings_requested.emit()
+	check(app.settings_panel.visible, "Launcher settings request must open settings")
+	var pages = app._ui.settings_pages
 	var joy := InputEventJoypadButton.new()
 	joy.button_index = JOY_BUTTON_A
 	joy.pressed = true
-	app.rebinding_action = "ds_a"
+	pages._binding_buttons["ds_a"].pressed.emit()
 	Input.parse_input_event(joy)
 	await process_frame
-	check(app.rebinding_action.is_empty(), "Joypad button must finish rebinding")
+	check(pages._binding_action.is_empty(), "Joypad button must finish rebinding")
 	check(InputMap.action_has_event("ds_a", joy), "Joypad binding must be installed")
 	Logic.reset_bindings()
 	app.settings.rom_path = "/nonexistent/qa-missing.nds"
 	app._start_game()
 	await process_frame
 	check(app.machine == null, "Invalid ROM must not leave a machine")
-	var error_label = app._ui.get("error")
-	check(error_label != null and not error_label.text.is_empty(), "Invalid ROM needs a visible error message")
+	check(app.launcher.visible and app.launcher._wizard.visible and not app.launcher._status.text.is_empty(), "Invalid ROM needs a visible launcher error message")
 	app._hide_settings()
 	for size in [Vector2(1280,800), Vector2(3072,1920)]:
 		for layout in 7:
@@ -104,7 +106,10 @@ func _run() -> void:
 	check(app._touching and not app._overlay_drag,"Overlay ordinary click is DS touch, not drag")
 	press.pressed=false; app._input(press)
 	check(not app._touching,"Touch release outside screen ends pen contact")
-	var scale: OptionButton=app.settings_panel.find_child("WindowScale",true,false)
+	var scale: OptionButton = pages._controls.window_scale
+	scale.item_selected.emit(0)
+	await process_frame
+	await process_frame
 	scale.item_selected.emit(1)
 	await process_frame
 	await process_frame

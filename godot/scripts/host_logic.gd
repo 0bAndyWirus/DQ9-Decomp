@@ -5,7 +5,7 @@ const BUTTON_ACTIONS := ["ds_a", "ds_b", "ds_x", "ds_y", "ds_start", "ds_select"
 const BUTTON_BITS := [0, 1, 10, 11, 3, 2, 6, 7, 5, 4, 9, 8]
 const BUTTONS := BUTTON_ACTIONS
 const LAYOUTS := ["Vertical", "Horizontal", "Top Focus", "Bottom Focus", "Single Top", "Single Bottom", "Merged Overlay", "Single screen"]
-const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "single_screen_shapes":[{"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "opacity":1.0}], "renderer_gpu3d":0, "gpu3d_scale":3, "widescreen_mode":0, "hd_textures":false, "issue_show_auto":false}
+const DEFAULTS := {"rom_path":"", "save_path":"user://dq9.sav", "language":"en", "backup_type":"auto", "layout":0, "nearest":true, "integer_scale":false, "window_scale":1, "volume":0.8, "menu_music_volume":0.7, "ui_sfx_volume":0.7, "launcher_live_background":true, "menu_reduced_motion":false, "overlay_rect":Rect2(0.58, 0.56, 0.35, 0.35), "single_screen_shapes":[{"source":Rect2(0, 0, 256, 192), "destination":Rect2(0.65, 0.65, 0.35, 0.35), "opacity":1.0}], "renderer_gpu3d":0, "gpu3d_scale":3, "widescreen_mode":0, "hd_textures":false, "issue_show_auto":false}
 
 static func button_mask(pressed_actions: Array) -> int:
 	var mask := 0
