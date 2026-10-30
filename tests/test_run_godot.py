@@ -37,6 +37,38 @@ class RunGodotTests(unittest.TestCase):
                               env=self.env, cwd="/", text=True,
                               capture_output=True)
 
+    def test_missing_resource_cache_imports_and_failure_stops_launch(self):
+        assets = self.root / "godot/assets/fonts"
+        assets.mkdir(parents=True)
+        (assets / "font.ttf.import").write_text(
+            'path="res://.godot/imported/font.fontdata"\n')
+        record = self.root / "calls"
+        self.engine.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$*" >> "$RECORD"\n'
+            'case "$*" in *--import*)\n'
+            '  [ "${IMPORT_EXIT:-0}" -eq 0 ] || exit "$IMPORT_EXIT"\n'
+            '  mkdir -p "$3/.godot/imported"; touch "$3/.godot/imported/font.fontdata";;\n'
+            'esac\n')
+        self.env["RECORD"] = str(record)
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = record.read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--headless", calls[0])
+        self.assertIn("--editor --import --quit", calls[0])
+        self.assertIn("-- --language", calls[1])
+        cache = self.root / "godot/.godot/imported/font.fontdata"
+        self.assertTrue(cache.is_file())
+        record.unlink()
+        self.assertEqual(self.run_wrapper("--menu").returncode, 0)
+        self.assertEqual(len(record.read_text().splitlines()), 1)
+        cache.unlink()
+        record.unlink()
+        self.env["IMPORT_EXIT"] = "42"
+        self.assertEqual(self.run_wrapper("--menu").returncode, 42)
+        self.assertEqual(len(record.read_text().splitlines()), 1)
+
+
     def test_menu_without_local_rom(self):
         result = self.run_wrapper("--menu", "fr")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -77,6 +109,19 @@ class RunGodotTests(unittest.TestCase):
         self.assertEqual(arguments.count("--rom"), 1)
         self.assertNotIn(self.env["DQ9_ROM"], arguments)
 
+    def test_menu_without_explicit_save_uses_managed_slots(self):
+        self.env.pop("DQ9_SAVE")
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--save", result.stdout.splitlines())
+        self.assertFalse((self.root / "home/.local/share/dq9-remastered").exists())
+
+    def test_menu_forwards_environment_save(self):
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.env["DQ9_SAVE"], result.stdout.splitlines())
+        self.assertIn("--save", result.stdout.splitlines())
+
     def test_explicit_save_creates_selected_parent_without_duplicate_arguments(self):
         save = self.root / "chosen saves/game save.sav"
         result = self.run_wrapper("--menu", "fr", "--save", save)
@@ -99,7 +144,8 @@ class RunGodotTests(unittest.TestCase):
 
     def test_default_save_uses_product_directory(self):
         self.env.pop("DQ9_SAVE")
-        result = self.run_wrapper("--menu")
+        self.env["DQ9_ROM"] = str(self.root / "game.nds")
+        result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         save = self.root / "home/.local/share/dq9-remastered/godot.sav"
         self.assertIn(str(save), result.stdout.splitlines())
@@ -107,24 +153,25 @@ class RunGodotTests(unittest.TestCase):
 
     def test_legacy_save_fallback_and_new_file_precedence(self):
         self.env.pop("DQ9_SAVE")
+        self.env["DQ9_ROM"] = str(self.root / "game.nds")
         data = self.root / "custom data"
         self.env["XDG_DATA_HOME"] = str(data)
         home_legacy = self.root / "home/.local/share/dq9-decomp/godot.sav"
         home_legacy.parent.mkdir(parents=True)
         home_legacy.write_bytes(b"old home save")
-        result = self.run_wrapper("--menu")
+        result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(str(home_legacy), result.stdout.splitlines())
         legacy = data / "dq9-decomp/godot.sav"
         legacy.parent.mkdir(parents=True)
         legacy.write_bytes(b"legacy")
-        result = self.run_wrapper("--menu")
+        result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(str(legacy), result.stdout.splitlines())
         current = data / "dq9-remastered/godot.sav"
         current.parent.mkdir(parents=True)
         current.write_bytes(b"current")
-        result = self.run_wrapper("--menu")
+        result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(str(current), result.stdout.splitlines())
         self.assertNotIn(str(legacy), result.stdout.splitlines())
@@ -373,7 +420,14 @@ class WindowsLauncherSourceTests(unittest.TestCase):
                 self.assertIn("@('--rom', '--save')", source)
                 self.assertIn("$commandArgs += $launchArgs", source)
                 self.assertIn("--rom PATH or DQ9_ROM", source)
-                self.assertNotIn("Get-ChildItem", source)
+                # Godot enumerates only asset metadata and its imported cache.
+                scans = [line.strip() for line in source.splitlines() if "Get-ChildItem" in line]
+                if name == "run_godot":
+                    self.assertEqual(len(scans), 2)
+                    self.assertIn("-LiteralPath $assets -Filter '*.import'", scans[0])
+                    self.assertIn("Get-ChildItem -LiteralPath $imported -Force", scans[1])
+                else:
+                    self.assertEqual(scans, [])
                 self.assertIn("Push-Location $root", source)
                 self.assertIn("Pop-Location", source)
                 self.assertIn("exit $code", source)
@@ -388,14 +442,12 @@ class WindowsLauncherSourceTests(unittest.TestCase):
                 self.assertIn(f'"%~dp0{name}.ps1" %*', batch)
                 self.assertIn("exit /b %errorlevel%", batch)
 
-    def test_godot_cold_start_launches_directly_without_editor_import(self):
+    def test_godot_imports_missing_resources_before_launch(self):
         source = (ROOT / "tools/run_godot.ps1").read_text()
         self.assertIn("& $godot @commandArgs", source)
         self.assertIn("Could not start Godot executable", source)
-        self.assertNotIn("--headless", source)
-        self.assertNotIn("--editor", source)
-        self.assertNotIn("--import", source)
-        self.assertNotIn("extension_list.cfg", source)
+        self.assertIn("--headless --path $scratch --editor --import --quit", source)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", source)
 
     @unittest.skipUnless(os.name != "nt" and shutil.which("pwsh"), "requires PowerShell on a POSIX host")
     def test_windows_sdl_uses_roaming_only_when_native_has_no_save(self):

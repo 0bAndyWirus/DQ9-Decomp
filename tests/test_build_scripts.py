@@ -415,12 +415,28 @@ class BuildScriptTests(unittest.TestCase):
         (root / "godot/project.godot").write_text("[application]\n")
         (root / "godot/dq9.gdextension").write_text("[libraries]\n")
         (root / "godot/scripts/main.gd").write_text("extends Node\n")
+        assets = (
+            "CREDITS.md",
+            "fonts/Cinzel.ttf", "fonts/Cinzel.ttf.import", "fonts/Cinzel-OFL.txt",
+            "fonts/NotoSerif.ttf", "fonts/NotoSerif.ttf.import", "fonts/NotoSerif-OFL.txt",
+            "audio/cancel.wav", "audio/cancel.wav.import",
+            "audio/confirm.wav", "audio/confirm.wav.import",
+            "audio/cursor.wav", "audio/cursor.wav.import",
+            "audio/menu_music.ogg", "audio/menu_music.ogg.import",
+        )
+        for asset in assets:
+            destination = root / "godot/assets" / asset
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "godot/assets" / asset, destination)
         subprocess.run(["git", "-C", str(root), "add", "godot"], check=True)
         # Even tracked image/save fixtures are excluded; extra resources aren't copied.
         (root / "godot/scripts/excluded.nds").write_bytes(b"image test fixture")
         (root / "godot/scripts/excluded.sav").write_bytes(b"save test fixture")
         subprocess.run(["git", "-C", str(root), "add", "godot/scripts/excluded.nds",
                         "godot/scripts/excluded.sav"], check=True)
+        (root / "godot/assets/audio/excluded.wav").write_bytes(b"unrelated audio")
+        subprocess.run(["git", "-C", str(root), "add", "godot/assets/audio/excluded.wav"], check=True)
+        (root / "godot/assets/audio/untracked.wav").write_bytes(b"untracked audio")
         (root / "godot/scripts/untracked.gd").write_text("extends Node\n")
         (root / "godot/bin").mkdir()
         for name in ("dq9_godot.windows.template_release.x86_64.dll", "dsr_session.dll"):
@@ -445,6 +461,8 @@ class BuildScriptTests(unittest.TestCase):
             names = archive.namelist()
         self.assertIn("dq9-remastered-win64/godot/scripts/main.gd", names)
         self.assertIn("dq9-remastered-win64/dq9.exe", names)
+        for asset in assets:
+            self.assertIn(f"dq9-remastered-win64/godot/assets/{asset}", names)
         self.assertFalse(any("excluded" in path or "untracked" in path for path in names), names)
         user_save = root / "build/dist/dq9-remastered-win64/dq9.sav"
         user_save.write_bytes(b"keep this user save")

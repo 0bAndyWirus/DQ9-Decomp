@@ -25,6 +25,7 @@ var slot_inspector: Node
 var active_slot := ""
 var slot_started_ms := 0
 var _migration_checked := false
+var _explicit_save := false
 var machine: Node
 var layout := 0
 var _user_speed := 1.0          # speed chosen in the pause panel; fast-forward (hold Tab) overrides it
@@ -134,11 +135,16 @@ func _parse_args() -> void:
 	if settings.rom_path.is_empty():
 		settings.rom_path = OS.get_environment("DQ9_ROM")
 	var save_env := OS.get_environment("DQ9_SAVE")
-	if not save_env.is_empty(): settings.save_path = save_env
+	if not save_env.is_empty():
+		settings.save_path = save_env
+		_explicit_save = true
 	for i in args.size():
 		match args[i]:
 			"--rom": if i+1 < args.size(): settings.rom_path = args[i+1]
-			"--save": if i+1 < args.size(): settings.save_path = args[i+1]
+			"--save":
+				if i+1 < args.size():
+					settings.save_path = args[i+1]
+					_explicit_save = true
 			"--language": if i+1 < args.size(): settings.language = args[i+1].to_lower()
 			"--backup-type": if i+1 < args.size(): settings.backup_type = args[i+1].to_lower()
 			"--autostart": _ui.autostart = true
@@ -269,13 +275,13 @@ func _show_launcher() -> void:
 		slot_inspector = null
 	if not _migration_checked:
 		_migration_checked = true
-		if slot_store.list_slots().is_empty() and FileAccess.file_exists(settings.save_path):
+		if not _explicit_save and slot_store.list_slots().is_empty() and FileAccess.file_exists(settings.save_path):
 			slot_store.migrate_legacy(settings.save_path)
 	var slots: Array = slot_store.list_slots()
-	launcher.set_continue_enabled(not slots.is_empty())
+	launcher.set_continue_enabled(_explicit_save or not slots.is_empty())
 	launcher.set_wizard_choices(settings.language, int(settings.renderer_gpu3d))
 	_launcher_rom_selected(settings.rom_path)
-	if slots.is_empty() or not _rom_status(settings.rom_path)[1]:
+	if (slots.is_empty() and not _explicit_save) or not _rom_status(settings.rom_path)[1]:
 		launcher.show_wizard()
 	else:
 		launcher.show_title()
@@ -313,7 +319,7 @@ func _launcher_wizard_completed(language: String, preset: int, slot_id: String, 
 		slot_id = str(result.id)
 	settings.language = language
 	SettingsPages.apply_preset(settings, preset)
-	layout = int(settings.layout)
+	_set_layout(int(settings.layout))
 	_select_slot(slot_id)
 	_persist()
 	_show_launcher()
@@ -321,10 +327,15 @@ func _launcher_wizard_completed(language: String, preset: int, slot_id: String, 
 func _select_slot(id: String) -> void:
 	var slot: Dictionary = slot_store.get_slot(id)
 	if slot.is_empty(): return
+	_explicit_save = false
 	active_slot = id
 	settings.save_path = str(slot.path)
 
 func _continue_slot() -> void:
+	if _explicit_save:
+		active_slot = ""
+		_start_game()
+		return
 	var slots: Array = slot_store.list_slots()
 	if slots.is_empty(): return
 	var selected := ""
@@ -1048,7 +1059,10 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	issue_reviewer.refresh()
 	if not status_error.is_empty(): issue_reviewer.show_message(status_error)
 	error = machine.start_replay(int(issue.frame), record_hashes)
-	if not error.is_empty(): _on_issue_replay_error(error)
+	if not error.is_empty():
+		_on_issue_replay_error(error)
+	else:
+		launcher.hide()
 	_queue_save_backup_refresh()
 
 func _on_issue_replay_finished(frame: int) -> void:

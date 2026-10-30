@@ -55,9 +55,20 @@ with tempfile.TemporaryDirectory(prefix='.windows-package-', dir=output) as scra
         for binary in ('dq9_godot.windows.template_release.x86_64.dll', 'dsr_session.dll'):
             copy(root / 'godot' / 'bin' / binary, stage / 'godot' / 'bin' / binary)
         tracked = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '--', 'godot']).decode().split('\0')
+        launcher_assets = {
+            'godot/assets/CREDITS.md',
+            *(f'godot/assets/fonts/{name}{suffix}'
+              for name in ('Cinzel', 'NotoSerif') for suffix in ('.ttf', '.ttf.import', '-OFL.txt')),
+            *(f'godot/assets/audio/{name}{suffix}'
+              for name, suffixes in (('cancel', ('.wav', '.wav.import')),
+                                     ('confirm', ('.wav', '.wav.import')),
+                                     ('cursor', ('.wav', '.wav.import')),
+                                     ('menu_music', ('.ogg', '.ogg.import')))
+              for suffix in suffixes),
+        }
         for path in filter(None, tracked):
             relative = pathlib.PurePosixPath(path)
-            if path in ('godot/project.godot', 'godot/dq9.gdextension', 'godot/dq9.gdextension.uid') or (
+            if path in launcher_assets or path in ('godot/project.godot', 'godot/dq9.gdextension', 'godot/dq9.gdextension.uid') or (
                 len(relative.parts) > 2 and relative.parts[1] in ('scenes', 'scripts', 'shaders')
                 and relative.suffix in ('.gd', '.uid', '.tscn', '.gdshader', '.gdshaderinc')
             ):
