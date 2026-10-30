@@ -1,4 +1,4 @@
-# DQ9-Decomp runtime thread overrides
+# DQ9-Remastered runtime thread overrides
 
 ## Caller-supplied ABI
 

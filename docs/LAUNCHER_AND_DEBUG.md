@@ -138,7 +138,11 @@ Set `DSR_AUDIO_METRICS=1` for per-second audio queue diagnostics and an exit `[a
 
 ## Issue bundles
 
-F9 pauses and opens a multi-line plain-text annotation. Saving writes a private local issue bundle below `<data_dir>/debug/` and appends an entry to `index.tsv`. The following listing is illustrative, not a captured game record:
+F9 pauses and opens a multi-line plain-text annotation. Saving writes a private local issue bundle below `<data_dir>/debug/` and appends an entry to `index.tsv`.
+
+The default native data directory is `${XDG_DATA_HOME:-$HOME/.local/share}/dq9-remastered` on Linux and `%LOCALAPPDATA%\dq9-remastered` on Windows (falling back to `%APPDATA%`). Python debug helpers combine its debug index with the legacy `dq9-decomp/debug` index, newest first; ties and relative names present in both directories prefer the current directory. Numbered selections use this combined list. Use `--debug-dir DIR` to select a single directory, including portable or Godot `user://debug` captures.
+
+The following listing is illustrative, not a captured game record:
 
 ```text
 local-note-example/

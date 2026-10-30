@@ -155,7 +155,7 @@ int main() {
     // Rebound hotkeys (the launcher HOTKEYS page writes these keys): the configured scancode
     // acts and the old default does not. F9 = fullscreen, F10 = integer scaling.
     {
-        const auto conf_dir = directory / "dq9-decomp";
+        const auto conf_dir = directory / "dq9-remastered";
         std::filesystem::create_directories(conf_dir);
         std::ofstream(conf_dir / "frontend.conf") << "hotkey_fullscreen=66\nhotkey_integer=67\nkey_screenshot=68\n";
         frontend = dsr::create_sdl_frontend();
@@ -246,7 +246,7 @@ int main() {
         assert(!hotkey_input.window_unfocused);
         focus_event(SDL_WINDOWEVENT_FOCUS_GAINED);
         frontend.reset();
-        const auto conf_dir = directory / "dq9-decomp";
+        const auto conf_dir = directory / "dq9-remastered";
         std::filesystem::create_directories(conf_dir);
         std::ofstream(conf_dir / "frontend.conf") << "pause_when_unfocused=1\n";
         frontend = dsr::create_sdl_frontend();
@@ -263,7 +263,7 @@ int main() {
     }
     {
         // The windowed size is remembered across runs (written when the frontend is destroyed).
-        const auto conf_dir = directory / "dq9-decomp";
+        const auto conf_dir = directory / "dq9-remastered";
         std::filesystem::create_directories(conf_dir);
         frontend.reset();                                    // the old frontend writes its own size on exit
         std::ofstream(conf_dir / "frontend.conf") << "window_width=701\nwindow_height=613\n";

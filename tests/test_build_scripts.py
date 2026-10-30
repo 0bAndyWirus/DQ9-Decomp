@@ -119,7 +119,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn('tools/audit_package.py" "${audit_paths[@]}"', deck)
         self.assertIn("'audit_package.py'", package)
         self.assertIn("check=True", package)
-        self.assertIn("dq9-decomp-win64", package)
+        self.assertIn("dq9-remastered-win64", package)
 
     def test_windows_rejects_retired_container_smoke_option(self):
         result = self.run_script("tools/build_windows.sh", "--smoke", "missing.nds")
@@ -441,12 +441,12 @@ class BuildScriptTests(unittest.TestCase):
                                 env={**self.env, "GODOT_CPP_DIR": str(bindings)},
                                 text=True, capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        with zipfile.ZipFile(root / "build/dist/dq9-decomp-win64.zip") as archive:
+        with zipfile.ZipFile(root / "build/dist/dq9-remastered-win64.zip") as archive:
             names = archive.namelist()
-        self.assertIn("dq9-decomp-win64/godot/scripts/main.gd", names)
-        self.assertIn("dq9-decomp-win64/dq9.exe", names)
+        self.assertIn("dq9-remastered-win64/godot/scripts/main.gd", names)
+        self.assertIn("dq9-remastered-win64/dq9.exe", names)
         self.assertFalse(any("excluded" in path or "untracked" in path for path in names), names)
-        user_save = root / "build/dist/dq9-decomp-win64/dq9.sav"
+        user_save = root / "build/dist/dq9-remastered-win64/dq9.sav"
         user_save.write_bytes(b"keep this user save")
         result = subprocess.run(["bash", str(root / "tools/package_windows.sh")],
                                 env={**self.env, "GODOT_CPP_DIR": str(bindings)},
@@ -454,3 +454,32 @@ class BuildScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("user/unknown files", result.stderr)
         self.assertEqual(user_save.read_bytes(), b"keep this user save")
+
+
+class DesktopInstallerUpgradeTests(unittest.TestCase):
+    def test_upgrade_and_uninstall_preserve_custom_legacy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            apps = root / "applications"
+            exe = root / "dq9"
+            exe.touch()
+            command = [sys.executable, str(ROOT / "tools/install_desktop_entry.py"),
+                       "--dir", str(apps), "--exe", str(exe),
+                       "--abi-config", str(root / "missing.ini")]
+            def run(*args):
+                result = subprocess.run([*command, *args], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            run()
+            current = apps / "dq9-remastered.desktop"
+            legacy = apps / "dq9-decomp.desktop"
+            legacy.write_text(current.read_text().replace("Name=DQ9-Remastered", "Name=DQ9-Decomp"))
+            run()
+            self.assertFalse(legacy.exists())
+            legacy.write_text("custom entry")
+            run("--uninstall")
+            self.assertFalse(current.exists())
+            self.assertEqual(legacy.read_text(), "custom entry")
+            run()
+            legacy.write_text(current.read_text().replace("Name=DQ9-Remastered", "Name=DQ9-Decomp"))
+            run("--uninstall")
+            self.assertFalse(legacy.exists())

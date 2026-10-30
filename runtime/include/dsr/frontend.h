@@ -77,7 +77,7 @@ struct InputState {
 enum class ScreenLayout { Vertical, Horizontal, TopFocus, BottomFocus, SingleTop, SingleBottom };
 
 struct FrontendConfig {
-    std::string title = "DQ9-Decomp";
+    std::string title = "DQ9-Remastered";
     int window_scale = 3;
     bool fullscreen = false;           // auto-enabled on Steam Deck
     ScreenLayout layout = ScreenLayout::Vertical;
@@ -181,8 +181,8 @@ std::filesystem::path resolve_rom_path(const std::filesystem::path& path,
 std::string check_rom_image(const std::filesystem::path& path, bool* header_crc_ok = nullptr);
 
 struct UserPaths {
-    std::filesystem::path config_dir; // e.g. $XDG_CONFIG_HOME/dq9-decomp
-    std::filesystem::path data_dir;   // saves, e.g. $XDG_DATA_HOME/dq9-decomp
+    std::filesystem::path config_dir; // e.g. $XDG_CONFIG_HOME/dq9-remastered
+    std::filesystem::path data_dir;   // saves, e.g. $XDG_DATA_HOME/dq9-remastered
 };
 
 UserPaths default_user_paths();

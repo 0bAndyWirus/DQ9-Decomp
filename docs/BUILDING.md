@@ -1,4 +1,4 @@
-# Building DQ9-Decomp
+# Building DQ9-Remastered
 
 The SDL host and Godot 4.5 GDExtension share the original native runtime. This repository distributes sources and tests only: no game data, generated game sources, or binaries. A local build-from-your-own-copy script (`tools/build_port.py`) is provided; a local build from a fresh clone was verified to reach the opening credits; see [Getting started](GETTING_STARTED.md). A game host needs a separately supplied generated-code directory.
 
@@ -67,6 +67,8 @@ build/game-ui/game/dq9 --launcher
 ```
 
 The source wrappers `tools/run_sdl.sh --menu` and `tools/run_godot.sh --menu` also open the host panels. A missing image or unavailable native extension is an error, not a substitute game.
+
+Without an explicit save, the Godot wrapper prefers `${XDG_DATA_HOME:-$HOME/.local/share}/dq9-remastered/godot.sav`. If absent, it uses an existing `godot.sav` under `dq9-decomp` in that data directory, or under `$HOME/.local/share/dq9-decomp` if present. The SDL wrapper normally leaves the default to the native host's migration and selection (see [Configuration](CONFIGURATION.md)); for direct launches, if neither XDG save exists, it uses an existing historical `$HOME/.local/share/dq9-decomp/dq9.sav`. `DQ9_SAVE` or `--save` selects a path explicitly.
 
 Godot keyboard defaults are A/B = Z/X, X/Y = A/S, Start/Select = Enter/Backspace, D-pad = arrows, and L/R = E/Q. Click the displayed bottom screen or an interactive bottom-screen region for touch. In Merged Overlay, Alt + left drag moves the bottom screen and Alt + right drag resizes it. F11 toggles fullscreen; F10 or Escape opens pause/debug. Settings/rebinding remain host-only and do not alter simulation.
 

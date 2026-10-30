@@ -120,8 +120,11 @@ def configuration(root: Path) -> dict:
     if portable:
         config = exe_dir / "portable/config/frontend.conf"
     else:
-        config = Path(os.environ.get("APPDATA", str(Path.home() / ".config")) if os.name == "nt"
-                      else os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "dq9-decomp/frontend.conf"
+        base = Path(os.environ.get("APPDATA", str(Path.home() / ".config")) if os.name == "nt"
+                    else os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        config = base / "dq9-remastered/frontend.conf"
+        if not config.exists():
+            config = base / "dq9-decomp/frontend.conf"
     summary = {"present": config.exists(), "portable": portable, "settings": {}}
     if config.exists():
         for line in read_text(config).splitlines():

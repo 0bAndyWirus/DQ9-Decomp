@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from tools import checkpoint
+from tools import debug_bundle
 
 
 class CheckpointTests(unittest.TestCase):
@@ -167,6 +168,33 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         meta = json.loads((self.root / "ladder/different/segment.json").read_text())
         self.assertIs(meta["bundle_screens_match"], False)
+
+    def test_from_bundle_uses_combined_default_and_explicit_root(self):
+        current = self.root / "dq9-remastered" / "debug"
+        legacy = self.root / "dq9-decomp" / "debug"
+        for root, timestamp in ((current, "20261011"), (legacy, "20261010")):
+            shared = root / "shared"
+            shared.mkdir(parents=True)
+            (shared / "comment.txt").write_text("frame: 9\n")
+            (root / "index.tsv").write_text(f"{timestamp}\tshared\tnote\t9\n")
+        legacy_only = legacy / "legacy-only"
+        legacy_only.mkdir()
+        (legacy_only / "comment.txt").write_text("frame: 9\n")
+
+        with patch.object(debug_bundle, "DEFAULT_DEBUG_DIR", current), \
+             patch.object(debug_bundle, "LEGACY_DEBUG_DIR", legacy), \
+             patch.object(checkpoint, "create", return_value=0) as create:
+            for value, extra, expected in (
+                    ("legacy-only", [], legacy_only),
+                    ("shared", [], current / "shared"),
+                    ("1", [], current / "shared"),
+                    ("2", [], legacy / "shared"),
+                    ("1", ["--debug-dir", str(legacy)], legacy / "shared"),
+                    ("shared", ["--debug-dir", str(legacy)], legacy / "shared")):
+                with self.subTest(value=value, extra=extra):
+                    status, output = self.invoke("from-bundle", value, "segment", *extra)
+                    self.assertEqual(status, 0, output)
+                    self.assertEqual(create.call_args.args[2], expected / "session_start.sav")
 
     def test_invalid_name_and_missing_save(self):
         for name, save in (("a b", self.root / "start.sav"), ("ok", self.root / "missing")):

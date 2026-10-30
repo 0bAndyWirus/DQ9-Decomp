@@ -98,4 +98,4 @@ Reuse the shared [launcher/debug workflow](LAUNCHER_AND_DEBUG.md). Saves, RAM/VR
 - High-resolution visual goals and hardware-GPU performance require separate measurements; a successful software fallback is not proof of complete GPU support.
 - Godot/SDL host parity needs identical local inputs and compatible separately supplied generated code. Keep those inputs and outputs private.
 
-Planned per-line capture and broader GPU effect support are not delivered by this document. Current build prerequisites are in [Building DQ9-Decomp](BUILDING.md); synthetic rendering probes are described in [shader notes](GPU3D_SHADER_NOTES.md).
+Planned per-line capture and broader GPU effect support are not delivered by this document. Current build prerequisites are in [Building DQ9-Remastered](BUILDING.md); synthetic rendering probes are described in [shader notes](GPU3D_SHADER_NOTES.md).

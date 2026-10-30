@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
               "Root launchers and README are copied from this checkout.", file=sys.stderr)
 
     dist = ROOT / "build" / "dist"
-    name = f"dq9-decomp-windows-kit-{args.tag}"
+    name = f"dq9-remastered-windows-kit-{args.tag}"
     staging = dist / name
     output = dist / f"{name}.zip"
     if staging.exists() or output.exists():

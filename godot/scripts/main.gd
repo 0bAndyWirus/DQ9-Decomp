@@ -98,7 +98,7 @@ func _update_widescreen_note() -> void:
 
 
 func _ready() -> void:
-	get_window().title = "DQ9-Decomp"
+	get_window().title = "DQ9-Remastered"
 	# A clean command-line checkout has no editor-generated extension_list.cfg.
 	if not ClassDB.class_exists("DqMachine"):
 		GDExtensionManager.load_extension("res://dq9.gdextension")
@@ -212,7 +212,7 @@ func _make_settings() -> PanelContainer:
 	panel.add_theme_stylebox_override("panel", style)
 	# Title and the Start/Close row stay pinned; the settings sections scroll between them.
 	var outer:=VBoxContainer.new(); outer.add_theme_constant_override("separation", 6); panel.add_child(outer)
-	var title:=Label.new(); title.text="DQ9-Decomp — Start / Settings"; title.add_theme_font_size_override("font_size",26); outer.add_child(title)
+	var title:=Label.new(); title.text="DQ9-Remastered — Start / Settings"; title.add_theme_font_size_override("font_size",26); outer.add_child(title)
 	var subtitle:=Label.new(); subtitle.text="Choose your ROM and language, then press Start."; subtitle.add_theme_color_override("font_color",Color(0.62,0.7,0.8)); outer.add_child(subtitle)
 	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; scroll.custom_minimum_size=Vector2(0,120); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(scroll)
 	var col:=VBoxContainer.new(); col.add_theme_constant_override("separation", 6); col.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(col)
@@ -608,7 +608,7 @@ func _restore_backup(path: String) -> void:
 	if restart:
 		# A first-write flush can rotate away the selected oldest backup. Keep a
 		# private copy before touching the live session; native still validates it.
-		staging = OS.get_cache_dir().path_join("dq9-decomp/restore-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
+		staging = OS.get_cache_dir().path_join("dq9-remastered/restore-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
 		source = staging.path_join("restore.sav")
 		if DirAccess.make_dir_recursive_absolute(staging) != OK or DirAccess.copy_absolute(path, source) != OK:
 			_cleanup_restore_source(staging)
@@ -917,7 +917,7 @@ func _start_issue_replay(issue: Dictionary, record_hashes := false) -> void:
 	if not ClassDB.class_exists("DqMachine"):
 		issue_reviewer.show_message("Build the native Godot extension before replaying.")
 		return
-	var temporary_dir := OS.get_cache_dir().path_join("dq9-decomp/issue-replay-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
+	var temporary_dir := OS.get_cache_dir().path_join("dq9-remastered/issue-replay-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
 	if DirAccess.make_dir_recursive_absolute(temporary_dir) != OK:
 		issue_reviewer.show_message("Cannot create temporary replay save folder.")
 		return

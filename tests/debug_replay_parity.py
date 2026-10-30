@@ -116,7 +116,7 @@ def main() -> int:
         capture_command += ["--backup-type", args.backup_type]
     run(capture_command, project, env)
 
-    debug_root = xdg_data / "dq9-decomp" / "debug"
+    debug_root = xdg_data / "dq9-remastered" / "debug"
     index = debug_root / "index.tsv"
     rows = [line.split("\t", 3) for line in index.read_text(encoding="utf-8").splitlines() if line]
     if not rows or len(rows[-1]) != 4:

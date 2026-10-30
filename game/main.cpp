@@ -1,4 +1,4 @@
-// DQ9-Decomp entry point: separately supplied guest code and the runtime.
+// DQ9-Remastered entry point: separately supplied guest code and the runtime.
 #include <array>
 #include <algorithm>
 #include <cstdio>
@@ -610,7 +610,7 @@ int main(int argc, char** argv) {
     if (!opt.headless) {
         frontend = dsr::create_sdl_frontend();
         fc = launch_options.frontend;
-        fc.title = "DQ9-Decomp";
+        fc.title = "DQ9-Remastered";
         if (!opt.launcher) fc.fullscreen = dsr::running_on_steam_deck();
         fc.debug_tool_enabled = opt.debug_tool;
         fc.frame_time_overlay_enabled = opt.frame_time_overlay;

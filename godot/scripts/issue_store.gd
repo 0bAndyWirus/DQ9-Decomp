@@ -9,7 +9,8 @@ func _init(bundle_roots: PackedStringArray = PackedStringArray()) -> void:
 	if roots.is_empty():
 		var data_home := OS.get_environment("XDG_DATA_HOME")
 		if data_home.is_empty(): data_home = OS.get_environment("HOME").path_join(".local/share")
-		roots = PackedStringArray([data_home.path_join("dq9-decomp/debug"), ProjectSettings.globalize_path("user://debug")])
+		roots = PackedStringArray([data_home.path_join("dq9-remastered/debug"),
+			data_home.path_join("dq9-decomp/debug"), ProjectSettings.globalize_path("user://debug")])
 
 func list_issues(filter := "all", search := "", show_auto := false) -> Array[Dictionary]:
 	var issues: Array[Dictionary] = []
@@ -20,8 +21,8 @@ func list_issues(filter := "all", search := "", show_auto := false) -> Array[Dic
 		if directory == null: continue
 		for name in directory.get_directories():
 			var path := absolute.path_join(name).simplify_path()
-			if seen.has(path) or not FileAccess.file_exists(path.path_join("comment.txt")): continue
-			seen[path] = true
+			if seen.has(name) or not FileAccess.file_exists(path.path_join("comment.txt")): continue
+			seen[name] = true
 			var issue := read_issue(path)
 			var status: String = issue.status.status
 			if filter == "open" and status not in ["open", "testing"]: continue
@@ -93,7 +94,7 @@ func export_report(path: String) -> String:
 		var bundle_root := ProjectSettings.globalize_path(root).simplify_path().trim_suffix("/")
 		if destination == bundle_root or destination.begins_with(bundle_root + "/"):
 			return "Export reports outside the bundle folders so original evidence stays untouched."
-	var lines := PackedStringArray(["DQ9-Decomp issue review — " + _now(), "Pixel differences are informational, not a pass/fail result.", ""])
+	var lines := PackedStringArray(["DQ9-Remastered issue review — " + _now(), "Pixel differences are informational, not a pass/fail result.", ""])
 	for issue in list_issues("all", "", true):
 		lines.append("[%s] %s | frame %d | %s | %s" % [issue.status.status, issue.date, issue.frame, issue.language, issue.path])
 		lines.append(issue.note)

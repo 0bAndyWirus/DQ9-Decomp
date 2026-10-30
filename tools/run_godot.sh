@@ -15,7 +15,18 @@ case "${1:-}" in
   *) LANGUAGE=$1; shift ;;
 esac
 ROM=${DQ9_ROM:-}
-SAVE=${DQ9_SAVE:-$HOME/.local/share/dq9-decomp/godot.sav}
+SAVE=${DQ9_SAVE:-}
+if [ -z "$SAVE" ]; then
+  data_base=${XDG_DATA_HOME:-$HOME/.local/share}
+  SAVE=$data_base/dq9-remastered/godot.sav
+  if [ ! -f "$SAVE" ]; then
+    if [ -f "$data_base/dq9-decomp/godot.sav" ]; then
+      SAVE=$data_base/dq9-decomp/godot.sav
+    elif [ -f "$HOME/.local/share/dq9-decomp/godot.sav" ]; then
+      SAVE=$HOME/.local/share/dq9-decomp/godot.sav
+    fi
+  fi
+fi
 HAS_ROM=0
 HAS_SAVE=0
 EXPECT=

@@ -30,6 +30,7 @@ class RunGodotTests(unittest.TestCase):
                         HOME=str(self.root / "home"),
                         DQ9_SAVE=str(self.root / "saves/qa.sav"))
         self.env.pop("DQ9_ROM", None)
+        self.env.pop("XDG_DATA_HOME", None)
 
     def run_wrapper(self, *args):
         return subprocess.run(["sh", str(self.wrapper), *map(str, args)],
@@ -100,9 +101,33 @@ class RunGodotTests(unittest.TestCase):
         self.env.pop("DQ9_SAVE")
         result = self.run_wrapper("--menu")
         self.assertEqual(result.returncode, 0, result.stderr)
-        save = self.root / "home/.local/share/dq9-decomp/godot.sav"
+        save = self.root / "home/.local/share/dq9-remastered/godot.sav"
         self.assertIn(str(save), result.stdout.splitlines())
         self.assertTrue(save.parent.is_dir())
+
+    def test_legacy_save_fallback_and_new_file_precedence(self):
+        self.env.pop("DQ9_SAVE")
+        data = self.root / "custom data"
+        self.env["XDG_DATA_HOME"] = str(data)
+        home_legacy = self.root / "home/.local/share/dq9-decomp/godot.sav"
+        home_legacy.parent.mkdir(parents=True)
+        home_legacy.write_bytes(b"old home save")
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(home_legacy), result.stdout.splitlines())
+        legacy = data / "dq9-decomp/godot.sav"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"legacy")
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(legacy), result.stdout.splitlines())
+        current = data / "dq9-remastered/godot.sav"
+        current.parent.mkdir(parents=True)
+        current.write_bytes(b"current")
+        result = self.run_wrapper("--menu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(current), result.stdout.splitlines())
+        self.assertNotIn(str(legacy), result.stdout.splitlines())
 
     def test_godot_can_be_selected_from_path(self):
         binaries = self.root / "bin"
@@ -145,6 +170,7 @@ class RunSdlTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.root / "home"),
                         DQ9_SAVE=str(self.root / "saves/qa.sav"))
         self.env.pop("DQ9_ROM", None)
+        self.env.pop("XDG_DATA_HOME", None)
 
     def run_wrapper(self, *args):
         return subprocess.run(["sh", str(self.wrapper), *map(str, args)], env=self.env,
@@ -205,13 +231,61 @@ class RunSdlTests(unittest.TestCase):
         self.assertIn(self.env["DQ9_ROM"], arguments)
         self.assertNotIn("--debug-tool", arguments)
 
-    def test_default_save_uses_product_directory(self):
+    def test_default_save_is_selected_by_native_host(self):
         self.env.pop("DQ9_SAVE")
         result = self.run_wrapper("--rom", self.root / "selected image.nds")
         self.assertEqual(result.returncode, 0, result.stderr)
-        save = self.root / "home/.local/share/dq9-decomp/dq9.sav"
-        self.assertIn(str(save), result.stdout.splitlines())
-        self.assertTrue(save.parent.is_dir())
+        self.assertNotIn("--save", result.stdout.splitlines())
+
+    def test_legacy_save_fallback_and_new_file_precedence(self):
+        self.env.pop("DQ9_SAVE")
+        data = self.root / "custom data"
+        self.env["XDG_DATA_HOME"] = str(data)
+        home_legacy = self.root / "home/.local/share/dq9-decomp/dq9.sav"
+        home_legacy.parent.mkdir(parents=True)
+        home_legacy.write_bytes(b"old home save")
+        result = self.run_wrapper("--rom", self.root / "selected image.nds")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(home_legacy), result.stdout.splitlines())
+        legacy = data / "dq9-decomp/dq9.sav"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"legacy")
+        result = self.run_wrapper("--rom", self.root / "selected image.nds")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--save", result.stdout.splitlines())
+        current = data / "dq9-remastered/dq9.sav"
+        current.parent.mkdir(parents=True)
+        current.write_bytes(b"current")
+        result = self.run_wrapper("--rom", self.root / "selected image.nds")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--save", result.stdout.splitlines())
+        self.assertNotIn(str(home_legacy), result.stdout.splitlines())
+
+    def test_migrated_native_save_remains_active_on_later_launch(self):
+        self.env.pop("DQ9_SAVE")
+        data = self.root / "custom data"
+        self.env["XDG_DATA_HOME"] = str(data)
+        legacy = data / "dq9-decomp/dq9.sav"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"original")
+        binary = self.root / "build/game-ui/game/dq9"
+        binary.write_text(
+            '#!/bin/sh\n'
+            'new="$XDG_DATA_HOME/dq9-remastered/dq9.sav"\n'
+            'old="$XDG_DATA_HOME/dq9-decomp/dq9.sav"\n'
+            'mkdir -p "$(dirname "$new")"\n'
+            '[ -f "$new" ] || cp "$old" "$new"\n'
+            'save="$new"\n'
+            'while [ "$#" -gt 0 ]; do\n'
+            '  if [ "$1" = "--save" ]; then shift; save="$1"; fi\n'
+            '  shift\n'
+            'done\n'
+            'printf x >> "$save"\n')
+        for _ in range(2):
+            result = self.run_wrapper("--rom", self.root / "selected image.nds")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((data / "dq9-remastered/dq9.sav").read_bytes(), b"originalxx")
+        self.assertEqual(legacy.read_bytes(), b"original")
 
     def test_missing_option_value_is_reported_before_launch(self):
         result = self.run_wrapper("--rom")
@@ -223,6 +297,71 @@ class RunSdlTests(unittest.TestCase):
         self.env["FIXTURE_EXIT_CODE"] = "73"
         result = self.run_wrapper("--menu")
         self.assertEqual(result.returncode, 73)
+
+
+class SteamDeckLauncherTests(unittest.TestCase):
+    def test_config_fallback_and_new_file_precedence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "bundle"
+            (bundle / "bin").mkdir(parents=True)
+            shutil.copy2(ROOT / "packaging/steamdeck/dq9.sh", bundle / "dq9.sh")
+            binary = bundle / "bin/dq9"
+            binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            binary.chmod(0o755)
+            config = root / "config"
+            legacy = config / "dq9-decomp/launcher.conf"
+            legacy.parent.mkdir(parents=True)
+            old_rom = root / "old image.nds"
+            old_rom.touch()
+            legacy.write_text(f"ROM={old_rom}\n")
+            env = dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(config),
+                       XDG_DATA_HOME=str(root / "data"))
+            env.pop("DQ9_ROM", None)
+            def launch():
+                return subprocess.run(["bash", str(bundle / "dq9.sh")], env=env,
+                                      text=True, capture_output=True, check=False)
+            result = launch()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(old_rom), result.stdout.splitlines())
+            current = config / "dq9-remastered/launcher.conf"
+            current.parent.mkdir(parents=True)
+            new_rom = root / "new image.nds"
+            new_rom.touch()
+            current.write_text(f"ROM={new_rom}\n")
+            result = launch()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(new_rom), result.stdout.splitlines())
+            self.assertNotIn(str(old_rom), result.stdout.splitlines())
+
+    def test_desktop_upgrade_and_uninstall_preserve_custom_legacy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            for name in ("dq9.sh", "dq9.desktop"):
+                shutil.copy2(ROOT / "packaging/steamdeck" / name, bundle / name)
+            apps = root / "data/applications"
+            apps.mkdir(parents=True)
+            env = dict(os.environ, HOME=str(root), XDG_DATA_HOME=str(root / "data"))
+            def run(option):
+                result = subprocess.run(["bash", str(bundle / "dq9.sh"), option],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            run("--install-desktop")
+            current = apps / "dq9-remastered.desktop"
+            legacy = apps / "dq9-decomp.desktop"
+            legacy.write_text(current.read_text().replace("Name=DQ9-Remastered", "Name=DQ9-Decomp"))
+            run("--install-desktop")
+            self.assertFalse(legacy.exists())
+            legacy.write_text("custom entry")
+            run("--uninstall-desktop")
+            self.assertFalse(current.exists())
+            self.assertEqual(legacy.read_text(), "custom entry")
+            run("--install-desktop")
+            legacy.write_text(current.read_text().replace("Name=DQ9-Remastered", "Name=DQ9-Decomp"))
+            run("--uninstall-desktop")
+            self.assertFalse(legacy.exists())
 
 
 class WindowsLauncherSourceTests(unittest.TestCase):
@@ -238,6 +377,13 @@ class WindowsLauncherSourceTests(unittest.TestCase):
                 self.assertIn("Push-Location $root", source)
                 self.assertIn("Pop-Location", source)
                 self.assertIn("exit $code", source)
+                if name == "run_godot":
+                    self.assertIn("dq9-remastered\\", source)
+                    self.assertIn("dq9-decomp\\", source)
+                    self.assertIn("Test-Path -LiteralPath $legacySave -PathType Leaf", source)
+                else:
+                    self.assertIn("$roamingLegacy", source)
+                    self.assertIn("$nativeLegacy", source)
                 batch = (ROOT / "tools" / f"{name}.bat").read_text()
                 self.assertIn(f'"%~dp0{name}.ps1" %*', batch)
                 self.assertIn("exit /b %errorlevel%", batch)
@@ -250,6 +396,48 @@ class WindowsLauncherSourceTests(unittest.TestCase):
         self.assertNotIn("--editor", source)
         self.assertNotIn("--import", source)
         self.assertNotIn("extension_list.cfg", source)
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("pwsh"), "requires PowerShell on a POSIX host")
+    def test_windows_sdl_uses_roaming_only_when_native_has_no_save(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            binary = root / "fake-dq9"
+            binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            binary.chmod(0o755)
+            roaming = root / "roaming"
+            local = root / "local"
+            old = roaming / "dq9-decomp/dq9.sav"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"roaming save")
+            env = dict(os.environ, APPDATA=str(roaming), LOCALAPPDATA=str(local),
+                       DQ9_EXE=str(binary), DQ9_ROM=str(root / "image.nds"))
+            env.pop("DQ9_SAVE", None)
+            def launch():
+                result = subprocess.run(
+                    ["pwsh", "-NoProfile", "-File", str(ROOT / "tools/run_game.ps1")],
+                    env=env, cwd=root, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout.splitlines()
+            self.assertIn(str(old), launch())
+            native_old = local / "dq9-decomp/dq9.sav"
+            native_old.parent.mkdir(parents=True)
+            native_old.write_bytes(b"local save")
+            self.assertNotIn("--save", launch())
+            native_new = local / "dq9-remastered/dq9.sav"
+            native_new.parent.mkdir(parents=True)
+            native_new.write_bytes(b"migrated save")
+            self.assertNotIn("--save", launch())
+            native_old.unlink()
+            self.assertNotIn("--save", launch())
+            native_new.unlink()
+            (root / "portable.txt").touch()
+            self.assertIn(str(old), launch())
+            portable = root / "portable/data/dq9.sav"
+            portable.parent.mkdir(parents=True)
+            portable.write_bytes(b"portable save")
+            self.assertNotIn("--save", launch())
+            env["DQ9_EXE"] = os.path.relpath(binary, ROOT)
+            self.assertNotIn("--save", launch())
 
 
 class GodotSmokeScriptTests(unittest.TestCase):
@@ -376,7 +564,7 @@ class GodotSmokeScriptTests(unittest.TestCase):
         self.env["FIXTURE_NATIVE_STATUS"] = "73"
         result = self.run_wrapper(*self.options())
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("Native DQ9-Decomp failed", result.stderr)
+        self.assertIn("Native DQ9-Remastered failed", result.stderr)
         self.assertFalse(any(call["tool"] == "checker" for call in self.calls()))
 
 

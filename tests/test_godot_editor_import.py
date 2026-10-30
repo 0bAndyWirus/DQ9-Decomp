@@ -99,13 +99,21 @@ class GodotEditorImportTests(unittest.TestCase):
                 self.assert_clean_runtime(self.run_engine(project, "--editor", "--import", "--quit"))
 
     def test_known_cold_import_upstream_signature(self):
-        if not (sys.platform == "linux" and self.version.startswith("4.5.stable.official.")):
-            self.skipTest("upstream crash signature is pinned to the official Linux Godot 4.5 editor")
-        with tempfile.TemporaryDirectory(prefix="dq9-editor-known-bug-") as directory:
-            result = self.import_project(self.fresh_project(directory))
-            self.assertTrue(known_editor_doc_crash(result, self.version),
-                            "Upstream Godot editor behavior changed; revisit godot#111048/#111645:\n"
-                            + result.stdout + result.stderr)
+        version = "4.5.stable.official.test"
+        output = ("handle_crash: Program crashed with signal 11\n"
+                  "Engine version: Godot Engine v4.5.stable.official\n"
+                  "[0x196cb78] [0x196e8fd] [0x1975035]\n")
+        def result(returncode, text):
+            return subprocess.CompletedProcess([], returncode, stdout=text, stderr="")
+
+        if sys.platform != "linux":
+            self.assertFalse(known_editor_doc_crash(result(-6, output), version))
+            return
+        self.assertTrue(known_editor_doc_crash(result(-6, output), version))
+        self.assertFalse(known_editor_doc_crash(result(0, output), version))
+        self.assertFalse(known_editor_doc_crash(result(-6, output.replace("[0x196e8fd]", "")), version))
+        self.assertFalse(known_editor_doc_crash(result(-6, output), "4.6.stable.official.test"))
+        self.assertFalse(known_editor_doc_crash(result(-6, "font worker [0x4759ab8]"), version))
 
 
 if __name__ == "__main__":

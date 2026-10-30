@@ -25,12 +25,12 @@ try:
     from .compare_hashes import read_hashes
     from .compare_frames import compare, read_image
     from .host_tools import data_root, executable_name
-    from .debug_bundle import DEFAULT_DEBUG_DIR, select_bundle, parse_comment, _capture
+    from .debug_bundle import select_bundle, parse_comment, _capture
 except ImportError:
     from compare_hashes import read_hashes
     from compare_frames import compare, read_image
     from host_tools import data_root, executable_name
-    from debug_bundle import DEFAULT_DEBUG_DIR, select_bundle, parse_comment, _capture
+    from debug_bundle import select_bundle, parse_comment, _capture
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     bundle = sub.add_parser("from-bundle")
     bundle.add_argument("bundle")
     bundle.add_argument("name")
-    bundle.add_argument("--debug-dir", type=Path, default=DEFAULT_DEBUG_DIR)
+    bundle.add_argument("--debug-dir", type=Path)
     attach = sub.add_parser("set-oracle")
     attach.add_argument("name")
     attach.add_argument("file", type=Path)

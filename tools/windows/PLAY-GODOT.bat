@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title DQ9-Decomp - Godot
+title DQ9-Remastered - Godot
 rem PLAY-GODOT.bat ["C:\path\game.nds" [en|fr|de|es|it]]
 rem Without arguments the Godot launcher opens; it remembers your ROM, language and options.
 set "ROOT=%~dp0"

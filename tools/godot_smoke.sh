@@ -115,7 +115,7 @@ xvfb-run -a "$GODOT" --path "$ROOT/godot" --script res://tests/test_gpu_scene.gd
 xvfb-run -a "$GODOT" --path "$ROOT/godot" --script res://tests/test_gpu_visible.gd -- --rom "$ROM" --save "$WORK/visible.sav" --app-input "$INPUT" --app-output "$WORK/visible" --app-checkpoints "$CHECKPOINTS"
 xvfb-run -a -s "-screen 0 3072x1920x24" "$GODOT" --path "$ROOT/godot" --script res://tests/test_issue_reviewer.gd -- "$ROM" "$SAVE" "$INPUT" "$NATIVE" "${DQ9_REVIEW_OUTPUT:-$WORK/reviewer}"
 if ! "$NATIVE" --headless --rom "$ROM" --save "$WORK/native.sav" --frames "$FRAMES" --input-script "$INPUT" --rtc-epoch 0 --rtc-timezone-offset 0 --hash-file "$WORK/native.hashes" >"$WORK/native.log" 2>&1; then
-  printf 'Native DQ9-Decomp failed; log: %s\n' "$WORK/native.log" >&2
+  printf 'Native DQ9-Remastered failed; log: %s\n' "$WORK/native.log" >&2
   cat "$WORK/native.log" >&2
   exit 1
 fi

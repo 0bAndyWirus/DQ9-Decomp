@@ -112,11 +112,12 @@ a first cold `--headless --editor --import --quit`: its deferred
 receiver. This is [upstream #111048](https://github.com/godotengine/godot/issues/111048)
 and [#111645](https://github.com/godotengine/godot/issues/111645), not a runtime
 extension unload failure. Runtime probes always require exit zero.
-`tests/test_godot_editor_import.py` pins the official Linux editor's exact
-upstream crash signature, verifies the generated extension cache, and runs five
-isolated strict runtime/lifecycle and warm-editor probes. It skips clearly if
-Godot or the native extension is absent. A changed cold-import signature fails
-the known-bug test so the packaging workaround can be revisited, never silently
+`tests/test_godot_editor_import.py` accepts only the official Linux 4.5 editor's
+exact upstream crash signature on a cold import (a unit test checks that matcher
+against the signature and near-miss variants, since the race does not reproduce
+on every run), verifies the generated extension cache, and runs five isolated
+strict runtime/lifecycle and warm-editor probes. It skips clearly if Godot or the
+native extension is absent. Any other cold-import crash fails, never silently
 accepting a different crash. `tests/test_extension_lifecycle.gd` also checks the
 engine-class bindings and resource release, and is included in the smoke gate.
 A cold import with the official Linux 4.7.2 editor has also been observed to
@@ -260,8 +261,13 @@ run, not evidence of verification on a particular platform.
 ## Issue reviewer and status store
 
 The launcher and F10 debug menu expose **Issue reviewer…**; F7 opens/closes it.
-`scripts/issue_store.gd` lists both `$XDG_DATA_HOME/dq9-decomp/debug`
-(default `~/.local/share/dq9-decomp/debug`) and Godot `user://debug`. It reads
+`scripts/issue_store.gd` lists `$XDG_DATA_HOME/dq9-remastered/debug`
+(default `~/.local/share/dq9-remastered/debug`), the legacy
+`$XDG_DATA_HOME/dq9-decomp/debug` root, and Godot `user://debug`. Existing
+bundles remain in place; the reviewer reads both native roots without copying
+or overwriting their evidence. For duplicate bundle directory names, the first
+root takes precedence: the new native root, legacy native root, then Godot.
+Godot's `user://` identity remains unchanged. It reads
 existing bundle files, sorts by capture date, and filters all/open (including
 testing)/solved, comment search and optional auto notes. `issue_show_auto`
 persists through `host_logic.gd` and defaults to false.

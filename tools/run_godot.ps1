@@ -37,7 +37,11 @@ for ($i = 0; $i -lt $launchArgs.Count; $i++) {
     }
 }
 if (-not $rom -and -not $menu) { throw 'Select an already available compatible image with --rom PATH or DQ9_ROM, or use --menu.' }
-if (-not $save -and -not $hasSave) { $save = Join-Path $env:APPDATA 'dq9-decomp\godot.sav' }
+if (-not $save -and -not $hasSave) {
+    $save = Join-Path $env:APPDATA 'dq9-remastered\godot.sav'
+    $legacySave = Join-Path $env:APPDATA 'dq9-decomp\godot.sav'
+    if (-not (Test-Path -LiteralPath $save -PathType Leaf) -and (Test-Path -LiteralPath $legacySave -PathType Leaf)) { $save = $legacySave }
+}
 New-Item -ItemType Directory -Force -Path (Split-Path ([System.IO.Path]::GetFullPath($save)) -Parent) | Out-Null
 $commandArgs = @('--path', (Join-Path $root 'godot'), '--', '--language', $language)
 if (-not $hasSave) { $commandArgs += @('--save', $save) }

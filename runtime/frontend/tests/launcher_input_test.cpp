@@ -174,7 +174,7 @@ int main() {
     Sequence state{joystick, dsr::host::path_to_utf8(image_path)};
     assert(SDL_AddTimer(150, sequence, &state) != 0);
     {
-        const auto conf_dir = std::filesystem::path(directory) / "dq9-decomp";
+        const auto conf_dir = std::filesystem::path(directory) / "dq9-remastered";
         std::filesystem::create_directories(conf_dir);
         std::ofstream(conf_dir / "frontend.conf") << "window_width=800\nwindow_height=900\nscale=3\n";
     }

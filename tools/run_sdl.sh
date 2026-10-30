@@ -33,7 +33,14 @@ if [ -z "$ROM" ] && [ "$MENU" -eq 0 ]; then
   exit 1
 fi
 if [ "$MENU" -eq 0 ] && [ "$HAS_SAVE" -eq 0 ] && [ -z "$SAVE" ]; then
-  SAVE=$HOME/.local/share/dq9-decomp/dq9.sav
+  # The native host migrates and selects its own default. Only supply a path
+  # for the old wrapper's HOME-based save when custom XDG paths hide it.
+  data_base=${XDG_DATA_HOME:-$HOME/.local/share}
+  if [ ! -f "$data_base/dq9-remastered/dq9.sav" ] &&
+     [ ! -f "$data_base/dq9-decomp/dq9.sav" ] &&
+     [ -f "$HOME/.local/share/dq9-decomp/dq9.sav" ]; then
+    SAVE=$HOME/.local/share/dq9-decomp/dq9.sav
+  fi
 fi
 if [ -n "$SAVE" ]; then
   mkdir -p "$(dirname "$SAVE")"

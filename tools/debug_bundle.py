@@ -17,9 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_frames import ImageError, compare, read_image
 from host_tools import executable_name
 
-DEFAULT_DEBUG_DIR = ((Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or
-                           str(Path.home() / "AppData/Roaming")) / "dq9-decomp/debug")
-                     if os.name == "nt" else Path.home() / ".local/share/dq9-decomp/debug")
+_DATA_DIR = (Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or
+                  str(Path.home() / "AppData/Roaming"))
+             if os.name == "nt" else Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")))
+DEFAULT_DEBUG_DIR = _DATA_DIR / "dq9-remastered/debug"
+LEGACY_DEBUG_DIR = _DATA_DIR / "dq9-decomp/debug"
 DEFAULT_DQ9 = Path("build/game-fast/game") / executable_name("dq9")
 DUMP_FILES = {"mainram.bin", "vram.bin"}
 ROM_SUFFIXES = {".nds", ".rom", ".nrom"}
@@ -45,8 +47,16 @@ def parse_index(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def sorted_index(debug_dir: Path) -> list[dict[str, object]]:
-    return sorted(parse_index(debug_dir / "index.tsv"), key=lambda row: str(row["timestamp"]), reverse=True)
+def sorted_index(debug_dir: Path | None) -> list[dict[str, object]]:
+    if debug_dir is not None:
+        rows = parse_index(debug_dir / "index.tsv")
+    else:
+        rows = []
+        for root in (DEFAULT_DEBUG_DIR, LEGACY_DEBUG_DIR):
+            for row in parse_index(root / "index.tsv"):
+                row["directory"] = str(bundle_path(root, str(row["directory"])))
+                rows.append(row)
+    return sorted(rows, key=lambda row: str(row["timestamp"]), reverse=True)
 
 
 def parse_comment(path: Path) -> tuple[str, dict[str, str]]:
@@ -167,15 +177,24 @@ def inventory(directory: Path) -> list[dict[str, object]]:
     return files
 
 
-def select_bundle(debug_dir: Path, value: str) -> Path:
+def select_bundle(debug_dir: Path | None, value: str) -> Path:
     if value.isdecimal():
         rows = sorted_index(debug_dir)
         number = int(value)
         if number < 1 or number > len(rows):
             raise ValueError(f"index number {number} is out of range (1-{len(rows)})")
-        return bundle_path(debug_dir, str(rows[number - 1]["directory"]))
+        path = Path(str(rows[number - 1]["directory"]))
+        return path if debug_dir is None else bundle_path(debug_dir, path)
     path = Path(value)
-    return path if path.is_absolute() else bundle_path(debug_dir, path)
+    if path.is_absolute():
+        return path
+    if debug_dir is not None:
+        return bundle_path(debug_dir, path)
+    for root in (DEFAULT_DEBUG_DIR, LEGACY_DEBUG_DIR):
+        candidate = bundle_path(root, path)
+        if candidate.exists():
+            return candidate
+    return bundle_path(DEFAULT_DEBUG_DIR, path)
 
 
 def show_bundle(directory: Path) -> None:
@@ -425,7 +444,7 @@ def export_bundle(directory: Path, destination: Path, *, with_dumps: bool = Fals
 
 def main(argv: list[str] | None = None, runner=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--debug-dir", type=Path, default=DEFAULT_DEBUG_DIR)
+    parser.add_argument("--debug-dir", type=Path)
     subparsers = parser.add_subparsers(dest="action", required=True)
     listing = subparsers.add_parser("list", help="list bundles newest first")
     listing.add_argument("--limit", type=int)

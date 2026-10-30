@@ -1,4 +1,4 @@
-# DQ9-Decomp on the Steam Deck
+# DQ9-Remastered on the Steam Deck
 
 This directory contains Steam Deck / SteamOS packaging support for the native
 `dq9` host. Game-host packages (they include code generated from the game) are local-only and must never be uploaded or distributed,
@@ -43,8 +43,9 @@ Select an already locally available compatible image using `--rom` or `DQ9_ROM`:
 ```
 
 The launcher also accepts a saved local path in
-`~/.config/dq9-decomp/launcher.conf` as `ROM=...`. Lookup order is `--rom`,
-`DQ9_ROM`, then that configuration file. There is no required image location
+`~/.config/dq9-remastered/launcher.conf` as `ROM=...` (falling back to
+`~/.config/dq9-decomp/launcher.conf` if the new file is absent). Lookup order
+is `--rom`, `DQ9_ROM`, then that configuration file. There is no required image location
 or filename. Other options are passed through to `bin/dq9`, for example
 `--language fr` or `--save PATH`.
 
@@ -53,7 +54,7 @@ metadata for guest-thread overrides and cartridge settings. No title-specific
 layout or values are included in the source project or package.
 
 If no configured local image exists, the launcher logs an error to
-`~/.local/share/dq9-decomp/launcher.log` and displays it through zenity or kdialog
+`~/.local/share/dq9-remastered/launcher.log` and displays it through zenity or kdialog
 when available.
 
 ## Desktop entry and Steam shortcut
@@ -62,14 +63,18 @@ In Desktop Mode:
 
 1. Run `"<install-dir>/dq9.sh" --install-desktop` to fill the shipped desktop
    template with the actual installation path and write
-   `~/.local/share/applications/dq9-decomp.desktop`. Do not install the unfilled
+   `~/.local/share/applications/dq9-remastered.desktop`. Do not install the unfilled
    template directly.
 2. Steam → *Games* → *Add a Non-Steam Game to My Library…* → *Browse…* → select
    `<install-dir>/dq9.sh` (use the *All Files* filter), or select the
-   **DQ9-Decomp** menu entry if installed.
+   **DQ9-Remastered** menu entry if installed.
 3. Leave *Compatibility* unset: this is a native Linux host, not a Proton
    executable. Set `--rom` in launch options to the already available local
    image, or configure `DQ9_ROM` or `launcher.conf` as above.
+
+Run `"<install-dir>/dq9.sh" --uninstall-desktop` to remove the entry. Installation
+and removal also clean up an unchanged legacy entry for the same installation;
+customized entries and entries for other installations are left alone.
 
 The shortcut appears in the *Non-Steam* collection in Gaming Mode.
 
@@ -115,10 +120,13 @@ Existing environment settings take precedence.
 
 | What | Default location |
 | --- | --- |
-| Battery save | `~/.local/share/dq9-decomp/dq9.sav` (`--save PATH` overrides) |
-| Frontend settings | `~/.config/dq9-decomp/frontend.conf` |
-| Launcher local image path | `~/.config/dq9-decomp/launcher.conf` |
-| Launcher error log | `~/.local/share/dq9-decomp/launcher.log` |
+| Battery save | `~/.local/share/dq9-remastered/dq9.sav` (`--save PATH` overrides) |
+| Frontend settings | `~/.config/dq9-remastered/frontend.conf` |
+| Launcher local image path | `~/.config/dq9-remastered/launcher.conf` |
+| Launcher error log | `~/.local/share/dq9-remastered/launcher.log` |
+
+Existing saves and configuration in the corresponding `dq9-decomp` directories
+are used when the new file is absent.
 
 `~` denotes the current user's home directory. `XDG_CONFIG_HOME` and
 `XDG_DATA_HOME` override the corresponding defaults. Back up the save before

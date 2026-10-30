@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=DQ9-Decomp
+Name=DQ9-Remastered
 Comment=Native runtime host
 Exec="@INSTALL_DIR@/dq9.sh"
 Path=@INSTALL_DIR@

@@ -36,7 +36,7 @@ import zipfile
 root, build, output = map(pathlib.Path, sys.argv[1:4])
 with_godot = sys.argv[4] == '1'
 runtime_dir, bindings = map(pathlib.Path, sys.argv[5:7])
-name = 'dq9-decomp-win64'
+name = 'dq9-remastered-win64'
 output.mkdir(parents=True, exist_ok=True)
 # Staging never copies a user's ROM directory or any untracked project resource.
 with tempfile.TemporaryDirectory(prefix='.windows-package-', dir=output) as scratch:
