@@ -3,6 +3,7 @@
 #include "dsr/gpu2d.h"
 #include "dsr/gpu3d.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -15,6 +16,84 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+static void test_card_file_frame() {
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("dsr-card-frame-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    std::vector<std::uint8_t> rom(0x9000);
+    const auto put32 = [&](std::size_t p, std::uint32_t v) {
+        for (unsigned i = 0; i < 4; ++i) rom[p + i] = static_cast<std::uint8_t>(v >> (8 * i));
+    };
+    put32(0x40, 0x200); put32(0x44, 47);
+    put32(0x48, 0x300); put32(0x4c, 8);
+    put32(0x200, 24); rom[0x206] = 3;
+    put32(0x208, 32); rom[0x20e] = 0; rom[0x20f] = 0xf0;
+    put32(0x210, 39); rom[0x216] = 1; rom[0x217] = 0xf0;
+    const std::array<std::uint8_t, 23> names{
+        0x84, 'd', 'a', 't', 'a', 1, 0xf0, 0,
+        0x83, 'm', 'a', 'p', 2, 0xf0, 0,
+        6, 'a', '.', 'a', 'm', 'b', 'l', 0};
+    std::copy(names.begin(), names.end(), rom.begin() + 0x218);
+    put32(0x300, 0x8100); put32(0x304, 0x8104);
+    const auto path = dir / "synthetic.nds";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(rom.data()), static_cast<std::streamsize>(rom.size()));
+        assert(out.good());
+    }
+    {
+        dsr::MachineConfig config;
+        config.direct_boot = false;
+        config.rom_path = path;
+        config.save_path = dir / "save";
+        dsr::Session session(config);
+        assert(session.last_card_file_id() == -1 && session.last_card_file_frame() == -1);
+        auto& card = *session.machine().game_card();
+        assert(!card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+        const auto read = [&] {
+            const std::array<std::uint8_t, 5> command{0xb7, 0, 0, 0x81, 0};
+            for (std::size_t i = 0; i < command.size(); ++i)
+                card.io_write(0x040001a8 + static_cast<std::uint32_t>(i), command[i], 8);
+            card.io_write(0x040001a4, 0x87000000, 32);
+            card.run(44);
+            (void)card.io_read(0x04100010, 32);
+        };
+        read();
+        assert(session.last_card_file_path().empty() && session.last_card_file_id() == -1);
+        assert(session.last_card_file_frame() == -1);
+        session.enable_scene_file_tracking();
+        session.enable_scene_file_tracking();
+        assert(card.scene_file_tracking_enabled() && card.scene_file_index_size() == 1);
+        read();
+        assert(session.last_card_file_path() == "data/map/a.ambl" && session.last_card_file_id() == 0);
+        assert(session.last_card_file_frame() == 0);
+        session.step({});
+        bool rejected_late_enable = false;
+        try { session.enable_scene_file_tracking(); }
+        catch (const std::logic_error&) { rejected_late_enable = true; }
+        assert(rejected_late_enable);
+        read();
+        assert(session.last_card_file_frame() == 1);
+    }
+    {
+        dsr::MachineConfig config;
+        config.direct_boot = false;
+        config.rom_path = path;
+        config.save_path = dir / "default-save";
+        dsr::Session session(config);
+        auto& card = *session.machine().game_card();
+        session.step({});
+        assert(!card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+        assert(session.last_card_file_path().empty() && session.last_card_file_id() == -1 &&
+               session.last_card_file_frame() == -1);
+        bool rejected = false;
+        try { session.enable_scene_file_tracking(); }
+        catch (const std::logic_error&) { rejected = true; }
+        assert(rejected && !card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+    }
+    std::filesystem::remove_all(dir);
+}
 
 static void test_scene_classifier() {
     dsr::MachineConfig config;
@@ -341,6 +420,7 @@ static void test_snapshot_ram() {
 }
 
 int main() {
+    test_card_file_frame();
     test_scene_classifier();
     test_compose_hires(2, 0x8207U, true);
     test_compose_hires(3, 0x0207U, false); // engine A on the bottom screen

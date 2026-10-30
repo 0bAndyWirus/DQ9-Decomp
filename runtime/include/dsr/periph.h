@@ -67,6 +67,22 @@ public:
     std::uint32_t chip_id() const;
     std::uint64_t rom_size() const;
 
+    // Opt in to scene file tracking; idempotent and retained across reset.
+    // Invalid ROM file metadata leaves an empty index.
+    void enable_scene_file_tracking();
+    bool scene_file_tracking_enabled() const;
+    std::size_t scene_file_index_size() const;
+
+    // Last nonempty data/map/*.ambl, data/map/*.amdj, data/movie/*.mods or
+    // data/menu/bg_title_under.pac FAT file consumed through the card data register;
+    // reset clears the observation.
+    // Matching is case-sensitive. Paths are ROM FNT bytes separated by '/',
+    // and IDs are raw FAT indices.
+    const std::string& last_file_path() const;
+    std::int32_t last_file_id() const;
+    std::int64_t last_file_frame() const;
+    void set_tracking_frame(std::uint64_t frame);
+
     // Flush dirty backup memory atomically. Before the first overwrite in a session, preserve the
     // existing file in backups/ beside the save. A failed backup or write leaves the data dirty.
     // Returns false after a one-time stderr warning on failure, so a later call can retry.

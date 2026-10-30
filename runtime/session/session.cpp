@@ -54,6 +54,28 @@ dsr_scene classify_scene(Machine& machine) {
 
 Session::Session(const MachineConfig& config) : machine_(config) {}
 
+void Session::enable_scene_file_tracking() {
+    if (started_) throw std::logic_error("scene file tracking must be enabled before stepping");
+    if (GameCard* card = machine_.game_card()) {
+        card->enable_scene_file_tracking();
+        scene_file_tracking_enabled_ = true;
+    }
+}
+
+const std::string& Session::last_card_file_path() const {
+    static const std::string empty;
+    const GameCard* card = const_cast<Machine&>(machine_).game_card();
+    return card ? card->last_file_path() : empty;
+}
+std::int32_t Session::last_card_file_id() const {
+    const GameCard* card = const_cast<Machine&>(machine_).game_card();
+    return card ? card->last_file_id() : -1;
+}
+std::int64_t Session::last_card_file_frame() const {
+    const GameCard* card = const_cast<Machine&>(machine_).game_card();
+    return card ? card->last_file_frame() : -1;
+}
+
 // The 3D engine renders frame N+1 at scanline 214, after frame N's visible lines, so by the
 // end of a step its scaled buffer is one frame ahead of the screens and 3D mask the 2D
 // engine just produced. Latch the buffer the coming frame will display before running it.
@@ -80,6 +102,8 @@ void Session::step(const InputState& input) {
     machine_.run_frame();
     audio_frames_ = machine_.spu().drain(audio_.data(), audio_.size() / 2);
     ++frame_count_;
+    if (scene_file_tracking_enabled_)
+        machine_.game_card()->set_tracking_frame(frame_count_);
 }
 
 const std::uint32_t* Session::screen_top() const {

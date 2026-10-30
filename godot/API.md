@@ -185,6 +185,78 @@ a guest-frame boundary, not directly from a Godot signal. The classifier has
 not been validated for automatic layout switching; see
 [scene detection](../docs/SINGLE_SCREEN_SCENES.md) for its limitations.
 
+`get_presented_scene_snapshot()` returns a dictionary for the uploaded frame:
+`frame` (completed-frame count, as in `frame_ready`), `scene`, `battle_seen`,
+`cart_file_path`, `cart_file_fat_id`, `cart_file_frame`, `presentation_scene`,
+`main_screen`, `top_dark`, and `main_key_generation`. `battle_seen` is true if
+the owner thread has observed battle in this session at or before this frame,
+including frames skipped by presentation; it resets on session reload.
+The presentation fields contain the automatic label, automatic main-screen
+choice (-1 for configured layout or 1 for bottom), current top darkness and
+scene/map key generation for the same uploaded frame. Unlike `get_scene()` and
+worker stats, these observations are captured with the presented frame. Before
+a frame is available, frame and file indices are -1, path is empty, scene is
+OTHER, and `battle_seen` is false.
+
+The Godot host's owner thread combines each completed frame's machine sample
+and file observations into a presentation label. Explicit machine scenes take
+precedence. The title-attract movie `data/movie/TD_nouhin_DS_form.mods` and
+`data/menu/bg_title_under.pac` indicate title; the title file persists as a hint
+until another relevant observation or an explicit machine scene. Other
+`data/movie/*.mods` indicate intro for up to 900 frames, and the two
+`data/map/M01M12` files indicate intro before a battle has been observed,
+until a different relevant map or movie is read or an explicit machine scene
+takes precedence. The same map is also read after battle, so thereafter it
+does not imply intro, even if presentation skipped all battle frames.
+These are associations, not frame-exact scene boundaries.
+
+The observed `M01M06` and `M01` map pairs indicate town; `F01` and `F01M01`
+indicate field. These exact associations come from the local 02 and 03 captures,
+whose screenshots show town and outdoor exploration; they do not generalize to
+unobserved maps. A confirmed field/town context survives the observed `B01M16`
+battle map and is restored when the machine battle sample ends, even if the
+field map is not read again. A different unknown map clears that context.
+Map labels persist until contradicted, so they can be stale; only the last
+tracked file read within a single emulated frame is available, and battle
+detection itself is heuristic. Transitions require six emulated frames of
+confirmation. Rules advance for every completed frame, including frames replaced
+in the presentation mailbox, so a paused replay target retains the same rule
+state as sequential presentation. Session release resets the classifier.
+
+The presentation-only main-screen rule uses the exact `X01M05` map pair for
+the observatory, and, in classified intro/field scenes, a sparse sample of the
+native top and bottom images to detect a dark top with visible bottom content.
+The dark condition must persist for 90 emulated frames; other transitions use
+the six-frame confirmation. This is a heuristic, not a general scene detector.
+It selects the bottom for focus, single and merged layouts without changing the
+guest. F8 manually swaps the main screen until the classified scene or map
+changes, including a change hidden by mailbox coalescing. The original
+configured layout is retained.
+
+Menus have no reliable classifier: no menu-specific presentation change is
+made, and the underlying scene's presentation remains in effect. In Picture
+and Full modes, `intro` and `character_creation` retain the central 4:3 portion
+of the wide GPU image; other scenes remain wide. Full still uses its launch-time
+guest camera aspect, and scene changes never modify the guest camera. Creation
+remains a residency heuristic, not a frame-exact visual boundary.
+
+Cartridge scene-file telemetry is disabled by default for machines and
+sessions, including the SDL host: no file index is built and ROM reads are not
+tracked. Godot explicitly enables it on the session owner thread before the
+first step via `dsr_session_enable_scene_file_tracking`; C++ hosts can call
+`Session::enable_scene_file_tracking()`. The opt-in is idempotent before
+stepping and fails after any step attempt. Invalid ROM file metadata leaves an
+empty index without preventing cartridge use. Reset clears the observation but
+retains the opt-in and index.
+
+`get_stats()` exposes `cart_file_path`, `cart_file_fat_id`, and
+`cart_file_frame`: the latest nonempty named FAT read with case-sensitive
+`data/map/` and `.ambl` or `.amdj`, `data/movie/` and `.mods`, or the exact
+title file `data/menu/bg_title_under.pac`; its FAT index and zero-based read
+frame. Before such a read these are `""`, `-1`, and `-1`. Other reads leave
+them unchanged; cartridge reset clears them. Worker
+stats can be ahead of the displayed frame.
+
 `get_stats()` returns `frame`, `ticks`, `fps`, `audio_queue_ms` (ring fill), `underruns` (AudioStreamGeneratorPlayback skips), `dropped_audio_ms`, `running`, and `paused`; `audio_frames_pushed` is an additional cumulative count of frames accepted by generator playback.
 `audio_ring_overflows` counts source frames overwritten only at physical ring
 capacity (separate from intentional latency drops); `audio_ring_max_ms` is the

@@ -11,6 +11,7 @@ const SaveSlots = preload("res://scripts/save_slots.gd")
 const RomArt = preload("res://scripts/rom_art.gd")
 const SettingsPages = preload("res://scripts/settings_pages.gd")
 const Attract = preload("res://scripts/attract_background.gd")
+const SceneRules = preload("res://scripts/scene_rules.gd")
 const LANGS := ["en","fr","de","es","it"]
 var settings: Dictionary
 var launcher: Control
@@ -102,6 +103,13 @@ var _hd_texture_dump_enabled := false
 var _active_widescreen_mode := 0
 var _layout_wide_ratio := 1.0
 var _layout_wide_screen := 0
+var _presentation_scene := "other"
+var _scene_rules = SceneRules.new()
+var _main_screen := -1
+var _main_top_dark := false
+
+func _bottom_is_main() -> bool:
+	return _main_screen == 1 or (_main_screen < 0 and layout in [3, 5])
 
 func _set_widescreen_mode(mode: int) -> void:
 	settings.widescreen_mode = mode
@@ -182,7 +190,7 @@ func _build_ui() -> void:
 	var filter := CheckButton.new(); filter.text = "Nearest"; filter.button_pressed = settings.nearest; filter.toggled.connect(func(v): settings.nearest=v; _apply_filter()); bar.add_child(filter)
 	var integer := CheckButton.new(); integer.text = "Integer scale"; integer.button_pressed = settings.integer_scale; integer.toggled.connect(func(v): settings.integer_scale=v; _layout_screens()); bar.add_child(integer)
 	var debug := Button.new(); debug.text = "Debug (F10)"; debug.tooltip_text = "Pause and open the debug panel (also Escape or Select+Start)"; debug.pressed.connect(_toggle_pause); bar.add_child(debug)
-	var hint := Label.new(); hint.text = "Tab: fast-forward   F12: screenshot   F11: fullscreen"; hint.add_theme_color_override("font_color", Color(0.55, 0.65, 0.78)); hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL; hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; hint.add_theme_font_size_override("font_size", 13); bar.add_child(hint)
+	var hint := Label.new(); hint.text = "Tab: fast-forward   F8: main screen   F12: screenshot   F11: fullscreen"; hint.add_theme_color_override("font_color", Color(0.55, 0.65, 0.78)); hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL; hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; hint.add_theme_font_size_override("font_size", 13); bar.add_child(hint)
 	var compare := Button.new(); compare.text = "3D A/B (F6)"; compare.tooltip_text = "With GPU hi-res selected, compare it with software instantly (also while paused). 2D stays unchanged."
 	compare.disabled = int(settings.renderer_gpu3d) == 0; compare.pressed.connect(_toggle_gpu3d_compare); bar.add_child(compare); _ui.gpu_compare = compare
 	var settings_overlay := Control.new()
@@ -789,6 +797,14 @@ func _start_loaded_game() -> void:
 
 func _on_machine_frame(_frame: int) -> void:
 	if machine == null or not is_instance_valid(machine): return
+	var scene_snapshot: Dictionary = machine.get_presented_scene_snapshot()
+	_presentation_scene = str(scene_snapshot.get("presentation_scene", "other"))
+	var top_dark := bool(scene_snapshot.get("top_dark", false))
+	var main_screen: int = _scene_rules.presented_main_screen(scene_snapshot)
+	var relayout := main_screen != _main_screen or (top_dark != _main_top_dark and _bottom_is_main())
+	_main_screen = main_screen
+	_main_top_dark = top_dark
+	if relayout: _layout_screens()
 	top_rect.texture=machine.get_top_texture()
 	bottom_rect.texture=machine.get_bottom_texture()
 	if layout == 7:
@@ -810,7 +826,7 @@ func _on_machine_frame(_frame: int) -> void:
 			_observe_gpu3d_frame()
 	if layout == 7:
 		for node in _single_nodes:
-			node.texture = bottom_rect.texture
+			node.texture = top_rect.texture if _bottom_is_main() else bottom_rect.texture
 
 # Integration point also used by synthetic producers. Null textures select the
 # software result for this frame (unsupported GPU effects, shadows, etc.).
@@ -853,9 +869,11 @@ func _gpu_width_ratio() -> float:
 
 func _update_gpu3d_composite() -> void:
 	var ratio := _gpu_width_ratio() if int(settings.renderer_gpu3d) != 0 and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null else 1.0
-	var wide_screen := 0 if gpu3d_screen_is_top or ratio <= 1.0 else 1
-	if not is_equal_approx(ratio, _layout_wide_ratio) or wide_screen != _layout_wide_screen:
-		_layout_wide_ratio = ratio
+	var crop := SceneRules.widescreen_crop(_active_widescreen_mode, _presentation_scene)
+	var layout_ratio := 1.0 if crop else ratio
+	var wide_screen := 0 if gpu3d_screen_is_top or layout_ratio <= 1.0 else 1
+	if not is_equal_approx(layout_ratio, _layout_wide_ratio) or wide_screen != _layout_wide_screen:
+		_layout_wide_ratio = layout_ratio
 		_layout_wide_screen = wide_screen
 		_layout_screens()
 	if machine and is_instance_valid(top_rect) and is_instance_valid(bottom_rect):
@@ -863,7 +881,7 @@ func _update_gpu3d_composite() -> void:
 		top_rect.texture = machine.get_presentation_top_texture() if use_presentation else machine.get_top_texture()
 		bottom_rect.texture = machine.get_presentation_bottom_texture() if use_presentation else machine.get_bottom_texture()
 		for node in _single_nodes:
-			node.texture = bottom_rect.texture
+			node.texture = top_rect.texture if _bottom_is_main() else bottom_rect.texture
 	_update_single_gpu()
 	if is_instance_valid(top_frame): top_frame.clip_contents = true
 	if is_instance_valid(bottom_frame): bottom_frame.clip_contents = true
@@ -889,7 +907,7 @@ func _update_gpu3d_composite() -> void:
 		gpu3d_rect.reparent(screen, false)
 	# The GPU child extends beyond the physical screen; 2D and touch stay native.
 	# The frame must not clip those side regions, while game_panel still clips.
-	if _active_widescreen_mode != 0 and _gpu3d_texture.get_height() > 0:
+	if not crop and _active_widescreen_mode != 0 and _gpu3d_texture.get_height() > 0:
 		(screen.get_parent() as Control).clip_contents = false
 	gpu3d_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	gpu3d_rect.anchor_left = (1.0 - ratio) * 0.5
@@ -965,8 +983,13 @@ func _release_machine(drain_audio: bool, keep_on_save_failure := false) -> bool:
 		slot_started_ms = 0
 	if closing.has_method("stop"): closing.stop()
 	machine = null; _active_save_config = {}
+	_scene_rules.reset()
+	_main_screen = -1
+	_main_top_dark = false
+	_presentation_scene = "other"
 	_update_widescreen_note()
 	set_gpu3d_frame(null, null)
+	_layout_screens()
 	_gpu3d_compare_software = false; _clear_gpu3d_status()
 	_ff_held = false
 	if closing.has_signal("frame_ready"):
@@ -1235,6 +1258,7 @@ func _process(_delta: float) -> void:
 		if not replay_issue.is_empty() and s.get("replay_active", false):
 			issue_reviewer.update_progress(int(s.frame), int(replay_issue.frame), (now - replay_started_ms) / 1000.0)
 		status_label.text += "\n" + _gpu3d_status_text()
+		status_label.text += "\nScene: " + _presentation_scene
 		var pressed: Array[String] = []
 		for action in BUTTON_ACTIONS:
 			if Input.is_action_pressed(action): pressed.append(action)
@@ -1268,6 +1292,13 @@ func _input(event: InputEvent) -> void:
 			if event.keycode == KEY_ESCAPE:
 				_close_issue_reviewer(); get_viewport().set_input_as_handled()
 			return # let the focused reviewer LineEdit/TextEdit receive ordinary keys
+		if event.keycode == KEY_F8 and machine:
+			_scene_rules.swap_main_screen(_bottom_is_main())
+			_main_screen = 0 if _bottom_is_main() else 1
+			_layout_screens()
+			_show_toast("Main screen: bottom" if _bottom_is_main() else "Main screen: top")
+			get_viewport().set_input_as_handled()
+			return
 		if event.keycode==KEY_F12 and machine: _save_screen_hotkey(); get_viewport().set_input_as_handled(); return
 		if event.keycode==KEY_F11: get_window().mode=Window.MODE_WINDOWED if get_window().mode==Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
 		elif event.keycode==KEY_F9 and machine:
@@ -1342,7 +1373,20 @@ func _fit_panels() -> void:
 
 func _layout_screens() -> void:
 	if not is_instance_valid(game_panel): return
-	var rects:=Logic.layout_rects(game_panel.size,layout,_overlay_rect,settings.integer_scale,_layout_wide_ratio,_layout_wide_screen)
+	var effective_layout := layout
+	if _main_screen >= 0:
+		if layout in [2, 3]: effective_layout = 3 if _bottom_is_main() else 2
+		elif layout in [4, 5]: effective_layout = 5 if _bottom_is_main() else 4
+		elif layout == 7 and _bottom_is_main(): effective_layout = 5
+	var swap_overlay := layout == 6 and _bottom_is_main()
+	var wide_screen := 1 - _layout_wide_screen if swap_overlay else _layout_wide_screen
+	var rects:=Logic.layout_rects(game_panel.size,effective_layout,_overlay_rect,settings.integer_scale,_layout_wide_ratio,wide_screen)
+	if swap_overlay:
+		var temporary: Rect2 = rects[0]
+		rects[0] = rects[1]
+		rects[1] = temporary
+	top_frame.z_index = 1 if swap_overlay else 0
+	bottom_frame.z_index = 0
 	for i in 2:
 		var frame:=top_frame if i==0 else bottom_frame
 		var r:Rect2=rects[i]
@@ -1354,10 +1398,12 @@ func _update_single_screen() -> void:
 	for node in _single_nodes: node.free()
 	_single_nodes.clear()
 	if layout != 7: return
+	if _bottom_is_main() and _main_top_dark: return
 	var snapshot: Dictionary = machine.get_ram_snapshot() if machine and machine.has_method("get_ram_snapshot") else {}
 	_single_shapes = Logic.detect_single_screen_shapes(snapshot, settings.single_screen_shapes).duplicate(true)
-	var top := Rect2(top_frame.position, top_frame.size)
-	for shape in _single_shapes:
+	var shapes: Array = [{"source": Rect2(0, 0, 256, 192), "destination": Rect2(0.65, 0.65, 0.35, 0.35)}] if _bottom_is_main() else _single_shapes
+	var top := Rect2(bottom_frame.position, bottom_frame.size) if _bottom_is_main() else Rect2(top_frame.position, top_frame.size)
+	for shape in shapes:
 		if not shape is Dictionary: continue
 		var source: Rect2 = shape.get("source", Rect2())
 		var dest := Logic.single_shape_rect(top, shape)
@@ -1367,7 +1413,7 @@ func _update_single_screen() -> void:
 		node.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		node.stretch_mode = TextureRect.STRETCH_SCALE
 		node.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST if settings.nearest else CanvasItem.TEXTURE_FILTER_LINEAR
-		node.texture = bottom_rect.texture
+		node.texture = top_rect.texture if _bottom_is_main() else bottom_rect.texture
 		var material := ShaderMaterial.new()
 		material.shader = load("res://shaders/single_screen.gdshader")
 		material.set_shader_parameter("source_rect", Vector4(source.position.x / 256.0, source.position.y / 192.0, source.size.x / 256.0, source.size.y / 192.0))
@@ -1383,7 +1429,7 @@ func _update_single_screen() -> void:
 	_update_single_gpu()
 
 func _update_single_gpu() -> void:
-	var enabled := int(settings.renderer_gpu3d) != 0 and not gpu3d_screen_is_top and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null
+	var enabled := int(settings.renderer_gpu3d) != 0 and (gpu3d_screen_is_top if _bottom_is_main() else not gpu3d_screen_is_top) and not _gpu3d_compare_software and _gpu3d_texture != null and _gpu3d_mask != null
 	for node in _single_nodes:
 		var material := node.material as ShaderMaterial
 		material.set_shader_parameter("use_gpu", enabled)

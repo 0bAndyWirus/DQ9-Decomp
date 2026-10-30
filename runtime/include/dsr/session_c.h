@@ -67,6 +67,20 @@ DSR_SESSION_API const int16_t* dsr_session_get_audio(const dsr_session_handle* s
                                      size_t* frame_count, double* sample_rate);
 DSR_SESSION_API uint64_t dsr_session_frame_count(const dsr_session_handle* session);
 DSR_SESSION_API uint64_t dsr_session_ticks(const dsr_session_handle* session);
+/* Owner-thread opt-in to cartridge scene file tracking, before any step attempt.
+ * Idempotent; no cartridge is a no-op. Returns 0 on success, nonzero with error text
+ * on failure. Tracking and file-table indexing are disabled by default. */
+DSR_SESSION_API int dsr_session_enable_scene_file_tracking(dsr_session_handle* session,
+                                                           char* error_out, size_t error_capacity);
+/* Latest nonempty FAT file under data/map/ ending in .ambl or .amdj, under
+ * data/movie/ ending in .mods, or exactly data/menu/bg_title_under.pac, consumed
+ * through the card data register (case-sensitive).
+ * Other reads leave it unchanged; reset clears it. The borrowed path remains
+ * valid until session destruction. Empty path and -1 ID/frame mean no
+ * observation. Frame is zero-based Session::frame_count at the read. */
+DSR_SESSION_API const char* dsr_session_last_card_file_path(const dsr_session_handle* session);
+DSR_SESSION_API int32_t dsr_session_last_card_file_id(const dsr_session_handle* session);
+DSR_SESSION_API int64_t dsr_session_last_card_file_frame(const dsr_session_handle* session);
 /* Classifies current guest state; invalid or unknown states are OTHER. */
 DSR_SESSION_API dsr_scene dsr_session_scene(const dsr_session_handle* session);
 /* Flushes pending save data. Returns 0 on success (including no pending writes),

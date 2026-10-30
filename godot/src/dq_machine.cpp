@@ -22,6 +22,7 @@
 #include "dq_gpu_scene.h"
 #include "gpu_frame_delay.h"
 #include "audio_ring.h"
+#include "scene_rules.h"
 
 #include <algorithm>
 #include <array>
@@ -67,6 +68,15 @@ struct FrameSlot {
     std::array<std::uint8_t, kPixels * 4> screens[2]{};
     std::unique_ptr<std::array<std::uint8_t, kPixels * 4>> presentation[2];
     std::uint64_t number = 0;
+    bool battle_seen = false;
+    int scene = DSR_SCENE_OTHER;
+    std::string cart_file_path;
+    std::int32_t cart_file_fat_id = -1;
+    std::int64_t cart_file_frame = -1;
+    const char* presentation_scene = "other";
+    int main_screen = -1;
+    bool top_dark = false;
+    std::uint64_t main_key_generation = 0;
     std::vector<SnapshotRange> ram;
     std::uint64_t ram_generation = 0;
     std::unique_ptr<dq9::GpuSceneFrame> gpu;
@@ -141,6 +151,10 @@ public:
         {
             std::lock_guard lock(mutex_);
             scene_ = DSR_SCENE_OTHER;
+            cart_file_path_.clear();
+            cart_file_fat_id_ = -1;
+            cart_file_frame_ = -1;
+            published_slot_ = consuming_slot_ = -1;
             pending_scene_changes_.clear();
         }
         if (language < 0 || language > 5) return "language must be in range 0..5";
@@ -165,7 +179,6 @@ public:
                 ring_.reset(); underruns_ = fast_forward_discarded_frames_ = 0;
                 audio_frames_pushed_ = 0; resample_phase_ = 0.0; audio_priming_ = true;
             }
-            published_slot_ = 0; consuming_slot_ = -1;
             snapshot_requests_.clear(); snapshot_bytes_ = 0; ++snapshot_generation_;
             consumed_snapshot_.clear();
             ++gpu_epoch_;
@@ -221,6 +234,22 @@ public:
     }
     bool is_paused() const { std::lock_guard lock(mutex_); return paused_; }
     int get_scene() const { std::lock_guard lock(mutex_); return scene_; }
+    godot::Dictionary get_presented_scene_snapshot() const {
+        std::lock_guard lock(mutex_);
+        godot::Dictionary out;
+        const FrameSlot* slot = consuming_slot_ >= 0 ? &frames_[consuming_slot_] : nullptr;
+        out["scene"] = slot ? slot->scene : DSR_SCENE_OTHER;
+        out["battle_seen"] = slot ? slot->battle_seen : false;
+        out["frame"] = slot ? static_cast<std::int64_t>(slot->number) : -1;
+        out["cart_file_path"] = slot ? godot::String::utf8(slot->cart_file_path.c_str()) : godot::String();
+        out["cart_file_fat_id"] = slot ? slot->cart_file_fat_id : -1;
+        out["cart_file_frame"] = slot ? slot->cart_file_frame : -1;
+        out["presentation_scene"] = godot::String::utf8(slot ? slot->presentation_scene : "other");
+        out["main_screen"] = slot ? slot->main_screen : -1;
+        out["top_dark"] = slot ? slot->top_dark : false;
+        out["main_key_generation"] = slot ? static_cast<std::int64_t>(slot->main_key_generation) : 0;
+        return out;
+    }
     // Wait for the owner to finish any in-flight and already requested steps,
     // then consume its last publication on the Godot thread.
     void pause_at_frame_boundary() {
@@ -579,6 +608,9 @@ public:
         std::lock_guard lock(mutex_);
         godot::Dictionary out;
         out["frame"] = static_cast<std::int64_t>(frame_count_);
+        out["cart_file_path"] = godot::String::utf8(cart_file_path_.c_str());
+        out["cart_file_fat_id"] = cart_file_fat_id_;
+        out["cart_file_frame"] = cart_file_frame_;
         {
             std::lock_guard audio_lock(audio_mutex_);
             const std::size_t queued = ring_.size();
@@ -747,6 +779,7 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("pause_at_frame_boundary"), &DqMachine::pause_at_frame_boundary);
         godot::ClassDB::bind_method(godot::D_METHOD("is_paused"), &DqMachine::is_paused);
         godot::ClassDB::bind_method(godot::D_METHOD("get_scene"), &DqMachine::get_scene);
+        godot::ClassDB::bind_method(godot::D_METHOD("get_presented_scene_snapshot"), &DqMachine::get_presented_scene_snapshot);
         godot::ClassDB::bind_method(godot::D_METHOD("step_once"), &DqMachine::step_once);
         godot::ClassDB::bind_method(godot::D_METHOD("step_frames", "n", "mask", "x", "y", "down"), &DqMachine::step_frames);
         godot::ClassDB::bind_method(godot::D_METHOD("register_snapshot_range", "address", "size"), &DqMachine::register_snapshot_range);
@@ -831,6 +864,10 @@ private:
         // Destroying the session on its owner thread joins its per-machine
         // render pool before either DLL is unloaded (also required on Windows).
         shutdown_worker();
+        {
+            std::lock_guard lock(mutex_);
+            published_slot_ = consuming_slot_ = -1;
+        }
         if (children_alive) {
             set_process(false);
             if (audio_player_) {
@@ -1094,6 +1131,7 @@ private:
         if (!ready) target.fallback = dq9::GpuFallback::TextureBudget;
     }
     void worker_loop() {
+        SceneRules scene_rules;
         dsr_session_config config{};
         config.rom_path = rom_path_.c_str();
         config.save_path = save_path_.c_str();
@@ -1105,6 +1143,10 @@ private:
         config.backup_type = backup_type_.c_str();
         char error[512]{};
         session_ = dsr_session_create(&config, error, sizeof(error));
+        if (session_ && dsr_session_enable_scene_file_tracking(session_, error, sizeof(error)) != 0) {
+            dsr_session_destroy(session_);
+            session_ = nullptr;
+        }
         if (!session_) {
             std::lock_guard lock(mutex_);
             error_ = error;
@@ -1117,6 +1159,19 @@ private:
             copy_screen(session_, 0, frames_[0].screens[0].data());
             copy_screen(session_, 1, frames_[0].screens[1].data());
             frames_[0].number = frame_count_;
+            frames_[0].scene = dsr_session_scene(session_);
+            frames_[0].battle_seen = frames_[0].scene == DSR_SCENE_BATTLE;
+            frames_[0].cart_file_path = dsr_session_last_card_file_path(session_);
+            frames_[0].cart_file_fat_id = dsr_session_last_card_file_id(session_);
+            frames_[0].cart_file_frame = dsr_session_last_card_file_frame(session_);
+            const auto initial_rules = scene_rules.advance(
+                frame_count_ == 0 ? 0 : static_cast<std::int64_t>(frame_count_ - 1),
+                frames_[0].scene, frames_[0].cart_file_path, frames_[0].cart_file_frame,
+                dsr_session_get_screen(session_, 0), dsr_session_get_screen(session_, 1));
+            frames_[0].presentation_scene = initial_rules.scene;
+            frames_[0].main_screen = initial_rules.main_screen;
+            frames_[0].top_dark = initial_rules.top_dark;
+            frames_[0].main_key_generation = initial_rules.main_key_generation;
             published_slot_ = 0; consuming_slot_ = -1;
         }
         {
@@ -1124,6 +1179,8 @@ private:
             initialized_ = true; cv_.notify_all();
         }
         if (session_) {
+            // Owner-thread history includes frames replaced in the mailbox.
+            bool battle_seen = frames_[0].battle_seen;
             WorkerTextureCache texture_cache;
             dq9::GpuFrameDelay gpu_delay;
             bool render_callback_enabled = false;
@@ -1299,6 +1356,7 @@ private:
                     }
                 }
                 const int scene = dsr_session_scene(session_);
+                battle_seen = battle_seen || scene == DSR_SCENE_BATTLE;
                 {
                     std::lock_guard lock(mutex_);
                     if (scene != scene_) {
@@ -1306,6 +1364,28 @@ private:
                         pending_scene_changes_.push_back(scene);
                     }
                     frame_count_ = dsr_session_frame_count(session_);
+                    const auto card_frame = dsr_session_last_card_file_frame(session_);
+                    if (card_frame != cart_file_frame_) {
+                        cart_file_path_ = dsr_session_last_card_file_path(session_);
+                        cart_file_fat_id_ = dsr_session_last_card_file_id(session_);
+                        cart_file_frame_ = card_frame;
+                    }
+                    const auto rules = scene_rules.advance(
+                        frame_count_ == 0 ? 0 : static_cast<std::int64_t>(frame_count_ - 1),
+                        scene, cart_file_path_, cart_file_frame_,
+                        dsr_session_get_screen(session_, 0), dsr_session_get_screen(session_, 1));
+                    if (output_slot >= 0) {
+                        auto& slot = frames_[output_slot];
+                        slot.scene = scene;
+                        slot.battle_seen = battle_seen;
+                        slot.cart_file_path = cart_file_path_;
+                        slot.cart_file_fat_id = cart_file_fat_id_;
+                        slot.cart_file_frame = cart_file_frame_;
+                        slot.presentation_scene = rules.scene;
+                        slot.main_screen = rules.main_screen;
+                        slot.top_dark = rules.top_dark;
+                        slot.main_key_generation = rules.main_key_generation;
+                    }
                     if (!chip_mismatch_) chip_mismatch_ = dsr_session_chip_mismatch_suspected(session_) != 0;
                     if (output_slot >= 0) published_slot_ = output_slot;
                     const std::uint64_t input_frame = frame_count_ == 0 ? 0 : frame_count_ - 1;
@@ -1421,6 +1501,9 @@ private:
     std::condition_variable cv_;
     dsr_session_handle* session_ = nullptr;
     int scene_ = DSR_SCENE_OTHER;
+    std::string cart_file_path_;
+    std::int32_t cart_file_fat_id_ = -1;
+    std::int64_t cart_file_frame_ = -1;
     std::vector<int> pending_scene_changes_;
     // Main-thread dispatch buffer retains capacity across frame batches.
     std::vector<int> scene_changes_scratch_;

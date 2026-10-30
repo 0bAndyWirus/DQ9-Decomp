@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
@@ -239,6 +240,123 @@ struct GameCard::Impl {
         rom_size_ = 0;
     }
 
+    struct FileSpan {
+        std::uint32_t begin, end;
+        std::int32_t id;
+        std::string path;
+    };
+
+    struct SceneFileTracking {
+        std::vector<FileSpan> spans;
+        std::size_t last_index = std::numeric_limits<std::size_t>::max();
+        std::uint64_t frame = 0;
+        std::int64_t last_frame = -1;
+    };
+
+    // Invalid metadata disables observation, never the cartridge itself.
+    void parse_file_table(SceneFileTracking& tracking) {
+        if (rom_size_ < 0x50) return;
+        const auto fnt_offset = get_le32(rom_ + 0x40);
+        const auto fnt_size = get_le32(rom_ + 0x44);
+        const auto fat_offset = get_le32(rom_ + 0x48);
+        const auto fat_size = get_le32(rom_ + 0x4c);
+        const auto valid = [this](std::uint32_t offset, std::uint32_t size) {
+            return offset <= rom_size_ && size <= rom_size_ - offset;
+        };
+        if (!valid(fnt_offset, fnt_size) || !valid(fat_offset, fat_size) ||
+            fnt_size < 8 || fat_size % 8 != 0) return;
+        const auto* fnt = rom_ + fnt_offset;
+        const auto u16 = [](const std::uint8_t* p) {
+            return static_cast<std::uint16_t>(p[0] | (static_cast<unsigned>(p[1]) << 8));
+        };
+        const std::size_t dirs = u16(fnt + 6), files = fat_size / 8;
+        if (dirs == 0 || dirs > 4096 || dirs > fnt_size / 8 || files > 65536) return;
+        struct Directory { std::uint16_t id, parent; std::string path; };
+        std::vector<Directory> pending{{0xf000, 0, {}}};
+        std::vector<bool> visited(dirs), named(files);
+        struct Range { std::uint32_t begin, end; };
+        std::vector<Range> ranges;
+        std::vector<FileSpan> spans;
+        while (!pending.empty()) {
+            auto dir = std::move(pending.back());
+            pending.pop_back();
+            const std::size_t index = dir.id & 0x0fff;
+            if ((dir.id & 0xf000) != 0xf000 || index >= dirs || visited[index]) return;
+            visited[index] = true;
+            const auto* record = fnt + index * 8;
+            if (u16(record + 6) != (index == 0 ? dirs : dir.parent)) return;
+            std::size_t cursor = get_le32(record), id = u16(record + 4);
+            for (;;) {
+                if (cursor >= fnt_size) return;
+                const auto entry = fnt[cursor++];
+                if (!entry) break;
+                const std::size_t length = entry & 0x7f;
+                if (!length || length > fnt_size - cursor) return;
+                if (std::find(fnt + cursor, fnt + cursor + length, 0) != fnt + cursor + length)
+                    return;
+                std::string path = dir.path;
+                if (!path.empty()) path += '/';
+                path.append(reinterpret_cast<const char*>(fnt + cursor), length);
+                cursor += length;
+                if (entry & 0x80) {
+                    if (fnt_size - cursor < 2) return;
+                    const auto child = u16(fnt + cursor);
+                    cursor += 2;
+                    pending.push_back({child, dir.id, std::move(path)});
+                } else {
+                    if (id >= files || named[id]) return;
+                    named[id] = true;
+                    const auto* fat = rom_ + fat_offset + id * 8;
+                    const auto begin = get_le32(fat), end = get_le32(fat + 4);
+                    if (begin > end || end > rom_size_) return;
+                    if (begin != end) {
+                        ranges.push_back({begin, end});
+                        const auto ends_with = [&path](const char* suffix, std::size_t length) {
+                            return path.size() >= length &&
+                                   path.compare(path.size() - length, length, suffix) == 0;
+                        };
+                        if ((path.compare(0, 9, "data/map/") == 0 &&
+                             (ends_with(".ambl", 5) || ends_with(".amdj", 5))) ||
+                            (path.compare(0, 11, "data/movie/") == 0 && ends_with(".mods", 5)) ||
+                            path == "data/menu/bg_title_under.pac")
+                            spans.push_back({begin, end, static_cast<std::int32_t>(id), std::move(path)});
+                    }
+                    ++id;
+                }
+            }
+        }
+        if (std::find(visited.begin(), visited.end(), false) != visited.end()) return;
+        std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) {
+            return a.begin < b.begin;
+        });
+        for (std::size_t i = 1; i < ranges.size(); ++i)
+            if (ranges[i].begin < ranges[i - 1].end) return;
+        std::sort(spans.begin(), spans.end(), [](const FileSpan& a, const FileSpan& b) {
+            return a.begin < b.begin;
+        });
+        // Retain capacity for the filtered entries only, not the entire FAT.
+        tracking.spans.reserve(spans.size());
+        for (auto& span : spans) tracking.spans.push_back(std::move(span));
+    }
+
+    void track_file_read(std::uint32_t address) {
+        auto& tracking = *scene_file_tracking_;
+        if (tracking.last_index < tracking.spans.size()) {
+            const auto& last = tracking.spans[tracking.last_index];
+            if (address >= last.begin && address < last.end) {
+                tracking.last_frame = static_cast<std::int64_t>(tracking.frame);
+                return;
+            }
+        }
+        auto it = std::upper_bound(tracking.spans.begin(), tracking.spans.end(), address,
+            [](std::uint32_t value, const FileSpan& span) { return value < span.begin; });
+        if (it == tracking.spans.begin()) return;
+        --it;
+        if (address >= it->end) return;
+        tracking.last_index = static_cast<std::size_t>(it - tracking.spans.begin());
+        tracking.last_frame = static_cast<std::int64_t>(tracking.frame);
+    }
+
     BackupType resolve_backup_type(BackupType requested) const {
         if (requested != BackupType::Auto) return requested;
         std::error_code ec;
@@ -284,6 +402,10 @@ struct GameCard::Impl {
 
 
     void reset() {
+        if (scene_file_tracking_) {
+            scene_file_tracking_->last_index = std::numeric_limits<std::size_t>::max();
+            scene_file_tracking_->last_frame = -1;
+        }
         finish_backup_transaction();
         aux_control_ = 0;
         aux_data_ = 0xff;
@@ -436,12 +558,15 @@ struct GameCard::Impl {
         }
     }
 
-    std::uint32_t read_card_data(int width) {
+    template<bool Track>
+    std::uint32_t read_card_data_impl(int width) {
         std::uint32_t value = 0;
         const int count = std::clamp(width, 1, 4);
         for (int i = 0; i < count; ++i) {
             if (!transfer_active_ || !transfer_data_ready_ || transfer_pos_ >= transfer_size_)
                 break;
+            if constexpr (Track)
+                track_file_read(transfer_rom_address_ + static_cast<std::uint32_t>(transfer_pos_));
             value |= static_cast<std::uint32_t>(card_data_byte()) << (8 * i);
             ++transfer_pos_;
             if (transfer_pos_ >= transfer_size_) {
@@ -449,6 +574,12 @@ struct GameCard::Impl {
             }
         }
         return value;
+    }
+
+    std::uint32_t read_card_data(int width) {
+        if (scene_file_tracking_ && transfer_kind_ == TransferKind::Rom)
+            return read_card_data_impl<true>(width);
+        return read_card_data_impl<false>(width);
     }
 
     void load_save() {
@@ -1138,6 +1269,7 @@ struct GameCard::Impl {
 #endif
     const std::uint8_t* rom_ = nullptr;
     std::size_t rom_size_ = 0;
+    std::unique_ptr<SceneFileTracking> scene_file_tracking_;
     BackupType backup_type_ = BackupType::Flash512K;
     std::vector<std::uint8_t> backup_;
     bool save_dirty_ = false;
@@ -1200,6 +1332,35 @@ GameCard::~GameCard() {
 }
 
 void GameCard::reset() { impl_->reset(); }
+
+void GameCard::enable_scene_file_tracking() {
+    if (impl_->scene_file_tracking_) return;
+    auto tracking = std::make_unique<Impl::SceneFileTracking>();
+    impl_->parse_file_table(*tracking);
+    impl_->scene_file_tracking_ = std::move(tracking);
+}
+bool GameCard::scene_file_tracking_enabled() const { return impl_->scene_file_tracking_ != nullptr; }
+std::size_t GameCard::scene_file_index_size() const {
+    return impl_->scene_file_tracking_ ? impl_->scene_file_tracking_->spans.size() : 0;
+}
+
+const std::string& GameCard::last_file_path() const {
+    static const std::string empty;
+    const auto* tracking = impl_->scene_file_tracking_.get();
+    return tracking && tracking->last_index < tracking->spans.size()
+        ? tracking->spans[tracking->last_index].path : empty;
+}
+std::int32_t GameCard::last_file_id() const {
+    const auto* tracking = impl_->scene_file_tracking_.get();
+    return tracking && tracking->last_index < tracking->spans.size()
+        ? tracking->spans[tracking->last_index].id : -1;
+}
+std::int64_t GameCard::last_file_frame() const {
+    return impl_->scene_file_tracking_ ? impl_->scene_file_tracking_->last_frame : -1;
+}
+void GameCard::set_tracking_frame(std::uint64_t frame) {
+    if (impl_->scene_file_tracking_) impl_->scene_file_tracking_->frame = frame;
+}
 
 std::uint32_t GameCard::io_read(std::uint32_t addr, int width) {
     const int count = width_bytes(width);

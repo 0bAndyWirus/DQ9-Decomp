@@ -170,6 +170,142 @@ void write_card_command(dsr::GameCard& card, std::uint8_t command, std::uint32_t
         card.io_write(kCardCmd + static_cast<std::uint32_t>(i), bytes[i], 8);
 }
 
+void test_card_file_tracking(const std::filesystem::path& root) {
+    std::vector<std::uint8_t> rom(0x9000);
+    const auto put16 = [&](std::size_t p, unsigned value) {
+        rom[p] = static_cast<std::uint8_t>(value);
+        rom[p + 1] = static_cast<std::uint8_t>(value >> 8);
+    };
+    const auto put32 = [&](std::size_t p, std::uint32_t value) {
+        put16(p, value & 0xffff);
+        put16(p + 2, value >> 16);
+    };
+    put32(0x40, 0x200); put32(0x44, 0x100);
+    put32(0x48, 0x300); put32(0x4c, 10 * 8);
+    std::size_t cursor = 40;
+    const auto directory = [&](std::size_t index, unsigned first_id, unsigned parent) {
+        put32(0x200 + index * 8, static_cast<std::uint32_t>(cursor));
+        put16(0x204 + index * 8, first_id);
+        put16(0x206 + index * 8, parent);
+    };
+    const auto name = [&](const char* text, unsigned child = 0) {
+        const std::string value(text);
+        rom[0x200 + cursor++] = static_cast<std::uint8_t>(value.size() | (child ? 0x80 : 0));
+        for (char c : value) rom[0x200 + cursor++] = static_cast<std::uint8_t>(c);
+        if (child) {
+            put16(0x200 + cursor, child);
+            cursor += 2;
+        }
+    };
+    const auto end_directory = [&] { rom[0x200 + cursor++] = 0; };
+    directory(0, 0, 5); name("data", 0xf001); name("sound"); end_directory();
+    directory(1, 1, 0xf000); name("map", 0xf002); name("movie", 0xf003);
+    name("menu", 0xf004); end_directory();
+    directory(2, 1, 0xf001); name("a.ambl"); name("b.amdj"); name("c.mods");
+    name("empty.ambl"); end_directory();
+    directory(3, 5, 0xf001); name("intro.mods"); name("other.ambl"); end_directory();
+    directory(4, 7, 0xf001); name("bg_title_under.pac");
+    name("bg_title_under2.pac"); name("BG_title_under.pac"); end_directory();
+    for (unsigned id = 0; id < 10; ++id) {
+        const auto begin = 0x8100u + id * 0x100u;
+        put32(0x300 + id * 8, begin);
+        put32(0x304 + id * 8, begin + (id == 4 ? 0 : 4));
+    }
+    const auto path = root / "files.nds";
+    const auto write_rom = [&] {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(rom.data()), static_cast<std::streamsize>(rom.size()));
+        assert(out.good());
+    };
+    const auto read_word = [](dsr::GameCard& card, std::uint8_t command, std::uint32_t address) {
+        write_card_command(card, command, address);
+        card.io_write(kRomCtrl, 0x87000000u, 32);
+        card.run(44);
+        (void)card.io_read(kCardData, 32);
+    };
+    write_rom();
+    {
+        dsr::GameCard card(path, root / "files.sav");
+        assert(!card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+        read_word(card, 0xb7, 0x8200);
+        assert(card.last_file_id() == -1 && card.last_file_frame() == -1);
+        card.enable_scene_file_tracking();
+        assert(card.scene_file_tracking_enabled() && card.scene_file_index_size() == 4);
+        card.enable_scene_file_tracking(); // Idempotent.
+        assert(card.scene_file_index_size() == 4);
+        assert(card.last_file_id() == -1 && card.last_file_frame() == -1);
+        assert(card.last_file_path().empty());
+        read_word(card, 0xb7, 0x8100); // named, but not a map or movie
+        assert(card.last_file_id() == -1);
+        write_card_command(card, 0xb7, 0x8200);
+        card.io_write(kRomCtrl, 0x87000000u, 32);
+        card.run(44);
+        assert(card.last_file_id() == -1); // Starting a transfer is not a read.
+        card.set_tracking_frame(7);
+        (void)card.io_read(kCardData, 32);
+        assert(card.last_file_id() == 1 && card.last_file_path() == "data/map/a.ambl");
+        assert(card.last_file_frame() == 7);
+        card.set_tracking_frame(8);
+        read_word(card, 0xb8, 0);
+        read_word(card, 0xb7, 0x8100); // unrelated named file
+        read_word(card, 0xb7, 0x8400); // wrong extension under map
+        read_word(card, 0xb7, 0x8500); // empty map file
+        read_word(card, 0xb7, 0x8700); // wrong extension under movie
+        assert(card.last_file_id() == 1 && card.last_file_frame() == 7);
+        card.set_tracking_frame(9);
+        read_word(card, 0xb7, 0x8300);
+        assert(card.last_file_id() == 2 && card.last_file_path() == "data/map/b.amdj");
+        assert(card.last_file_frame() == 9);
+        card.set_tracking_frame(10);
+        read_word(card, 0xb7, 0x8600);
+        assert(card.last_file_id() == 5 && card.last_file_path() == "data/movie/intro.mods");
+        assert(card.last_file_frame() == 10);
+        card.set_tracking_frame(11);
+        read_word(card, 0xb7, 0x8600);
+        assert(card.last_file_id() == 5 && card.last_file_frame() == 11);
+        card.set_tracking_frame(12);
+        read_word(card, 0xb7, 0x8800);
+        assert(card.last_file_id() == 7 && card.last_file_path() == "data/menu/bg_title_under.pac");
+        assert(card.last_file_frame() == 12);
+        card.set_tracking_frame(13);
+        read_word(card, 0xb7, 0x8900); // other menu file
+        read_word(card, 0xb7, 0x8a00); // title filename with different case
+        assert(card.last_file_id() == 7 && card.last_file_frame() == 12);
+        card.set_tracking_frame(14);
+        read_word(card, 0xb7, 0x8200); // map replaces title
+        assert(card.last_file_id() == 1 && card.last_file_frame() == 14);
+        read_word(card, 0xb7, 0x8800);
+        card.reset();
+        assert(card.scene_file_tracking_enabled() && card.scene_file_index_size() == 4);
+        assert(card.last_file_path().empty());
+        assert(card.last_file_id() == -1 && card.last_file_frame() == -1);
+        card.set_tracking_frame(15);
+        read_word(card, 0xb7, 0x8800);
+        assert(card.last_file_id() == 7 && card.last_file_path() == "data/menu/bg_title_under.pac");
+        assert(card.last_file_frame() == 15);
+    }
+    // Out-of-bounds and inconsistent metadata must safely disable observation.
+    put32(0x40, 0xfffffff0u);
+    write_rom();
+    {
+        dsr::GameCard card(path, root / "invalid.sav");
+        card.enable_scene_file_tracking();
+        assert(card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+        read_word(card, 0xb7, 0x8100);
+        assert(card.last_file_id() == -1);
+    }
+    put32(0x40, 0x200);
+    put16(0x216, 0xf003); // invalid map directory parent
+    write_rom();
+    {
+        dsr::GameCard card(path, root / "invalid-parent.sav");
+        card.enable_scene_file_tracking();
+        assert(card.scene_file_tracking_enabled() && card.scene_file_index_size() == 0);
+        read_word(card, 0xb7, 0x8100);
+        assert(card.last_file_id() == -1);
+    }
+}
+
 std::uint8_t spi_byte(dsr::Spi& spi, std::uint8_t value) {
     spi.io_write(kSpiData, value, 8);
     return static_cast<std::uint8_t>(spi.io_read(kSpiData, 8));
@@ -1524,6 +1660,7 @@ int main() {
     test_rtc_guest_wire_protocol();
     test_touch_adc_calibration();
     TempDir temp;
+    test_card_file_tracking(temp.path);
     const auto rom = make_rom(temp.path / "synthetic.nds");
     const auto card_alias_rom = make_rom(temp.path / "card-alias.nds", true);
     test_card_rom_and_chip_id(rom, temp.path / "card.sav");
