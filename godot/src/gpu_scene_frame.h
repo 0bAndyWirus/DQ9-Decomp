@@ -14,14 +14,17 @@ inline constexpr std::size_t kGpuVertexLimit = 12288;
 inline constexpr std::size_t kHardwarePolygonLimit = 2048;
 inline constexpr std::size_t kHardwareVertexLimit = 6144;
 
-inline bool accepts_geometry(const dsr::Gpu3DGeometryView& geometry, bool full) {
-    // Hardware polygon overflow discards later polygons; a full retained list
-    // is also what the software rasterizer draws.
+inline bool enhanced_geometry_enabled(bool full, bool gpu_enabled, bool widescreen) {
+    return full || (gpu_enabled && widescreen);
+}
+
+inline bool accepts_geometry(const dsr::Gpu3DGeometryView& geometry, bool enhanced) {
+    // Hardware polygon overflow discards later polygons in classic mode.
     return !geometry.enhanced_overflow &&
-           (full || !geometry.vertex_overflow) &&
-           (full || !geometry.polygon_overflow || geometry.polygon_count == kHardwarePolygonLimit) &&
-           geometry.vertex_count <= (full ? kGpuVertexLimit : kHardwareVertexLimit) &&
-           geometry.polygon_count <= (full ? kGpuPolygonLimit : kHardwarePolygonLimit);
+           (enhanced || !geometry.vertex_overflow) &&
+           (enhanced || !geometry.polygon_overflow || geometry.polygon_count == kHardwarePolygonLimit) &&
+           geometry.vertex_count <= (enhanced ? kGpuVertexLimit : kHardwareVertexLimit) &&
+           geometry.polygon_count <= (enhanced ? kGpuPolygonLimit : kHardwarePolygonLimit);
 }
 inline constexpr std::size_t kGpuNewTextureLimit = 256;
 
@@ -137,7 +140,7 @@ inline bool requires_fragment_blending(const dsr::Gpu3DPolygon& polygon,
 }
 #endif
 
-enum class GpuFallback { None, Disabled, Warmup, TextureBudget, WBuffer, BitmapClear, Geometry };
+enum class GpuFallback { None, Disabled, Warmup, TextureBudget, BitmapClear, TransparentClear, Geometry };
 
 inline const char* fallback_name(GpuFallback reason) {
     switch (reason) {
@@ -145,7 +148,7 @@ inline const char* fallback_name(GpuFallback reason) {
     case GpuFallback::Disabled: return "disabled";
     case GpuFallback::Warmup: return "warmup";
     case GpuFallback::TextureBudget: return "texture_budget";
-    case GpuFallback::WBuffer: return "w_buffer";
+    case GpuFallback::TransparentClear: return "transparent_clear";
     case GpuFallback::BitmapClear: return "bitmap_clear";
     case GpuFallback::Geometry: return "geometry";
     }
@@ -158,9 +161,9 @@ struct GpuSceneFrame {
     std::vector<dsr::Gpu3DVertex> vertices = std::vector<dsr::Gpu3DVertex>(kHardwareVertexLimit);
     std::vector<dsr::Gpu3DPolygon> polygons = std::vector<dsr::Gpu3DPolygon>(kHardwarePolygonLimit);
 
-    void prepare_geometry(bool full) {
-        const auto vertex_limit = full ? kGpuVertexLimit : kHardwareVertexLimit;
-        const auto polygon_limit = full ? kGpuPolygonLimit : kHardwarePolygonLimit;
+    void prepare_geometry(bool enhanced) {
+        const auto vertex_limit = enhanced ? kGpuVertexLimit : kHardwareVertexLimit;
+        const auto polygon_limit = enhanced ? kGpuPolygonLimit : kHardwarePolygonLimit;
         if (vertices.size() != vertex_limit)
             std::vector<dsr::Gpu3DVertex>(vertex_limit).swap(vertices);
         if (polygons.size() != polygon_limit)
@@ -191,6 +194,10 @@ struct GpuSceneFrame {
     }
     std::uint32_t three_d_pixels = 0, gpu_pixels = 0;
 #ifdef DQ9_GPU_SCENE_TESTS
+    // Indexed in draw order; hardware eligibility is determined in submission order.
+    std::array<bool, kGpuPolygonLimit> enhanced_only{};
+    bool hardware_vertex_overflow = false, hardware_polygon_overflow = false;
+    bool enhanced_overflow = false;
     // Captured at render_start alongside geometry, never from the later LCD
     // framebuffer. Test builds alone pay for this owned reference copy.
     std::array<std::uint32_t, 256 * 192> software_output{};

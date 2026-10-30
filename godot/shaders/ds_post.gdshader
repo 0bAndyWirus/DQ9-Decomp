@@ -23,12 +23,14 @@ uniform bool opaque_mask_output = false;
 uniform bool extend_side_backdrop = false;
 uniform float native_width_ratio = 1.0;
 uniform bool debug_depth = false;
+uniform bool w_buffer = false;
 
 void vertex() {
 	POSITION = vec4(VERTEX.xy, 1.0, 1.0);
 }
 
 int ds_depth(float reverse_depth) {
+	if (w_buffer) { return int(round(clamp(1.0 - reverse_depth, 0.0, 1.0) * 16777215.0)); }
 	return int(floor(clamp(1.0 - reverse_depth, 0.0, 1.0) * 4194303.0)) * 4;
 }
 

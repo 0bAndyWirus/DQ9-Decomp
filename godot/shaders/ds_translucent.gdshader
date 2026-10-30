@@ -8,10 +8,12 @@ uniform sampler2D opaque_color : hint_screen_texture, filter_nearest, repeat_dis
 
 void vertex() {
 	POSITION = ds_position(VERTEX, UV2.x, int(UV2.y), CUSTOM1.rgb);
+	ds_clip_w = UV2.x;
 	ds_vertex_color = span_mesh ? CUSTOM0.rgb : COLOR.rgb;
 }
 
 void fragment() {
+	DEPTH = ds_fragment_depth(FRAGCOORD.z);
 	vec4 shade = ds_shade(UV, ds_vertex_color);
 	if (shade.a == 0.0 || shade.a == 31.0 ||
 		(alpha_test_enabled && shade.a < float(alpha_test_ref))) { discard; }

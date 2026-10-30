@@ -109,12 +109,41 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         gpu.io_write(0x04000360U + i, static_cast<std::uint32_t>(integer("fog_density", 127)), 8);
     for (unsigned i = 0; i < 8; ++i)
         gpu.io_write(0x04000330U + i * 2U, 4U | (12U << 5U) | (20U << 10U), 16);
+    const bool depth_order = flag("depth_order");
+    const unsigned swap_mode = flag("w_buffer") ? 2U : 0U;
+    // SWAP_BUFFERS selects the mode for the *next* geometry frame.
+    send(0x50, swap_mode);
+    gpu.vblank_start(); gpu.render_start();
+    if (depth_order) {
+        // Z = -input Z, W = 1 + input Z/2. Thus the red triangle
+        // wins W depth while green wins Z depth. Z varies at each vertex.
+        send(0x10, 0);
+        for (unsigned i = 0; i < 16; ++i)
+            send(0x16, i == 10 ? 0xfffff000U : i == 11 ? 2048U :
+                 i % 5U == 0 ? 4096U : 0U);
+    }
     if (flag("perspective")) {
         send(0x10, 0); // Projection W = 1 + Z/2; all vertices remain inside clip.
         for (unsigned i = 0; i < 16; ++i)
             send(0x16, i == 11 ? 2048U : i % 5U == 0 ? 4096U : 0U);
     }
-    if (cutout_layers) {
+    if (depth_order) {
+        const auto triangle = [&](unsigned color, unsigned id, unsigned polygon_alpha, int sign) {
+            send(0x2a, 0);
+            send(0x29, (polygon_alpha << 16U) | (id << 24U) | 0xc0U);
+            send(0x20, color);
+            send(0x40, 0);
+            for (const auto [x, y, z] : std::array<std::array<int, 3>, 3>{{
+                     {-2048, -2048, 1024}, {2048, -2048, 512}, {0, 2048, 768}}}) {
+                send(0x23, static_cast<std::uint16_t>(x) |
+                     (static_cast<std::uint32_t>(static_cast<std::uint16_t>(y)) << 16U));
+                send(0x23, static_cast<std::uint16_t>(sign * z));
+            }
+            send(0x41, 0);
+        };
+        triangle(0x001f, 1, 31, -1);
+        triangle(0x03e0, 2, flag("depth_partial") ? 15 : 31, 1);
+    } else if (cutout_layers) {
         // The cutout spans 64 native pixels but 128 texels: each native
         // sample sees an opaque texel while the 3x render exposes holes.
         const auto quad = [&](int left, int right, int z, unsigned color,
@@ -165,7 +194,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         send(0x23, flag("perspective") ? static_cast<std::uint16_t>(positions[i][2]) : 0U);
     }
     }
-    send(0x41, 0); send(0x50, 0);
+    send(0x41, 0); send(0x50, swap_mode);
     gpu.vblank_start(); gpu.render_start();
     const auto geometry = gpu.geometry_view();
     const auto raster = gpu.raster_view();
@@ -187,6 +216,7 @@ inline std::unique_ptr<GpuSceneFrame> make_quality_probe(const godot::Dictionary
         frame->gpu_pixels += frame->mask[i];
     }
     frame->clear_color = raster.clear_color; frame->clear_depth = raster.clear_depth;
+    frame->swap_mode = geometry.swap_mode;
     frame->disp3dcnt = raster.disp3d; frame->alpha_test_ref = raster.alpha_reference;
     frame->fog_color = raster.fog_color; frame->fog_offset = raster.fog_offset;
     std::copy_n(raster.fog_density, 32, frame->fog_table.begin());

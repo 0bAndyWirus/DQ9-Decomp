@@ -118,6 +118,24 @@ void DqGpuScene::release_resources(bool children_alive) {
     if (resources_released_) return;
     resources_released_ = true;
     valid_ = color_valid_ = false;
+    // Remove per-instance overrides while their mesh surfaces and materials
+    // are still alive. Otherwise the rendering server can retain override
+    // RIDs for surfaces removed before the instances are destroyed.
+    if (children_alive) clear_meshes();
+    // Detach meshes before destroying their instances, retaining the post
+    // quad until its renderer instance no longer references its material.
+    godot::Ref<godot::Mesh> post_mesh;
+    if (children_alive) {
+        if (post_instance_) {
+            post_mesh = post_instance_->get_mesh();
+            post_instance_->set_mesh({});
+        }
+        for (auto& chunk : chunks_) {
+            if (chunk.color) chunk.color->set_mesh({});
+            if (chunk.metadata) chunk.metadata->set_mesh({});
+            if (chunk.coverage) chunk.coverage->set_mesh({});
+        }
+    }
     if (children_alive) {
         if (coverage_viewport_) memdelete(coverage_viewport_);
         if (effects_viewport_) memdelete(effects_viewport_);
@@ -252,11 +270,22 @@ bool DqGpuScene::initialize_viewport() {
 void DqGpuScene::clear_meshes() {
     surface_count_ = 0;
     for (auto& chunk : chunks_) {
+        const int surfaces = chunk.mesh->get_surface_count();
+        for (int surface = 0; surface < surfaces; ++surface) {
+            if (chunk.metadata) chunk.metadata->set_surface_override_material(surface, {});
+            if (chunk.coverage) chunk.coverage->set_surface_override_material(surface, {});
+        }
         chunk.mesh->clear_surfaces();
         chunk.color->set_visible(false);
         if (chunk.metadata) chunk.metadata->set_visible(false);
         if (chunk.coverage) chunk.coverage->set_visible(false);
     }
+}
+
+void DqGpuScene::invalidate_frame() {
+    valid_ = color_valid_ = side_valid_ = false;
+    fallback_ = dq9::GpuFallback::Geometry;
+    clear_meshes();
 }
 
 void DqGpuScene::ensure_chunk(std::size_t index) {
@@ -488,6 +517,7 @@ godot::Ref<godot::ShaderMaterial> DqGpuScene::make_material(const dq9::GpuSceneF
         polygon.viewport, (priority << 4) | (translucent ? 1 : 0) | (metadata ? 2 : 0) | (span_mesh ? 4 : 0) | (coverage ? 8 : 0)};
     if (const auto found = materials_.find(cache_key); found != materials_.end()) {
         found->second->set_shader_parameter("alpha_test_ref", static_cast<int>(frame.alpha_test_ref & 31U));
+        found->second->set_shader_parameter("w_buffer", (frame.swap_mode & 2U) != 0U);
         found->second->set_shader_parameter("display_rgb555", !metadata && !effects_active_);
         if (!span_mesh)
             found->second->set_shader_parameter("side_native_width_ratio",
@@ -513,6 +543,7 @@ godot::Ref<godot::ShaderMaterial> DqGpuScene::make_material(const dq9::GpuSceneF
     material->set_shader_parameter("toon_table", toon_texture_);
     material->set_shader_parameter("color_transfer", color_transfer_);
     material->set_shader_parameter("display_rgb555", !metadata && !effects_active_);
+    material->set_shader_parameter("w_buffer", (frame.swap_mode & 2U) != 0U);
     material->set_shader_parameter("textured", textured);
     material->set_shader_parameter("polygon_mode", static_cast<int>((polygon.attr >> 4U) & 3U));
     material->set_shader_parameter("highlight", (frame.disp3dcnt & (1U << 1U)) != 0);
@@ -549,11 +580,17 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
 #ifdef DQ9_GPU_SCENE_TESTS
     reference_output_ = frame.software_output;
     reference_polygon_ids_ = frame.software_polygon_ids;
-    reference_registers_ = {frame.disp3dcnt, frame.clear_color, frame.fog_color};
+    reference_registers_ = {frame.disp3dcnt, frame.clear_color, frame.fog_color, frame.swap_mode};
     reference_snapshot_counts_ = {frame.captured_snapshots, frame.valid_snapshots};
     reference_alpha_counts_ = {frame.native_translucent_polygons, frame.blending_polygons};
     reference_cause_pixels_ = frame.capture_cause_pixels;
     reference_top_polygons_ = frame.capture_top_polygons;
+    hardware_vertex_overflow_ = frame.source_frame != 0 && frame.hardware_vertex_overflow;
+    hardware_polygon_overflow_ = frame.source_frame != 0 && frame.hardware_polygon_overflow;
+    enhanced_overflow_ = frame.source_frame != 0 && frame.enhanced_overflow;
+    enhanced_only_retained_ = enhanced_only_emitted_ = 0;
+    for (std::size_t i = 0; i < frame.polygon_count; ++i)
+        enhanced_only_retained_ += frame.enhanced_only[i];
 #endif
     mesh_polygon_count_ = skipped_wireframe_ = 0;
     wide_crossing_left_ = wide_crossing_right_ = 0;
@@ -617,6 +654,7 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
         post_material_->set_shader_parameter("extend_side_backdrop", widescreen_enabled_ && ((frame.clear_color >> 16U) & 31U) != 0);
         post_material_->set_shader_parameter("native_width_ratio", static_cast<double>(target_width(scale_, widescreen_enabled_)) / (kWidth * scale_));
         post_material_->set_shader_parameter("clear_depth", static_cast<int>(frame.clear_depth & 0x7fffU));
+        post_material_->set_shader_parameter("w_buffer", (frame.swap_mode & 2U) != 0U);
     }
     auto* toon = toon_bytes_.ptrw();
     for (std::size_t i = 0; i < frame.toon_table.size(); ++i) {
@@ -705,9 +743,14 @@ void DqGpuScene::apply_frame(const dq9::GpuSceneFrame& frame) {
             continue;
         }
         raster_vertices_.clear();
-        for (std::size_t i = begin; i < end; ++i)
-            if (raster_mesh_.append(frame, frame.polygons[i], translucent, raster_vertices_, widescreen_enabled_ && !guest_widescreen_))
+        for (std::size_t i = begin; i < end; ++i) {
+            if (raster_mesh_.append(frame, frame.polygons[i], translucent, raster_vertices_, widescreen_enabled_ && !guest_widescreen_)) {
                 ++mesh_polygon_count_;
+#ifdef DQ9_GPU_SCENE_TESTS
+                enhanced_only_emitted_ += frame.enhanced_only[i];
+#endif
+            }
+        }
         const auto vertices = raster_vertices_.size();
         if (vertices != 0) {
             godot::PackedVector3Array positions;
@@ -818,9 +861,17 @@ godot::Dictionary DqGpuScene::get_stats() const {
     out["source_frame"] = static_cast<int64_t>(source_frame_);
     out["effects_active"] = effects_active_;
 #ifdef DQ9_GPU_SCENE_TESTS
+    out["hardware_vertex_overflow"] = hardware_vertex_overflow_;
+    out["hardware_polygon_overflow"] = hardware_polygon_overflow_;
+    out["enhanced_overflow"] = enhanced_overflow_;
+    out["enhanced_only_retained"] = static_cast<int64_t>(enhanced_only_retained_);
+    out["enhanced_only_emitted"] = static_cast<int64_t>(enhanced_only_emitted_);
+    out["wide_enabled"] = widescreen_enabled_;
+    out["guest_wide"] = guest_widescreen_;
     out["reference_disp3dcnt"] = static_cast<int64_t>(reference_registers_[0]);
     out["reference_clear_color"] = static_cast<int64_t>(reference_registers_[1]);
     out["reference_fog_color"] = static_cast<int64_t>(reference_registers_[2]);
+    out["reference_swap_mode"] = static_cast<int64_t>(reference_registers_[3]);
     out["captured_snapshots"] = static_cast<int64_t>(reference_snapshot_counts_[0]);
     out["valid_snapshots"] = static_cast<int64_t>(reference_snapshot_counts_[1]);
     out["native_translucent_polygons"] = static_cast<int64_t>(reference_alpha_counts_[0]);

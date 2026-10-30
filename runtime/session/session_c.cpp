@@ -222,6 +222,14 @@ void dsr::set_session_capture_opaque_only(dsr_session_handle* session, bool enab
     if (session) session->session.machine().gpu3d().set_capture_opaque_only(enabled);
 }
 
+void dsr::set_session_enhanced_geometry(dsr_session_handle* session, bool enabled) {
+    if (session) session->session.machine().gpu3d().set_enhanced_geometry(enabled);
+}
+
+void dsr::set_session_enhanced_presentation(dsr_session_handle* session, bool enabled, bool full) {
+    if (session) session->session.machine().gpu2d().set_enhanced_presentation(enabled, full);
+}
+
 void dsr::set_session_presentation_scale(dsr_session_handle* session, int scale) {
     if (session) session->session.machine().gpu2d().set_presentation_scale(scale);
 }

@@ -214,6 +214,7 @@ struct Gpu2D::Impl {
         std::array<Pixel, kScreenWidth> bg0;
     };
     std::unique_ptr<Presentation> presentation;
+    bool presentation_full = true;
     unsigned presentation_scale = 1;
     std::array<std::uint8_t, kScreenWidth> unused_mask_line{};
     std::array<ExtPaletteRegion, 16> ext_regions_a{};
@@ -1305,7 +1306,7 @@ struct Gpu2D::Impl {
         }
         if (presentation_line3d != nullptr) {
             enhanced_bg0->fill(kTransparentPixel);
-            add_bg_pixel(*enhanced_bg0, engine, is_a, 0, y, dispcnt, presentation_line3d, true);
+            add_bg_pixel(*enhanced_bg0, engine, is_a, 0, y, dispcnt, presentation_line3d, presentation_full);
             presentation_a_line_valid = true;
         }
         std::array<std::array<std::uint8_t, 4>, 4> bg_order{};
@@ -2030,7 +2031,8 @@ void Gpu2D::attach_gpu3d(Gpu3D* gpu3d) {
     impl_->gpu3d = gpu3d;
 }
 
-void Gpu2D::set_enhanced_presentation(bool enabled) {
+void Gpu2D::set_enhanced_presentation(bool enabled, bool full) {
+    impl_->presentation_full = full;
     if (!enabled) {
         impl_->presentation.reset();
     } else if (!impl_->presentation) {

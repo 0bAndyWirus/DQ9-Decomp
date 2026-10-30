@@ -2131,6 +2131,46 @@ void test_enhanced_geometry_preserves_hardware_status() {
     if (!ok) std::exit(1);
 }
 
+void test_disabling_enhanced_geometry_preserves_oversized_lists() {
+    Gpu3D gpu;
+    gpu.set_render_threads(0);
+    gpu.set_enhanced_geometry(true);
+    send(gpu, 0x40, {2U}); // triangle strip, still open at the transition
+    gpu.run(16);
+    for (std::size_t i = 0; i < 2053U; ++i) {
+        port(gpu, 0x24, 0U);
+        gpu.run(8);
+    }
+    const auto count = gpu.io_read(0x04000604U, 32);
+    const auto status = gpu.io_read(0x04000060U, 32);
+    gpu.set_enhanced_geometry(false);
+    bool ok = check(gpu.io_read(0x04000604U, 32) == count &&
+                    gpu.io_read(0x04000060U, 32) == status,
+                    "disabling enhanced geometry preserves guest RAM counts and overflow");
+    port(gpu, 0x24, 0U);
+    gpu.run(8);
+    ok &= check((gpu.io_read(0x04000604U, 32) >> 16) == 2054U,
+                "open primitive continues after disabling enhanced geometry");
+    send(gpu, 0x50, {0U});
+    gpu.run(100000);
+    gpu.vblank_start();
+    auto view = gpu.geometry_view();
+    ok &= check(view.vertex_count == 2054U && view.polygon_count == 2051U &&
+                view.polygon_overflow,
+                "oversized submission survives the transition and swap");
+    gpu.set_enhanced_geometry(false);
+    view = gpu.geometry_view();
+    ok &= check(view.vertex_count == 2054U && view.polygon_count == 2051U,
+                "oversized render list survives a repeated disable while paused");
+    send(gpu, 0x50, {0U});
+    gpu.run(100000);
+    gpu.vblank_start();
+    view = gpu.geometry_view();
+    ok &= check(view.vertex_count == 0U && view.polygon_count == 0U,
+                "subsequent empty swap retires the oversized render list");
+    if (!ok) std::exit(1);
+}
+
 void test_enhanced_geometry_capacity_overflow_lifecycle() {
     constexpr std::size_t capacity = 12288U;
     bool ok = true;
@@ -2205,9 +2245,18 @@ void test_enhanced_geometry_keeps_guest_raster_hardware_limited() {
             else ok &= check(std::equal(row, row + 256, classic.begin() + y * 256),
                              "guest raster excludes enhanced-only polygon");
         }
-        if (mode == 2)
-            ok &= check(gpu.raster_view().opaque_only_mask != nullptr,
-                        "enhanced presentation capture remains available");
+        if (mode == 2) {
+            const auto raster = gpu.raster_view();
+            ok &= check(raster.opaque_only_mask != nullptr && raster.enhanced_output != nullptr,
+                        "enhanced presentation capture and raster remain available");
+            if (raster.enhanced_output) {
+                std::size_t changed_pixels = 0;
+                for (std::size_t i = 0; i < classic.size(); ++i)
+                    changed_pixels += raster.enhanced_output[i] != classic[i];
+                ok &= check(changed_pixels > 0,
+                            "enhanced-only polygon changes presentation without changing guest raster");
+            }
+        }
     }
     if (!ok) std::exit(1);
 }
@@ -4198,6 +4247,7 @@ int main() {
     test_clear_image_unmapped_slots_are_independently_zero();
     test_polygon_vertex_ram_overflow_flags();
     test_enhanced_geometry_preserves_hardware_status();
+    test_disabling_enhanced_geometry_preserves_oversized_lists();
     test_enhanced_geometry_capacity_overflow_lifecycle();
     test_enhanced_geometry_keeps_guest_raster_hardware_limited();
     test_widescreen_projection_fov_equality();

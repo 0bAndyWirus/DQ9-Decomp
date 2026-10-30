@@ -67,6 +67,7 @@ struct SnapshotRequest {
 struct FrameSlot {
     std::array<std::uint8_t, kPixels * 4> screens[2]{};
     std::unique_ptr<std::array<std::uint8_t, kPixels * 4>> presentation[2];
+    bool presentation_valid = false;
     std::uint64_t number = 0;
     bool battle_seen = false;
     int scene = DSR_SCENE_OTHER;
@@ -147,7 +148,11 @@ public:
         stop();
         shutdown_worker();
         if (gpu_scene_) { memdelete(gpu_scene_); gpu_scene_ = nullptr; }
-        for (auto& slot : frames_) slot.gpu.reset();
+        for (auto& slot : frames_) {
+            slot.gpu.reset();
+            slot.presentation_valid = false;
+        }
+        presentation_valid_ = false;
         {
             std::lock_guard lock(mutex_);
             scene_ = DSR_SCENE_OTHER;
@@ -182,6 +187,7 @@ public:
             snapshot_requests_.clear(); snapshot_bytes_ = 0; ++snapshot_generation_;
             consumed_snapshot_.clear();
             ++gpu_epoch_;
+            gpu_mode_requested_ = true;
             installed_texture_keys_.clear();
             input_history_.clear();
             input_history_.reserve(4096);
@@ -398,6 +404,15 @@ public:
             if (gpu_enabled_ == enabled) return;
             gpu_enabled_ = enabled;
             ++gpu_epoch_;
+            gpu_mode_requested_ = true;
+            cv_.notify_all();
+            if (!enabled) {
+                retained_gpu_frame_valid_ = false;
+                if (consuming_slot_ >= 0) frames_[consuming_slot_].gpu.reset();
+                gpu_cleanup_requested_ = true;
+                presentation_valid_ = false;
+                cv_.notify_all();
+            }
             installed_texture_keys_.clear();
         }
         if (!enabled && gpu_scene_) { memdelete(gpu_scene_); gpu_scene_ = nullptr; }
@@ -425,10 +440,29 @@ public:
     }
     bool get_hd_texture_dump_enabled() const { return hd_texture_dump_enabled_; }
     void set_gpu3d_widescreen_enabled(bool enabled) {
-        if (gpu_widescreen_enabled_ == enabled) return;
-        gpu_widescreen_enabled_ = enabled;
+        {
+            std::lock_guard lock(mutex_);
+            if (gpu_widescreen_enabled_ == enabled) return;
+            gpu_widescreen_enabled_ = enabled;
+            if (!enabled && !widescreen_camera_) {
+                // Release the main-thread-owned snapshot immediately; the
+                // worker releases the delay and remaining slots even if paused.
+                if (consuming_slot_ >= 0) {
+                    frames_[consuming_slot_].gpu.reset();
+                    for (auto& screen : frames_[consuming_slot_].presentation) screen.reset();
+                }
+                retained_gpu_frame_valid_ = false;
+                presentation_valid_ = false;
+                gpu_cleanup_requested_ = true;
+            }
+            ++gpu_epoch_;
+            gpu_mode_requested_ = true;
+            cv_.notify_all();
+            installed_texture_keys_.clear();
+        }
         if (gpu_scene_) {
             gpu_scene_->set_widescreen_enabled(enabled);
+            if (!enabled && !widescreen_camera_) gpu_scene_->invalidate_frame();
             refresh_gpu_scene();
         }
     }
@@ -448,13 +482,31 @@ public:
         int slot = -1;
         {
             std::lock_guard lock(mutex_);
-            if (gpu_enabled_ && consuming_slot_ >= 0 && frames_[consuming_slot_].gpu &&
-                frames_[consuming_slot_].gpu->epoch == gpu_epoch_)
+            if (gpu_enabled_ && retained_gpu_frame_valid_ && consuming_slot_ >= 0 && frames_[consuming_slot_].gpu)
                 slot = consuming_slot_;
         }
         // The worker cannot overwrite the consuming slot until the main thread
         // consumes another frame.
-        if (slot >= 0) gpu_scene_->apply_frame(*frames_[slot].gpu);
+        if (slot < 0 || !gpu_scene_) return;
+        auto& frame = *frames_[slot].gpu;
+        if (!gpu_widescreen_enabled_ &&
+            (frame.vertex_count > dq9::kHardwareVertexLimit ||
+             frame.polygon_count > dq9::kHardwarePolygonLimit)) {
+            // Clear the meshes but keep the scene and its texture cache: the
+            // retained frame may be redrawn in Picture without a guest step.
+            // This slot is main-thread-owned until the next frame is consumed.
+            const bool color_valid = frame.color_valid;
+            const auto fallback = frame.fallback;
+            frame.color_valid = false;
+            frame.fallback = dq9::GpuFallback::Geometry;
+            gpu_scene_->apply_frame(frame);
+            frame.color_valid = color_valid;
+            frame.fallback = fallback;
+        } else {
+            // Epochs gate worker publications, not a frame already consumed by
+            // the main thread. Mode changes can redraw that retained frame.
+            gpu_scene_->apply_frame(frame);
+        }
     }
     godot::Ref<godot::Texture2D> get_gpu3d_texture() const {
         return gpu_scene_ ? gpu_scene_->get_texture() : godot::Ref<godot::Texture2D>();
@@ -537,6 +589,7 @@ public:
     godot::Ref<godot::Texture2D> get_bottom_texture() const { return bottom_texture_; }
     godot::Ref<godot::Texture2D> get_presentation_top_texture() const { return presentation_texture_[0]; }
     godot::Ref<godot::Texture2D> get_presentation_bottom_texture() const { return presentation_texture_[1]; }
+    bool has_presentation_frame() const { return presentation_valid_; }
     godot::AudioStreamPlayer* get_audio_player() const { return audio_player_; }
     godot::Ref<godot::Image> get_top_image() const { return top_image_; }
     godot::Ref<godot::Image> get_bottom_image() const { return bottom_image_; }
@@ -698,6 +751,11 @@ public:
                 consume_gpu = gpu_enabled_ && frames_[read_slot].gpu &&
                               frames_[read_slot].gpu->epoch == gpu_epoch_;
             }
+            // A newly consumed software frame must never inherit geometry
+            // from an older publication. Keep the scene's texture cache, but
+            // do not allow a later mode toggle to redraw the rejected frame.
+            retained_gpu_frame_valid_ = consume_gpu;
+            if (!consume_gpu && gpu_scene_) gpu_scene_->invalidate_frame();
             if (consume_gpu) {
                 const auto& frame = *frames_[read_slot].gpu;
                 if (!gpu_scene_) {
@@ -723,7 +781,8 @@ public:
                         installed_texture_keys_.insert(texture->key);
                 }
             }
-            if (consume_gpu && frames_[read_slot].presentation[0] && frames_[read_slot].presentation[1]) {
+            presentation_valid_ = consume_gpu && frames_[read_slot].presentation_valid;
+            if (presentation_valid_) {
                 for (int screen = 0; screen < 2; ++screen) {
                     std::memcpy(presentation_bytes_[screen].ptrw(), frames_[read_slot].presentation[screen]->data(), kPixels * 4);
                     presentation_image_[screen]->set_data(kWidth, kHeight, false, godot::Image::FORMAT_RGBA8, presentation_bytes_[screen]);
@@ -803,6 +862,7 @@ protected:
         godot::ClassDB::bind_method(godot::D_METHOD("get_bottom_image"), &DqMachine::get_bottom_image);
         godot::ClassDB::bind_method(godot::D_METHOD("get_presentation_top_texture"), &DqMachine::get_presentation_top_texture);
         godot::ClassDB::bind_method(godot::D_METHOD("get_presentation_bottom_texture"), &DqMachine::get_presentation_bottom_texture);
+        godot::ClassDB::bind_method(godot::D_METHOD("has_presentation_frame"), &DqMachine::has_presentation_frame);
         godot::ClassDB::bind_method(godot::D_METHOD("get_audio_player"), &DqMachine::get_audio_player);
 #ifdef DQ9_AUDIO_TESTS
         godot::ClassDB::bind_method(godot::D_METHOD("set_test_audio_capture", "enabled"), &DqMachine::set_test_audio_capture);
@@ -923,7 +983,7 @@ private:
         return hash;
     }
     void copy_gpu_snapshot(const dsr::RenderFrame& source, dq9::GpuSceneFrame& target,
-                           std::uint64_t epoch, WorkerTextureCache& cache) {
+                           std::uint64_t epoch, bool enhanced_geometry, WorkerTextureCache& cache) {
         target.gpu_valid = false;
         target.color_valid = false;
         target.fallback = dq9::GpuFallback::Geometry;
@@ -940,6 +1000,24 @@ private:
 #endif
         target.new_textures.clear();
         const auto& geometry = source.geometry;
+#ifdef DQ9_GPU_SCENE_TESTS
+        target.hardware_vertex_overflow = geometry.vertex_overflow;
+        target.hardware_polygon_overflow = geometry.polygon_overflow;
+        target.enhanced_overflow = geometry.enhanced_overflow;
+        std::array<bool, dq9::kGpuPolygonLimit> enhanced_only{};
+        if (geometry.polygons && geometry.polygon_count <= enhanced_only.size()) {
+            std::size_t hardware_polygons = 0;
+            for (std::size_t i = 0; i < geometry.polygon_count; ++i) {
+                const auto& polygon = geometry.polygons[i];
+                bool hardware_vertices = polygon.count <= polygon.index.size();
+                for (std::size_t j = 0; j < polygon.count && j < polygon.index.size(); ++j)
+                    hardware_vertices &= polygon.index[j] < dq9::kHardwareVertexLimit;
+                enhanced_only[i] = !hardware_vertices || hardware_polygons >= dq9::kHardwarePolygonLimit;
+                if (hardware_vertices && hardware_polygons < dq9::kHardwarePolygonLimit)
+                    ++hardware_polygons;
+            }
+        }
+#endif
         static const bool trace_geometry_rejections = [] {
             const char* value = std::getenv("DQ9_TRACE_GEOMETRY_REJECTIONS");
             return value && *value && *value != '0';
@@ -949,7 +1027,7 @@ private:
                 std::fprintf(stderr, "[gpu-geometry-reject] frame=%llu predicate=%s index=%zu\n",
                              static_cast<unsigned long long>(target.source_frame), predicate, index);
         };
-        const bool geometry_accepted = dq9::accepts_geometry(geometry, widescreen_camera_);
+        const bool geometry_accepted = dq9::accepts_geometry(geometry, enhanced_geometry);
         const bool mask_missing = !source.opaque_only_mask;
         const bool order_count_mismatch =
             source.draw_order.opaque_count + source.draw_order.translucent_count != geometry.polygon_count;
@@ -977,15 +1055,15 @@ private:
                         bad_order_indices += source.draw_order.translucent[i] >= geometry.polygon_count;
                 }
                 std::fprintf(stderr,
-                    "[gpu-geometry-reject] frame=%llu full=%d enhanced_overflow=%d vertex_overflow=%d "
+                    "[gpu-geometry-reject] frame=%llu enhanced=%d enhanced_overflow=%d vertex_overflow=%d "
                     "polygon_overflow=%d vertex_count=%zu vertex_limit=%zu polygon_count=%zu "
                     "polygon_limit=%zu missing_mask=%d order_count_mismatch=%d opaque=%zu translucent=%zu "
                     "polygons_scanned=%d bad_polygon_counts=%zu bad_vertex_indices=%zu "
                     "order_scanned=%d bad_order_indices=%zu software_output=%d enhanced_output=%d software_pixels=%zu\n",
-                    static_cast<unsigned long long>(target.source_frame), widescreen_camera_,
+                    static_cast<unsigned long long>(target.source_frame), enhanced_geometry,
                     geometry.enhanced_overflow, geometry.vertex_overflow, geometry.polygon_overflow,
-                    geometry.vertex_count, widescreen_camera_ ? dq9::kGpuVertexLimit : dq9::kHardwareVertexLimit,
-                    geometry.polygon_count, widescreen_camera_ ? dq9::kGpuPolygonLimit : dq9::kHardwarePolygonLimit,
+                    geometry.vertex_count, enhanced_geometry ? dq9::kGpuVertexLimit : dq9::kHardwareVertexLimit,
+                    geometry.polygon_count, enhanced_geometry ? dq9::kGpuPolygonLimit : dq9::kHardwarePolygonLimit,
                     mask_missing, order_count_mismatch,
                     source.draw_order.opaque_count, source.draw_order.translucent_count,
                     polygons_scanned, bad_polygon_counts, bad_vertex_indices, order_scanned, bad_order_indices,
@@ -1000,7 +1078,7 @@ private:
             for (std::size_t j = 0; j < polygon.count; ++j)
                 if (polygon.index[j] >= geometry.vertex_count) { reject("vertex_index", i); return; }
         }
-        target.prepare_geometry(widescreen_camera_);
+        target.prepare_geometry(enhanced_geometry);
         target.vertex_count = geometry.vertex_count;
         std::copy_n(geometry.vertices, geometry.vertex_count, target.vertices.begin());
         std::copy_n(source.opaque_only_mask, target.opaque_only.size(), target.opaque_only.begin());
@@ -1034,6 +1112,9 @@ private:
         const auto copy_order = [&](const std::uint16_t* order, std::size_t count) {
             for (std::size_t i = 0; i < count; ++i) {
                 if (order[i] >= geometry.polygon_count) { reject("draw_order_index", i); return false; }
+#ifdef DQ9_GPU_SCENE_TESTS
+                target.enhanced_only[target.polygon_count] = enhanced_only[order[i]];
+#endif
                 target.polygons[target.polygon_count++] = geometry.polygons[order[i]];
             }
             return true;
@@ -1057,8 +1138,11 @@ private:
         std::copy_n(source.raster.capture_polygon_ids, target.software_polygon_ids.size(), target.software_polygon_ids.begin());
 #endif
         target.fallback = dq9::GpuFallback::None;
-        if ((geometry.swap_mode & 2U) != 0)
-            target.fallback = dq9::GpuFallback::WBuffer;
+        // The GPU viewport cannot seed an invisible, non-far rear plane
+        // without leaving its metadata visible through transparent post output.
+        if ((geometry.swap_mode & 2U) != 0 && ((source.clear_color >> 16U) & 31U) == 0U &&
+            (source.clear_depth & 0x7fffU) != 0x7fffU)
+            target.fallback = dq9::GpuFallback::TransparentClear;
         if ((source.disp3dcnt & (1U << 14U)) != 0) {
             target.fallback = dq9::GpuFallback::BitmapClear;
             return;
@@ -1184,6 +1268,9 @@ private:
             WorkerTextureCache texture_cache;
             dq9::GpuFrameDelay gpu_delay;
             bool render_callback_enabled = false;
+            bool worker_enhanced_geometry = widescreen_camera_;
+            bool await_geometry_swap = false;
+            std::uint64_t previous_geometry_generation = 0;
             std::uint64_t render_callback_epoch = 0;
 #ifdef DQ9_GPU_SCENE_TESTS
             std::uint64_t captured_snapshots = 0, valid_snapshots = 0;
@@ -1194,16 +1281,53 @@ private:
                 double speed = 0.0;
                 bool do_step = false, manual = false;
                 bool gpu_enabled = false;
+                bool enhanced_geometry = false;
                 int gpu_scale = 1;
                 bool replaying = false, record_hashes = false;
                 std::uint64_t gpu_epoch = 0;
                 {
                     std::unique_lock lock(mutex_);
                     cv_.wait(lock, [&] {
-                        return shutdown_ || flush_requested_ || backups_requested_ || restore_requested_ ||
+                        return shutdown_ || gpu_cleanup_requested_ || gpu_mode_requested_ || flush_requested_ || backups_requested_ || restore_requested_ ||
                                barrier_requested_ || sync_frames_ > 0 || pending_steps_ > 0 || (running_ && !paused_);
                     });
                     if (shutdown_) break;
+                    if (gpu_cleanup_requested_) {
+                        for (int i = 0; i < 3; ++i) {
+                            if (i == consuming_slot_) continue;
+                            frames_[i].gpu.reset();
+                            if (!widescreen_camera_ && !gpu_widescreen_enabled_) {
+                                for (auto& screen : frames_[i].presentation) screen.reset();
+                                frames_[i].presentation_valid = false;
+                            }
+                        }
+                        gpu_delay.reset();
+                        texture_cache.textures.clear();
+                        texture_cache.initialized = false;
+                        dsr::set_session_render_callback(session_, {});
+                        dsr::set_session_capture_opaque_only(session_, false);
+                        render_callback_enabled = false;
+                        render_callback_epoch = 0;
+                        gpu_cleanup_requested_ = false;
+                        continue;
+                    }
+                    if (gpu_mode_requested_) {
+                        const bool desired = dq9::enhanced_geometry_enabled(
+                            widescreen_camera_, gpu_enabled_, gpu_widescreen_enabled_);
+                        if (worker_enhanced_geometry != desired) {
+                            dsr::RenderFrame before_transition{};
+                            if (dsr::capture_session_render_frame(session_, before_transition)) {
+                                previous_geometry_generation = before_transition.geometry.generation;
+                                await_geometry_swap = true;
+                            }
+                            worker_enhanced_geometry = desired;
+                            dsr::set_session_enhanced_geometry(session_, desired);
+                            dsr::set_session_enhanced_presentation(session_, widescreen_camera_ || desired,
+                                                                   widescreen_camera_);
+                        }
+                        gpu_mode_requested_ = false;
+                        continue;
+                    }
                     if (flush_requested_) {
                         lock.unlock();
                         const bool save_ok = dsr_session_save(session_) == 0;
@@ -1262,6 +1386,7 @@ private:
                         speed = 0.0;
                     }
                     gpu_enabled = gpu_enabled_; gpu_epoch = gpu_epoch_; gpu_scale = gpu_scale_;
+                    enhanced_geometry = dq9::enhanced_geometry_enabled(widescreen_camera_, gpu_enabled_, gpu_widescreen_enabled_);
                 }
                 if (gpu_enabled != render_callback_enabled || gpu_epoch != render_callback_epoch) {
                     gpu_delay.reset();
@@ -1274,8 +1399,16 @@ private:
                         dsr::set_session_render_callback(session_, [&] {
                             dsr::RenderFrame source{};
                             if (dsr::capture_session_render_frame(session_, source)) {
+                                if (await_geometry_swap) {
+                                    // The first swap can publish a list whose
+                                    // collection started before the transition.
+                                    // Unsigned subtraction also handles wrap and
+                                    // callbacks that skip intermediate swaps.
+                                    if (source.geometry.generation - previous_geometry_generation < 2) return;
+                                    await_geometry_swap = false;
+                                }
                                 auto& target = gpu_delay.capture_target();
-                                copy_gpu_snapshot(source, target, render_callback_epoch, texture_cache);
+                                copy_gpu_snapshot(source, target, render_callback_epoch, worker_enhanced_geometry, texture_cache);
 #ifdef DQ9_GPU_SCENE_TESTS
                                 target.captured_snapshots = ++captured_snapshots;
                                 target.valid_snapshots = valid_snapshots += target.gpu_valid ? 1U : 0U;
@@ -1323,7 +1456,12 @@ private:
                 }
                 if (output_slot >= 0) {
                     copy_screen(session_, 0, frames_[output_slot].screens[0].data());
+                    frames_[output_slot].presentation_valid = false;
                     copy_screen(session_, 1, frames_[output_slot].screens[1].data());
+                    if (!widescreen_camera_ && !worker_enhanced_geometry) {
+                        frames_[output_slot].presentation[0].reset();
+                        frames_[output_slot].presentation[1].reset();
+                    }
                     {
                         std::lock_guard lock(mutex_);
                         auto& slot = frames_[output_slot];
@@ -1344,12 +1482,13 @@ private:
                     if (gpu_enabled) {
                         dsr::RenderFrame displayed{};
                         dsr::capture_session_render_frame(session_, displayed);
-                        if (widescreen_camera_ && displayed.presentation_top && displayed.presentation_bottom) {
+                        if ((widescreen_camera_ || worker_enhanced_geometry) && displayed.presentation_top && displayed.presentation_bottom) {
                             auto& slot = frames_[output_slot];
                             for (int screen = 0; screen < 2; ++screen) {
                                 if (!slot.presentation[screen]) slot.presentation[screen] = std::make_unique<std::array<std::uint8_t, kPixels * 4>>();
                                 copy_pixels(screen == 0 ? displayed.presentation_top : displayed.presentation_bottom, slot.presentation[screen]->data());
                             }
+                            slot.presentation_valid = true;
                         }
                         gpu_delay.publish(frames_[output_slot].gpu, displayed, gpu_epoch,
                                           widescreen_camera_, gpu_scale);
@@ -1387,7 +1526,13 @@ private:
                         slot.main_key_generation = rules.main_key_generation;
                     }
                     if (!chip_mismatch_) chip_mismatch_ = dsr_session_chip_mismatch_suspected(session_) != 0;
-                    if (output_slot >= 0) published_slot_ = output_slot;
+                    if (output_slot >= 0) {
+                        // A disable can race a step already writing this slot.
+                        // Discard its old GPU snapshot before handing it to the
+                        // main thread, even if GPU was re-enabled meanwhile.
+                        if (gpu_cleanup_requested_) frames_[output_slot].gpu.reset();
+                        published_slot_ = output_slot;
+                    }
                     const std::uint64_t input_frame = frame_count_ == 0 ? 0 : frame_count_ - 1;
                     input_history_.push_back({input_frame, input});
                     ticks_ = dsr_session_ticks(session_);
@@ -1544,12 +1689,16 @@ private:
     godot::Dictionary consumed_snapshot_;
     int published_slot_ = -1, consuming_slot_ = -1;
     bool gpu_enabled_ = false;
+    bool gpu_cleanup_requested_ = false;
+    bool gpu_mode_requested_ = false;
+    bool presentation_valid_ = false;
     int gpu_scale_ = 3;
     bool gpu_widescreen_enabled_ = false;
     bool gpu_guest_widescreen_ = false;
     bool hd_textures_enabled_ = false;
     bool hd_texture_dump_enabled_ = false;
     std::uint64_t gpu_epoch_ = 0, installed_texture_epoch_ = 0, installed_texture_generation_ = 0;
+    bool retained_gpu_frame_valid_ = false;
     std::unordered_set<dsr::gpu3d_detail::TextureKey, dq9::TextureKeyHash> installed_texture_keys_;
     DqGpuScene* gpu_scene_ = nullptr;
     godot::PackedByteArray screen_bytes_[2][2];

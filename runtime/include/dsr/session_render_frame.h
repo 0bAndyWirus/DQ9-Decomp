@@ -18,6 +18,14 @@ DSR_SESSION_API void set_session_render_callback(dsr_session_handle* session,
 // Owner-thread-only optional fragment classification for hybrid GPU display.
 DSR_SESSION_API void set_session_capture_opaque_only(dsr_session_handle* session, bool enabled);
 
+// Owner-thread-only retained geometry capacity; does not change guest-visible
+// hardware counts or overflow flags.
+DSR_SESSION_API void set_session_enhanced_geometry(dsr_session_handle* session, bool enabled);
+
+// Configure separate presentation composition without changing guest LCD output.
+// Full maps the wide-camera raster; Picture uses native 3D coordinates.
+DSR_SESSION_API void set_session_enhanced_presentation(dsr_session_handle* session, bool enabled, bool full);
+
 // Set before stepping; affects only Full-mode presentation composition.
 DSR_SESSION_API void set_session_presentation_scale(dsr_session_handle* session, int scale);
 
